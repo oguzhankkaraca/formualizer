@@ -14,6 +14,7 @@ import type {
 } from './protocol.js';
 
 export interface SpreadsheetBackend {
+  createWorkbook(): Promise<WorkbookSnapshot>;
   loadXlsx(bytes: Uint8Array): Promise<WorkbookSnapshot>;
   readCellWindow(
     window: CellWindowRequest,
@@ -92,6 +93,10 @@ export class WorkerBackend implements SpreadsheetBackend {
   constructor(private readonly worker: WorkerLike) {
     worker.addEventListener('message', this.onMessage);
     worker.addEventListener('error', this.onError);
+  }
+
+  createWorkbook(): Promise<WorkbookSnapshot> {
+    return this.request<WorkbookSnapshot>({ type: 'createWorkbook' });
   }
 
   loadXlsx(bytes: Uint8Array): Promise<WorkbookSnapshot> {

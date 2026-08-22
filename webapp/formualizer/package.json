@@ -4,15 +4,25 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "dev": "vite",
+    "predev": "pnpm run build:wasm",
+    "build": "pnpm run build:wasm && tsc -p tsconfig.json && vite build",
     "check": "tsc -p tsconfig.json --noEmit",
-    "test": "pnpm run build && node --test dist/backend.test.js"
+    "test": "pnpm run build:types && node --test dist/backend.test.js",
+    "build:types": "tsc -p tsconfig.json",
+    "build:wasm": "wasm-pack build ../../bindings/wasm --target web --out-dir pkg --release --no-opt"
   },
   "dependencies": {
-    "formualizer": "file:../../bindings/wasm"
+    "formualizer": "file:../../bindings/wasm",
+    "react": "19.2.7",
+    "react-dom": "19.2.7"
   },
   "devDependencies": {
     "@types/node": "20.19.37",
-    "typescript": "5.9.3"
+    "@types/react": "19.2.17",
+    "@types/react-dom": "19.2.3",
+    "@vitejs/plugin-react": "6.0.1",
+    "typescript": "5.9.3",
+    "vite": "8.0.16"
   }
 }

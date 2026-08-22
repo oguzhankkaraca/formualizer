@@ -78,6 +78,10 @@ export interface EvaluateRequest {
 export type WorkerRequest =
   | {
       requestId: string;
+      type: 'createWorkbook';
+    }
+  | {
+      requestId: string;
       type: 'loadXlsx';
       bytes: ArrayBuffer;
     }

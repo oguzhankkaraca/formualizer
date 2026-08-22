@@ -15,6 +15,7 @@ import type {
 } from './protocol.js';
 
 interface FormualizerWorkbook {
+  addSheet(name: string): void;
   evaluateAll(): void;
   evaluateCells(targets: Array<[string, number, number]>): unknown[];
   lastCycleTelemetry(): CycleTelemetry;
@@ -27,6 +28,7 @@ interface FormualizerWorkbook {
 }
 
 interface FormualizerWorkbookConstructor {
+  new (): FormualizerWorkbook;
   fromXlsxBytes(bytes: Uint8Array): FormualizerWorkbook;
 }
 
@@ -86,6 +88,12 @@ class FormualizerWorkerRuntime {
   }
 
   private async execute(request: WorkerRequest): Promise<unknown> {
+    if (request.type === 'createWorkbook') {
+      await this.ensureInitialized();
+      this.workbook = new workbookConstructor();
+      this.workbook.addSheet('Sheet1');
+      return this.workbookSnapshot();
+    }
     if (request.type === 'loadXlsx') {
       await this.ensureInitialized();
       this.workbook = workbookConstructor.fromXlsxBytes(new Uint8Array(request.bytes));

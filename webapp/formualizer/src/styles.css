@@ -1,0 +1,219 @@
+@font-face {
+  font-family: 'InterFallback';
+  src: local('Segoe UI');
+}
+
+:root {
+  color: #1f2937;
+  background: #f3f5f8;
+  font-family: InterFallback, 'Segoe UI', sans-serif;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 900px;
+  min-height: 100vh;
+}
+
+button,
+input {
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+.app-shell {
+  display: grid;
+  grid-template-rows: 48px 48px minmax(0, 1fr) 42px;
+  height: 100vh;
+  min-height: 620px;
+  overflow: hidden;
+  background: #ffffff;
+}
+
+.app-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 16px;
+  color: #ffffff;
+  background: #1769aa;
+  box-shadow: 0 1px 4px rgb(15 23 42 / 18%);
+}
+
+.brand {
+  margin-right: 14px;
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+
+.toolbar-button {
+  display: inline-flex;
+  align-items: center;
+  min-height: 30px;
+  padding: 4px 11px;
+  border: 1px solid rgb(255 255 255 / 35%);
+  border-radius: 4px;
+  color: #ffffff;
+  background: rgb(255 255 255 / 12%);
+  font-size: 13px;
+  text-decoration: none;
+}
+
+.toolbar-button:hover {
+  background: rgb(255 255 255 / 22%);
+}
+
+.toolbar-button input {
+  display: none;
+}
+
+.status {
+  overflow: hidden;
+  margin-left: auto;
+  max-width: 42vw;
+  color: rgb(255 255 255 / 86%);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.status-error {
+  color: #ffd7d2;
+}
+
+.formula-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 12px;
+  border-bottom: 1px solid #d9dee5;
+  background: #fafbfc;
+}
+
+.name-box {
+  min-width: 116px;
+  padding: 7px 9px;
+  border: 1px solid #c9d1dc;
+  border-radius: 3px;
+  color: #374151;
+  background: #ffffff;
+  font-size: 12px;
+  text-align: center;
+}
+
+.formula-symbol {
+  width: 28px;
+  color: #64748b;
+  font-size: 15px;
+  font-style: italic;
+  font-weight: 700;
+  text-align: center;
+}
+
+.formula-input {
+  min-width: 0;
+  flex: 1;
+  height: 32px;
+  padding: 6px 9px;
+  border: 1px solid #c9d1dc;
+  border-radius: 3px;
+  color: #111827;
+  background: #ffffff;
+  outline: none;
+}
+
+.formula-input:focus {
+  border-color: #1769aa;
+  box-shadow: 0 0 0 2px rgb(23 105 170 / 12%);
+}
+
+.commit-button {
+  height: 32px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 3px;
+  color: #ffffff;
+  background: #1769aa;
+}
+
+.grid-panel {
+  min-height: 0;
+  overflow: auto;
+  padding: 12px;
+  background: #eef1f5;
+}
+
+.grid-shell {
+  width: fit-content;
+  min-width: 100%;
+  border: 1px solid #c9d1dc;
+  background: #ffffff;
+  box-shadow: 0 1px 3px rgb(15 23 42 / 8%);
+}
+
+.grid-canvas {
+  display: block;
+  outline: none;
+}
+
+.grid-canvas:focus {
+  box-shadow: inset 0 0 0 2px rgb(23 105 170 / 22%);
+}
+
+.sheet-tabs {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 12px;
+  border-top: 1px solid #c9d1dc;
+  background: #f7f8fa;
+}
+
+.sheet-tab-list {
+  display: flex;
+  align-self: stretch;
+  align-items: stretch;
+  gap: 2px;
+}
+
+.sheet-tab {
+  min-width: 80px;
+  padding: 0 14px;
+  border: 0;
+  border-bottom: 3px solid transparent;
+  color: #475569;
+  background: transparent;
+  font-size: 13px;
+}
+
+.sheet-tab:hover,
+.sheet-tab.active {
+  color: #1769aa;
+  background: #ffffff;
+}
+
+.sheet-tab.active {
+  border-bottom-color: #1769aa;
+  font-weight: 600;
+}
+
+.revision {
+  margin-left: auto;
+  color: #64748b;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 11px;
+}

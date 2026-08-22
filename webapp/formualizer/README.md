@@ -8,17 +8,17 @@ the same backend.
 
 ## Development
 
-Build the WASM package first, then install and build this package:
+Install and build this package; its prebuild step creates the browser-target WASM package:
 
 ```bash
-pnpm --dir bindings/wasm install --frozen-lockfile
-pnpm --dir bindings/wasm build
 pnpm --dir webapp/formualizer install
 pnpm --dir webapp/formualizer build
+pnpm --dir webapp/formualizer dev
 ```
 
 The current protocol supports:
 
+- empty workbook creation with a default `Sheet1`;
 - XLSX byte loading;
 - typed viewport reads through `readCellWindow`;
 - raw user input commits;

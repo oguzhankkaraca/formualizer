@@ -2995,6 +2995,14 @@ mod structured_references {
         );
     }
 
+    // ----------- positive: legacy bare-table form -----------
+
+    #[test]
+    fn empty_table_specifier_targets_data_body() {
+        let t = expect_table("=Table1[]");
+        assert_eq!(t.specifier, Some(TableSpecifier::Data));
+    }
+
     // ----------- positive: case-insensitivity -----------
 
     #[test]

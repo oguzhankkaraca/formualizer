@@ -137,6 +137,8 @@ impl<B: SpreadsheetReader> NamedRangeResolver for IoResolver<B> {
                 Ok(rows)
             }
             DefinedNameDefinition::Literal { value } => Ok(vec![vec![value]]),
+            DefinedNameDefinition::Formula { .. } => Err(ExcelError::new(ExcelErrorKind::NImpl)
+                .with_message("Formula-backed defined name requires an engine context")),
         }
     }
 }

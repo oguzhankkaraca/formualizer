@@ -37,6 +37,41 @@ fn to_text<'a, 'b>(a: &ArgumentHandle<'a, 'b>) -> Result<String, ExcelError> {
 // VALUE(text) - parse number
 #[derive(Debug)]
 pub struct ValueFn;
+
+fn parse_value_literal(value: LiteralValue, ctx: &dyn FunctionContext<'_>) -> LiteralValue {
+    match value {
+        LiteralValue::Error(error) => LiteralValue::Error(error),
+        LiteralValue::Array(rows) => LiteralValue::Array(
+            rows.into_iter()
+                .map(|row| {
+                    row.into_iter()
+                        .map(|value| parse_value_literal(value, ctx))
+                        .collect()
+                })
+                .collect(),
+        ),
+        value => {
+            let text = match value {
+                LiteralValue::Text(text) => text,
+                LiteralValue::Empty => String::new(),
+                LiteralValue::Boolean(value) => {
+                    if value {
+                        "TRUE".to_string()
+                    } else {
+                        "FALSE".to_string()
+                    }
+                }
+                LiteralValue::Int(value) => value.to_string(),
+                LiteralValue::Number(value) => value.to_string(),
+                other => other.to_string(),
+            };
+            ctx.locale()
+                .parse_number_invariant(&text)
+                .map(LiteralValue::Number)
+                .unwrap_or_else(|| LiteralValue::Error(ExcelError::new_value()))
+        }
+    }
+}
 /// Converts text that represents a number into a numeric value.
 ///
 /// # Remarks
@@ -76,10 +111,10 @@ pub struct ValueFn;
 /// Variadic: false
 /// Signature: VALUE(arg1: any@scalar)
 /// Arg schema: arg1{kinds=any,required=true,shape=scalar,by_ref=false,coercion=None,max=None,repeating=None,default=false}
-/// Caps: PURE
+/// Caps: PURE, ELEMENTWISE, MAY_SPILL
 /// [formualizer-docgen:schema:end]
 impl Function for ValueFn {
-    func_caps!(PURE);
+    func_caps!(PURE, ELEMENTWISE, MAY_SPILL);
     fn name(&self) -> &'static str {
         "VALUE"
     }
@@ -94,13 +129,36 @@ impl Function for ValueFn {
         args: &'c [ArgumentHandle<'a, 'b>],
         ctx: &dyn FunctionContext<'b>,
     ) -> Result<crate::traits::CalcValue<'b>, ExcelError> {
-        let s = to_text(&args[0])?;
-        let Some(n) = ctx.locale().parse_number_invariant(&s) else {
+        if args.is_empty() || args[0].is_omitted() {
             return Ok(crate::traits::CalcValue::Scalar(LiteralValue::Error(
                 ExcelError::new_value(),
             )));
-        };
-        Ok(crate::traits::CalcValue::Scalar(LiteralValue::Number(n)))
+        }
+        match args[0].value()? {
+            crate::traits::CalcValue::Scalar(value)
+            | crate::traits::CalcValue::AnnotatedScalar(value, _) => Ok(
+                crate::traits::CalcValue::Scalar(parse_value_literal(value, ctx)),
+            ),
+            crate::traits::CalcValue::Range(view) => {
+                let mut rows = Vec::with_capacity(view.dims().0);
+                view.for_each_row(&mut |row| {
+                    rows.push(
+                        row.iter()
+                            .cloned()
+                            .map(|value| parse_value_literal(value, ctx))
+                            .collect(),
+                    );
+                    Ok(())
+                })?;
+                Ok(crate::traits::CalcValue::Scalar(LiteralValue::Array(rows)))
+            }
+            crate::traits::CalcValue::Callable(_) => {
+                Ok(crate::traits::CalcValue::Scalar(LiteralValue::Error(
+                    ExcelError::new(ExcelErrorKind::Calc)
+                        .with_message("LAMBDA value must be invoked"),
+                )))
+            }
+        }
     }
 }
 

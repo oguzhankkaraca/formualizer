@@ -26,7 +26,7 @@ use formualizer_eval::engine::{
     SourceCoord, SourceFamilyId, SourceFormulaFamily, SourceFormulaOrder, SourceRect,
 };
 use formualizer_eval::traits::EvaluationContext;
-use formualizer_parse::parser::{ASTNode, ReferenceType};
+use formualizer_parse::parser::{ASTNode, ASTNodeType, ReferenceType};
 use quick_xml::Reader as XmlReader;
 use quick_xml::events::{BytesRef, BytesStart, Event};
 use quick_xml::name::QName;
@@ -939,16 +939,28 @@ impl CalamineAdapter {
         if let Some(rest) = trimmed.strip_prefix('=') {
             trimmed = rest.trim();
         }
-        if trimmed.is_empty() || trimmed.contains(',') {
-            return None;
-        }
-
-        let reference = ReferenceType::from_string(trimmed).ok()?;
         let scope_sheet = local_sheet_id.and_then(|idx| sheet_names.get(idx).cloned());
         let scope = if scope_sheet.is_some() {
             DefinedNameScope::Sheet
         } else {
             DefinedNameScope::Workbook
+        };
+        let formula = if trimmed.is_empty() {
+            "=".to_string()
+        } else {
+            format!("={trimmed}")
+        };
+        let formula_definition = || DefinedName {
+            name: name.to_string(),
+            scope: scope.clone(),
+            scope_sheet: scope_sheet.clone(),
+            definition: DefinedNameDefinition::Formula {
+                formula: formula.clone(),
+            },
+        };
+        let reference = match ReferenceType::from_string(trimmed) {
+            Ok(reference) => reference,
+            Err(_) => return Some(formula_definition()),
         };
         let base_sheet = scope_sheet.as_deref();
 
@@ -956,7 +968,9 @@ impl CalamineAdapter {
             ReferenceType::Cell {
                 sheet, row, col, ..
             } => {
-                let sheet = sheet.or_else(|| base_sheet.map(|s| s.to_string()))?;
+                let Some(sheet) = sheet.or_else(|| base_sheet.map(|s| s.to_string())) else {
+                    return Some(formula_definition());
+                };
                 (sheet, row, col, row, col)
             }
             ReferenceType::Range {
@@ -967,15 +981,24 @@ impl CalamineAdapter {
                 end_col,
                 ..
             } => {
-                let (sr, sc, er, ec) =
-                    Self::normalize_open_ended_bounds(start_row, start_col, end_row, end_col)?;
-                let sheet = sheet.or_else(|| base_sheet.map(|s| s.to_string()))?;
+                let Some((sr, sc, er, ec)) =
+                    Self::normalize_open_ended_bounds(start_row, start_col, end_row, end_col)
+                else {
+                    return Some(formula_definition());
+                };
+                let Some(sheet) = sheet.or_else(|| base_sheet.map(|s| s.to_string())) else {
+                    return Some(formula_definition());
+                };
                 (sheet, sr, sc, er, ec)
             }
-            _ => return None,
+            _ => return Some(formula_definition()),
         };
 
-        let address = RangeAddress::new(sheet_name, start_row, start_col, end_row, end_col).ok()?;
+        let Some(address) =
+            RangeAddress::new(sheet_name, start_row, start_col, end_row, end_col).ok()
+        else {
+            return Some(formula_definition());
+        };
 
         Some(DefinedName {
             name: name.to_string(),
@@ -2006,7 +2029,11 @@ where
                     FxHashSet::default();
 
                 for dn in defined {
-                    let key = (dn.scope.clone(), dn.scope_sheet.clone(), dn.name.clone());
+                    let key = (
+                        dn.scope.clone(),
+                        dn.scope_sheet.as_ref().map(|sheet| sheet.to_lowercase()),
+                        dn.name.to_lowercase(),
+                    );
                     if !seen.insert(key) {
                         continue;
                     }
@@ -2059,11 +2086,45 @@ where
                             }
                         }
                         DefinedNameDefinition::Literal { value } => NamedDefinition::Literal(value),
+                        DefinedNameDefinition::Formula { formula } => {
+                            let ast =
+                                formualizer_parse::parser::parse(&formula).unwrap_or_else(|_| {
+                                    ASTNode::new(
+                                        ASTNodeType::Literal(LiteralValue::Error(ExcelError::new(
+                                            ExcelErrorKind::Name,
+                                        ))),
+                                        None,
+                                    )
+                                });
+                            NamedDefinition::Formula {
+                                ast,
+                                dependencies: Vec::new(),
+                                range_deps: Vec::new(),
+                            }
+                        }
                     };
 
-                    engine
-                        .define_name(&dn.name, definition, scope)
-                        .map_err(|e| calamine::Error::Io(std::io::Error::other(e.to_string())))?;
+                    if let Err(error) = engine.define_name(&dn.name, definition, scope) {
+                        let skippable = error.kind == ExcelErrorKind::Name
+                            && error.message.as_deref().is_some_and(|message| {
+                                message.starts_with("Invalid name:")
+                                    || message.starts_with("Name collision under normalization:")
+                                    || message
+                                        .starts_with("Name collision under normalization in sheet:")
+                            });
+                        if skippable {
+                            if debug {
+                                eprintln!(
+                                    "[fz][load] skipped unsupported defined name '{}': {}",
+                                    dn.name, error
+                                );
+                            }
+                        } else {
+                            return Err(calamine::Error::Io(std::io::Error::other(
+                                error.to_string(),
+                            )));
+                        }
+                    }
                 }
             }
 

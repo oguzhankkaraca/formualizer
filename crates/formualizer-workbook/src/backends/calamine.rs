@@ -2,8 +2,9 @@ use crate::load_limits::enforce_sheet_dimension_limits;
 use crate::traits::{
     AccessGranularity, AdapterLoadStats, BackendCaps, CalcSettings, CellData, DefinedName,
     DefinedNameDefinition, DefinedNameScope, MergedRange, SheetData, SpreadsheetReader,
+    TableDefinition,
 };
-use formualizer_common::{DateSystem, ExcelError, ExcelErrorKind, LiteralValue};
+use formualizer_common::{DateSystem, ExcelError, ExcelErrorKind, LiteralValue, parse_a1_1based};
 use parking_lot::RwLock;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fs::File;
@@ -221,6 +222,7 @@ pub struct CalamineAdapter {
     loaded_sheets: HashSet<String>,
     cached_names: Option<Vec<String>>,
     defined_names: Vec<DefinedName>,
+    tables_by_sheet: BTreeMap<String, Vec<TableDefinition>>,
     external_link_targets: BTreeMap<u32, String>,
     calc_settings: Option<CalcSettings>,
     load_stats: AdapterLoadStats,
@@ -1195,6 +1197,236 @@ impl CalamineAdapter {
         crate::calc_pr::parse_calc_pr(&xml)
     }
 
+    fn archive_entry<R>(archive: &mut ZipArchive<R>, name: &str) -> Option<Vec<u8>>
+    where
+        R: Read + Seek,
+    {
+        let mut entry = archive.by_name(name).ok()?;
+        let mut bytes = Vec::new();
+        entry.read_to_end(&mut bytes).ok()?;
+        Some(bytes)
+    }
+
+    fn relationships(xml: &[u8]) -> BTreeMap<String, String> {
+        let mut reader = XmlReader::from_reader(Cursor::new(xml));
+        reader.config_mut().trim_text(true);
+        let mut relationships = BTreeMap::new();
+        let mut buffer = Vec::new();
+        loop {
+            buffer.clear();
+            match reader.read_event_into(&mut buffer) {
+                Ok(Event::Start(ref event)) | Ok(Event::Empty(ref event))
+                    if event.local_name().as_ref() == b"Relationship" =>
+                {
+                    if let (Some(id), Some(target)) = (
+                        Self::decode_attr(&reader, event, b"Id"),
+                        Self::decode_attr(&reader, event, b"Target"),
+                    ) {
+                        relationships.insert(id, target);
+                    }
+                }
+                Ok(Event::Eof) | Err(_) => break,
+                _ => {}
+            }
+        }
+        relationships
+    }
+
+    fn table_targets(xml: &[u8]) -> Vec<String> {
+        let mut reader = XmlReader::from_reader(Cursor::new(xml));
+        reader.config_mut().trim_text(true);
+        let mut targets = Vec::new();
+        let mut buffer = Vec::new();
+        loop {
+            buffer.clear();
+            match reader.read_event_into(&mut buffer) {
+                Ok(Event::Start(ref event)) | Ok(Event::Empty(ref event))
+                    if event.local_name().as_ref() == b"Relationship" =>
+                {
+                    let relationship_type = Self::decode_attr(&reader, event, b"Type");
+                    let target_mode = Self::decode_attr(&reader, event, b"TargetMode");
+                    if relationship_type.is_some_and(|value| value.ends_with("/table"))
+                        && !target_mode.is_some_and(|value| value.eq_ignore_ascii_case("External"))
+                        && let Some(target) = Self::decode_attr(&reader, event, b"Target")
+                    {
+                        targets.push(target);
+                    }
+                }
+                Ok(Event::Eof) | Err(_) => break,
+                _ => {}
+            }
+        }
+        targets
+    }
+
+    fn workbook_sheets(xml: &[u8]) -> Vec<(String, String)> {
+        let mut reader = XmlReader::from_reader(Cursor::new(xml));
+        reader.config_mut().trim_text(true);
+        let mut sheets = Vec::new();
+        let mut buffer = Vec::new();
+        loop {
+            buffer.clear();
+            match reader.read_event_into(&mut buffer) {
+                Ok(Event::Start(ref event)) | Ok(Event::Empty(ref event))
+                    if event.local_name().as_ref() == b"sheet" =>
+                {
+                    if let (Some(name), Some(relationship)) = (
+                        Self::decode_attr(&reader, event, b"name"),
+                        Self::decode_attr(&reader, event, b"r:id"),
+                    ) {
+                        sheets.push((name, relationship));
+                    }
+                }
+                Ok(Event::Eof) | Err(_) => break,
+                _ => {}
+            }
+        }
+        sheets
+    }
+
+    fn table_definition(xml: &[u8]) -> Option<TableDefinition> {
+        let mut reader = XmlReader::from_reader(Cursor::new(xml));
+        reader.config_mut().trim_text(true);
+        let mut name = None;
+        let mut range = None;
+        let mut header_row = true;
+        let mut totals_row = false;
+        let mut headers = Vec::new();
+        let mut buffer = Vec::new();
+        loop {
+            buffer.clear();
+            match reader.read_event_into(&mut buffer) {
+                Ok(Event::Start(ref event)) if event.local_name().as_ref() == b"table" => {
+                    name = Self::decode_attr(&reader, event, b"displayName")
+                        .or_else(|| Self::decode_attr(&reader, event, b"name"));
+                    range = Self::decode_attr(&reader, event, b"ref")
+                        .and_then(|reference| Self::table_range(&reference));
+                    header_row = Self::decode_attr(&reader, event, b"headerRowCount")
+                        .and_then(|value| value.parse::<u32>().ok())
+                        .is_none_or(|count| count != 0);
+                    totals_row = Self::decode_attr(&reader, event, b"totalsRowCount")
+                        .and_then(|value| value.parse::<u32>().ok())
+                        .is_some_and(|count| count != 0)
+                        || Self::decode_attr(&reader, event, b"totalsRowShown").is_some_and(
+                            |value| value == "1" || value.eq_ignore_ascii_case("true"),
+                        );
+                }
+                Ok(Event::Start(ref event)) | Ok(Event::Empty(ref event))
+                    if event.local_name().as_ref() == b"tableColumn" =>
+                {
+                    if let Some(header) = Self::decode_attr(&reader, event, b"name") {
+                        headers.push(header);
+                    }
+                }
+                Ok(Event::Eof) | Err(_) => break,
+                _ => {}
+            }
+        }
+        Some(TableDefinition {
+            name: name?,
+            range: range?,
+            header_row,
+            headers,
+            totals_row,
+        })
+    }
+
+    fn table_range(reference: &str) -> Option<(u32, u32, u32, u32)> {
+        let (start, end) = reference.split_once(':').unwrap_or((reference, reference));
+        let (start_row, start_col, _, _) = parse_a1_1based(start).ok()?;
+        let (end_row, end_col, _, _) = parse_a1_1based(end).ok()?;
+        Some((start_row, start_col, end_row, end_col))
+    }
+
+    fn relationship_part(source_part: &str) -> Option<String> {
+        let (directory, file) = source_part.rsplit_once('/')?;
+        Some(format!("{directory}/_rels/{file}.rels"))
+    }
+
+    fn resolve_part_target(source_part: &str, target: &str) -> Option<String> {
+        if target.contains("://") {
+            return None;
+        }
+        let target = target.replace('\\', "/");
+        let mut segments = if target.starts_with('/') {
+            Vec::new()
+        } else {
+            source_part
+                .rsplit_once('/')
+                .map(|(directory, _)| directory.split('/').collect::<Vec<_>>())
+                .unwrap_or_default()
+        };
+        for segment in target.trim_start_matches('/').split('/') {
+            match segment {
+                "" | "." => {}
+                ".." => {
+                    segments.pop()?;
+                }
+                value => segments.push(value),
+            }
+        }
+        Some(segments.join("/"))
+    }
+
+    fn scan_tables_from_reader<R>(reader: R) -> BTreeMap<String, Vec<TableDefinition>>
+    where
+        R: Read + Seek,
+    {
+        let mut archive = match ZipArchive::new(reader) {
+            Ok(archive) => archive,
+            Err(_) => return BTreeMap::new(),
+        };
+        let workbook_part = "xl/workbook.xml";
+        let Some(workbook_xml) = Self::archive_entry(&mut archive, workbook_part) else {
+            return BTreeMap::new();
+        };
+        let Some(workbook_relationship_part) = Self::relationship_part(workbook_part) else {
+            return BTreeMap::new();
+        };
+        let Some(workbook_relationship_xml) =
+            Self::archive_entry(&mut archive, &workbook_relationship_part)
+        else {
+            return BTreeMap::new();
+        };
+        let workbook_relationships = Self::relationships(&workbook_relationship_xml);
+        let mut tables_by_sheet = BTreeMap::new();
+
+        for (sheet_name, relationship) in Self::workbook_sheets(&workbook_xml) {
+            let Some(sheet_target) = workbook_relationships.get(&relationship) else {
+                continue;
+            };
+            let Some(sheet_part) = Self::resolve_part_target(workbook_part, sheet_target) else {
+                continue;
+            };
+            let Some(sheet_relationship_part) = Self::relationship_part(&sheet_part) else {
+                continue;
+            };
+            let Some(sheet_relationship_xml) =
+                Self::archive_entry(&mut archive, &sheet_relationship_part)
+            else {
+                continue;
+            };
+            let table_targets = Self::table_targets(&sheet_relationship_xml);
+            if table_targets.is_empty() {
+                continue;
+            }
+            let tables = tables_by_sheet.entry(sheet_name).or_insert_with(Vec::new);
+            for table_target in table_targets {
+                let Some(table_part) = Self::resolve_part_target(&sheet_part, &table_target) else {
+                    continue;
+                };
+                let Some(table_xml) = Self::archive_entry(&mut archive, &table_part) else {
+                    continue;
+                };
+                if let Some(table) = Self::table_definition(&table_xml) {
+                    tables.push(table);
+                }
+            }
+            tables.sort_by(|left, right| left.name.cmp(&right.name));
+        }
+        tables_by_sheet
+    }
+
     fn calamine_error_code(e: &calamine::CellErrorType) -> u8 {
         let kind = match e {
             calamine::CellErrorType::Div0 => ExcelErrorKind::Div,
@@ -1315,6 +1547,7 @@ impl SpreadsheetReader for CalamineAdapter {
         BackendCaps {
             read: true,
             formulas: true,
+            tables: true,
             named_ranges: true,
             lazy_loading: false,
             random_access: false,
@@ -1359,6 +1592,9 @@ impl SpreadsheetReader for CalamineAdapter {
         let calc_settings = File::open(path)
             .ok()
             .and_then(|file| Self::scan_calc_settings_from_reader(BufReader::new(file)));
+        let tables_by_sheet = File::open(path)
+            .map(|file| Self::scan_tables_from_reader(BufReader::new(file)))
+            .unwrap_or_default();
         let workbook: Xlsx<BufReader<File>> = open_workbook(path)?;
         let sheet_names = workbook.sheet_names().to_vec();
         let defined_names = if workbook.defined_names().is_empty() {
@@ -1381,6 +1617,7 @@ impl SpreadsheetReader for CalamineAdapter {
             loaded_sheets: HashSet::new(),
             cached_names: Some(sheet_names),
             defined_names,
+            tables_by_sheet,
             external_link_targets,
             calc_settings,
             load_stats: AdapterLoadStats::default(),
@@ -1404,6 +1641,7 @@ impl SpreadsheetReader for CalamineAdapter {
         let external_link_targets =
             Self::scan_external_link_targets_from_reader(Cursor::new(data.as_slice()));
         let calc_settings = Self::scan_calc_settings_from_reader(Cursor::new(data.as_slice()));
+        let tables_by_sheet = Self::scan_tables_from_reader(Cursor::new(data.as_slice()));
         let workbook: Xlsx<Cursor<Vec<u8>>> = open_workbook_from_rs(Cursor::new(data.clone()))?;
         let sheet_names = workbook.sheet_names().to_vec();
         let defined_names = if workbook.defined_names().is_empty() {
@@ -1423,6 +1661,7 @@ impl SpreadsheetReader for CalamineAdapter {
             loaded_sheets: HashSet::new(),
             cached_names: Some(sheet_names),
             defined_names,
+            tables_by_sheet,
             external_link_targets,
             calc_settings,
             load_stats: AdapterLoadStats::default(),
@@ -1463,7 +1702,7 @@ impl SpreadsheetReader for CalamineAdapter {
         Ok(SheetData {
             cells,
             dimensions: Some(dims),
-            tables: vec![],
+            tables: self.tables_by_sheet.get(sheet).cloned().unwrap_or_default(),
             named_ranges: vec![],
             date_system_1904: false, // calamine XLSX currently doesn’t expose this
             merged_cells: Vec::<MergedRange>::new(),
@@ -1529,6 +1768,46 @@ where
             .map_err(|e| calamine::Error::Io(std::io::Error::other(e.to_string())))?;
         #[cfg(feature = "tracing")]
         drop(_span_sheets);
+
+        for (sheet, tables) in &self.tables_by_sheet {
+            let sheet_id = engine.sheet_id(sheet).ok_or_else(|| {
+                calamine::Error::Io(std::io::Error::other(format!(
+                    "table sheet not found: {sheet}"
+                )))
+            })?;
+            for table in tables {
+                let (start_row, start_col, end_row, end_col) = table.range;
+                let start = CellRef::new(
+                    sheet_id,
+                    Coord::new(
+                        start_row.saturating_sub(1),
+                        start_col.saturating_sub(1),
+                        true,
+                        true,
+                    ),
+                );
+                let end = CellRef::new(
+                    sheet_id,
+                    Coord::new(
+                        end_row.saturating_sub(1),
+                        end_col.saturating_sub(1),
+                        true,
+                        true,
+                    ),
+                );
+                engine
+                    .define_table(
+                        &table.name,
+                        formualizer_eval::reference::RangeRef::new(start, end),
+                        table.header_row,
+                        table.headers.clone(),
+                        table.totals_row,
+                    )
+                    .map_err(|error| {
+                        calamine::Error::Io(std::io::Error::other(error.to_string()))
+                    })?;
+            }
+        }
 
         let prev_index_mode = engine.config.sheet_index_mode;
         engine.set_sheet_index_mode(formualizer_eval::engine::SheetIndexMode::Lazy);

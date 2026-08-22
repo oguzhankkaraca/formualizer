@@ -2,14 +2,14 @@
     "schema":  "formualizer.excel-oracle.snapshot/v1",
     "case_id":  "criteria-implicit-intersection",
     "provenance":  {
-                       "generated_at_utc":  "2026-08-22T08:23:59.4626039Z",
+                       "generated_at_utc":  "2026-08-22T08:28:18.8003829Z",
                        "generator":  "tools/excel-oracle/recalculate_excel.ps1",
                        "excel_version":  "16.0",
                        "excel_file_version":  "16.0.20228.20188",
                        "excel_executable":  "C:\\Program Files\\Microsoft Office\\Root\\Office16\\EXCEL.EXE",
                        "culture":  "en-US",
-                       "case_sha256":  "e6d12a956cef6d7cd8a7ec0701745d373cb7a5076049235030cdcdec2ca3abfe",
-                       "workbook_sha256":  "21a33562a191b15747d3d8dd9865bc94f0ee7c73c8807673c6b85c354d4c998b",
+                       "case_sha256":  "0c23557cc78d3c726b47253f7e48562ef80f2fa501fef319b823fd01a9c0c4f5",
+                       "workbook_sha256":  "fee4960c2ead5c860f9189e3a9632bdde3d3ca1c60498dad6cdc91c845b14389",
                        "date_system":  "1900",
                        "calculation":  {
                                            "iterate":  false,

@@ -12,6 +12,21 @@ function Release-ComObject {
     }
 }
 
+function Get-NormalizedTextSha256 {
+    param([string]$Path)
+
+    $text = [System.IO.File]::ReadAllText($Path).TrimStart([char]0xFEFF)
+    $normalized = $text.Replace("`r`n", "`n").Replace("`r", "`n")
+    $bytes = [System.Text.UTF8Encoding]::new($false).GetBytes($normalized)
+    $sha256 = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        ([System.BitConverter]::ToString($sha256.ComputeHash($bytes))).Replace("-", "").ToLowerInvariant()
+    }
+    finally {
+        $sha256.Dispose()
+    }
+}
+
 function Set-OracleCell {
     param(
         [object]$Worksheet,
@@ -198,7 +213,7 @@ function Invoke-ExcelOracleCase {
                 excel_file_version = $excelFileVersion
                 excel_executable   = $excelExecutable
                 culture            = [System.Globalization.CultureInfo]::CurrentCulture.Name
-                case_sha256        = (Get-FileHash -Algorithm SHA256 $resolvedCase).Hash.ToLowerInvariant()
+                case_sha256        = Get-NormalizedTextSha256 $resolvedCase
                 workbook_sha256    = (Get-FileHash -Algorithm SHA256 $workbookPath).Hash.ToLowerInvariant()
                 date_system        = [string]$case.workbook.date_system
                 calculation        = $case.workbook.calculation

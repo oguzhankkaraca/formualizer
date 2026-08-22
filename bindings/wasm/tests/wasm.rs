@@ -444,6 +444,55 @@ fn test_workbook_sheet_eval() {
 }
 
 #[wasm_bindgen_test]
+fn test_ui_window_and_user_input_contract() {
+    let wb = Workbook::new(None).unwrap();
+    wb.add_sheet("Sheet1".to_string()).unwrap();
+
+    let before: Object = wb.state_stamp_js().unwrap().into();
+    wb.set_user_input("Sheet1".to_string(), 1, 1, "21".to_string())
+        .unwrap();
+    wb.set_user_input("Sheet1".to_string(), 1, 2, "=A1*2".to_string())
+        .unwrap();
+    let after_edit: Object = wb.state_stamp_js().unwrap().into();
+    assert_ne!(
+        js_get_string(&before, "mutationRevision"),
+        js_get_string(&after_edit, "mutationRevision")
+    );
+
+    wb.evaluate_all().unwrap();
+    let after_recalc: Object = wb.state_stamp_js().unwrap().into();
+    assert!(
+        js_get_string(&after_recalc, "recalcEpoch")
+            .parse::<u64>()
+            .unwrap()
+            > js_get_string(&after_edit, "recalcEpoch")
+                .parse::<u64>()
+                .unwrap()
+    );
+
+    let window = Object::new();
+    set_prop(&window, "sheet", JsValue::from_str("Sheet1"));
+    set_prop(&window, "startRow", JsValue::from_f64(1.0));
+    set_prop(&window, "startColumn", JsValue::from_f64(1.0));
+    set_prop(&window, "endRow", JsValue::from_f64(1.0));
+    set_prop(&window, "endColumn", JsValue::from_f64(2.0));
+    let page: Object = wb.read_cell_window_js(window.into(), None).unwrap().into();
+    let items: js_sys::Array = js_get(&page, "items").into();
+    assert_eq!(items.length(), 2);
+
+    let first: Object = items.get(0).into();
+    let first_address: Object = js_get(&first, "address").into();
+    assert_eq!(js_get_f64(&first_address, "row"), 1.0);
+    assert_eq!(js_get_f64(&first_address, "column"), 1.0);
+    assert_eq!(js_get_f64(&first, "value"), 21.0);
+
+    let second: Object = items.get(1).into();
+    assert_eq!(js_get_string(&second, "formula"), "=A1 * 2");
+    assert_eq!(js_get_f64(&second, "value"), 42.0);
+    assert!(js_get(&page, "nextOffset").is_null());
+}
+
+#[wasm_bindgen_test]
 fn test_workbook_from_xlsx_bytes_evaluates_formula() {
     let bytes = build_fixture_xlsx_bytes();
     let wb = Workbook::from_xlsx_bytes(bytes).unwrap();

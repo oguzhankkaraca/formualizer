@@ -16,6 +16,7 @@ const JS_MAX_SAFE_INTEGER: f64 = 9_007_199_254_740_991.0;
 
 const CELL_ADDRESS_KEYS: &[&str] = &["sheet", "row", "column"];
 const RANGE_AREA_KEYS: &[&str] = &["sheet", "startRow", "startColumn", "endRow", "endColumn"];
+const CELL_WINDOW_KEYS: &[&str] = &["sheet", "startRow", "startColumn", "endRow", "endColumn"];
 const SNAPSHOT_OPTION_KEYS: &[&str] = &["includeValues"];
 const PRECEDENT_OPTION_KEYS: &[&str] = &["maxLinks", "maxWork"];
 const DEPENDENTS_OPTION_KEYS: &[&str] = &["maxResults", "maxWork"];
@@ -29,6 +30,7 @@ const TRACE_OPTION_KEYS: &[&str] = &[
     "includeValues",
 ];
 const RANGE_PAGE_OPTION_KEYS: &[&str] = &["offset", "limit", "includeValues", "expectedStamp"];
+const CELL_WINDOW_OPTION_KEYS: &[&str] = &["includeValues", "expectedStamp"];
 const STATE_STAMP_KEYS: &[&str] = &["mutationRevision", "recalcEpoch"];
 
 #[derive(Clone, Copy)]
@@ -102,6 +104,16 @@ impl TryFrom<JsRangeArea> for RangeArea {
         )
         .map_err(|error| validation_error(ValidationKind::Address, format!("range area: {error}")))
     }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct JsCellWindow {
+    sheet: String,
+    start_row: u32,
+    start_column: u32,
+    end_row: u32,
+    end_column: u32,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -312,6 +324,38 @@ fn range_page_options(raw: Option<JsValue>) -> Result<RangePageOptions, JsValue>
     if let Some(value) = raw.limit {
         options = options.with_limit(value);
     }
+    if let Some(value) = raw.include_values {
+        options = options.with_include_values(value);
+    }
+    if let Some(value) = raw.expected_stamp {
+        options = options.with_expected_stamp(value.try_into()?);
+    }
+    Ok(options)
+}
+
+fn cell_window_options(raw: Option<JsValue>) -> Result<RangePageOptions, JsValue> {
+    if let Some(value) = raw.as_ref()
+        && !value.is_null()
+        && !value.is_undefined()
+    {
+        reject_unknown_keys(value, "cell window options", CELL_WINDOW_OPTION_KEYS)
+            .map_err(|error| validation_error(ValidationKind::Options, js_error_message(error)))?;
+        let expected_stamp = js_sys::Reflect::get(value, &JsValue::from_str("expectedStamp"))
+            .map_err(|_| {
+                validation_error(
+                    ValidationKind::Options,
+                    "cell window options: could not read expectedStamp",
+                )
+            })?;
+        if !expected_stamp.is_null() && !expected_stamp.is_undefined() {
+            reject_unknown_keys(&expected_stamp, "expectedStamp", STATE_STAMP_KEYS).map_err(
+                |error| validation_error(ValidationKind::Options, js_error_message(error)),
+            )?;
+        }
+    }
+    let raw: JsRangePageOptions =
+        parse_options(raw, "cell window options", CELL_WINDOW_OPTION_KEYS)?;
+    let mut options = RangePageOptions::default();
     if let Some(value) = raw.include_values {
         options = options.with_include_values(value);
     }
@@ -840,6 +884,90 @@ fn map_inspect_error(error: InspectError) -> JsValue {
 
 #[wasm_bindgen]
 impl Workbook {
+    #[wasm_bindgen(js_name = "stateStamp")]
+    pub fn state_stamp_js(&self) -> Result<JsValue, JsValue> {
+        let workbook_arc = self.inner_arc();
+        let workbook = workbook_arc
+            .read()
+            .map_err(|_| js_error("failed to lock workbook for read"))?;
+        let stamp = workbook.engine().inspection_state_stamp();
+        report_to_js(&WireStateStamp::from(stamp))
+    }
+
+    #[wasm_bindgen(js_name = "readCellWindow")]
+    pub fn read_cell_window_js(
+        &self,
+        window: JsValue,
+        options: Option<JsValue>,
+    ) -> Result<JsValue, JsValue> {
+        let window: JsCellWindow = parse_object(
+            window,
+            "cell window",
+            CELL_WINDOW_KEYS,
+            ValidationKind::Address,
+        )?;
+        let rows = window
+            .end_row
+            .checked_sub(window.start_row)
+            .and_then(|value| value.checked_add(1))
+            .ok_or_else(|| {
+                validation_error(
+                    ValidationKind::Address,
+                    "cell window: endRow must be greater than or equal to startRow",
+                )
+            })?;
+        let columns = window
+            .end_column
+            .checked_sub(window.start_column)
+            .and_then(|value| value.checked_add(1))
+            .ok_or_else(|| {
+                validation_error(
+                    ValidationKind::Address,
+                    "cell window: endColumn must be greater than or equal to startColumn",
+                )
+            })?;
+        let count = u64::from(rows) * u64::from(columns);
+        let limit = u32::try_from(count).map_err(|_| {
+            validation_error(
+                ValidationKind::Address,
+                "cell window: at most 4,294,967,295 cells are supported",
+            )
+        })?;
+        let area = RangeArea::new(
+            window.sheet,
+            Some(window.start_row),
+            Some(window.start_column),
+            Some(window.end_row),
+            Some(window.end_column),
+        )
+        .map_err(|error| {
+            validation_error(ValidationKind::Address, format!("cell window: {error}"))
+        })?;
+        let options = cell_window_options(options)?.with_limit(limit);
+        let workbook_arc = self.inner_arc();
+        let workbook = workbook_arc
+            .read()
+            .map_err(|_| js_error("failed to lock workbook for read"))?;
+        let report = workbook
+            .engine()
+            .range_page(&area, &options)
+            .map_err(map_inspect_error)?;
+        let wire = WireRangePage {
+            stamp: report.stamp.into(),
+            declared: (&report.declared).into(),
+            resolved: report.resolved.as_ref().map(Into::into),
+            total: report.total as f64,
+            offset: report.offset as f64,
+            items: report
+                .items
+                .iter()
+                .map(wire_cell)
+                .collect::<Result<_, JsValue>>()?,
+            next_offset: report.next_offset.map(|offset| offset as f64),
+        };
+        report_to_js(&wire)
+    }
+
     /// Return an owned, read-only snapshot of one cell.
     #[wasm_bindgen(js_name = "inspectCell")]
     pub fn inspect_cell_js(

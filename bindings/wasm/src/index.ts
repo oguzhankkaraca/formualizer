@@ -536,6 +536,21 @@ export interface RangePageOptions {
   expectedStamp?: StateStamp;
 }
 
+export interface CellWindowRequest {
+  sheet: string;
+  startRow: number;
+  startColumn: number;
+  endRow: number;
+  endColumn: number;
+}
+
+export interface CellWindowOptions {
+  includeValues?: boolean;
+  expectedStamp?: StateStamp;
+}
+
+export type CellWindowSnapshot = RangePage;
+
 /** Stable machine-readable properties carried by thrown inspection errors. */
 export interface InspectJsError extends Error {
   kind: 'InspectError';
@@ -633,6 +648,12 @@ export interface CycleTelemetry {
 }
 
 export interface WorkbookApi extends wasm.Workbook {
+  readCellWindow(
+    window: CellWindowRequest,
+    options?: CellWindowOptions,
+  ): CellWindowSnapshot;
+  setUserInput(sheet: string, row: number, column: number, input: string): void;
+  stateStamp(): StateStamp;
   registerFunction(
     name: string,
     callback: (...args: CellValue[]) => CellValue,

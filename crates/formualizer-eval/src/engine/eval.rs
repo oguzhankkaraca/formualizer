@@ -4875,6 +4875,13 @@ where
         self.snapshot_id.load(std::sync::atomic::Ordering::Relaxed)
     }
 
+    pub fn inspection_state_stamp(&self) -> crate::engine::inspect::StateStamp {
+        crate::engine::inspect::StateStamp {
+            mutation_revision: self.inspection_mutation_revision(),
+            recalc_epoch: self.recalc_epoch,
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn used_axis_bounds_cache_stats(&self) -> (usize, usize, usize, usize) {
         self.used_axis_bounds_cache

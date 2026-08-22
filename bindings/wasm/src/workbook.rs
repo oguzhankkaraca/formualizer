@@ -378,6 +378,31 @@ pub(crate) fn js_to_literal(value: &JsValue) -> formualizer::LiteralValue {
     LiteralValue::Text(format!("{value:?}"))
 }
 
+fn user_input_to_literal(input: &str) -> formualizer::LiteralValue {
+    use formualizer::LiteralValue;
+
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return LiteralValue::Empty;
+    }
+    if trimmed.eq_ignore_ascii_case("true") {
+        return LiteralValue::Boolean(true);
+    }
+    if trimmed.eq_ignore_ascii_case("false") {
+        return LiteralValue::Boolean(false);
+    }
+    if let Ok(value) = trimmed.parse::<i64>() {
+        return LiteralValue::Int(value);
+    }
+    if let Ok(value) = trimmed.parse::<f64>() {
+        return LiteralValue::Number(value);
+    }
+    if let Some(text) = input.strip_prefix('\'') {
+        return LiteralValue::Text(text.to_string());
+    }
+    LiteralValue::Text(input.to_string())
+}
+
 pub(crate) enum BindingValue {
     Empty,
     Boolean(bool),
@@ -1148,6 +1173,32 @@ impl Workbook {
             .map_err(|_| js_error("failed to lock workbook for write"))?
             .set_formula(&sheet, row, col, &formula)
             .map_err(|e| js_error(format!("set_formula failed for {sheet}!R{row}C{col}: {e}")))
+    }
+
+    #[wasm_bindgen(js_name = "setUserInput")]
+    pub fn set_user_input(
+        &self,
+        sheet: String,
+        row: u32,
+        col: u32,
+        input: String,
+    ) -> Result<(), JsValue> {
+        validate_cell_coords(row, col)?;
+
+        let mut wb = self
+            .inner
+            .write()
+            .map_err(|_| js_error("failed to lock workbook for write"))?;
+        let result = if input.starts_with('=') {
+            wb.set_formula(&sheet, row, col, &input)
+        } else {
+            wb.set_value(&sheet, row, col, user_input_to_literal(&input))
+        };
+        result.map_err(|e| {
+            js_error(format!(
+                "set_user_input failed for {sheet}!R{row}C{col}: {e}"
+            ))
+        })
     }
 
     #[wasm_bindgen(js_name = "evaluateCell")]

@@ -155,11 +155,14 @@ parse(formula: string, dialect?: FormulaDialect): Promise<ASTNodeData>
 | `addSheet(name)` | Add a new sheet |
 | `sheetNames()` | List all sheet names |
 | `sheet(name)` | Get or create a Sheet facade |
-| `setValue(sheet, row, col, value)` | Set a cell value |
+| `setValue(sheet, row, col, value)` | Set a typed cell value |
 | `setFormula(sheet, row, col, formula)` | Set a cell formula |
+| `setUserInput(sheet, row, col, input)` | Apply raw spreadsheet input as a literal or formula |
 | `evaluateCell(sheet, row, col)` | Evaluate and return a cell's value |
 | `evaluateAll()` | Evaluate all dirty cells |
 | `evaluateCells(targets)` | Evaluate specific cells |
+| `readCellWindow(window, options?)` | Read a finite typed viewport in one call |
+| `stateStamp()` | Read the mutation/recalculation revision stamp |
 | `setChangelogEnabled(enabled)` | Enable/disable undo tracking |
 | `beginAction(description)` | Start a named action group |
 | `endAction()` | End the current action group |
@@ -170,6 +173,21 @@ parse(formula: string, dialect?: FormulaDialect): Promise<ASTNodeData>
 | `listFunctions()` | List registered custom function metadata |
 | `static fromJson(json)` | Load workbook from JSON string |
 | `static fromXlsxBytes(bytes)` | Load workbook from XLSX bytes via the Calamine read path |
+
+### UI window contract
+
+`readCellWindow` accepts a finite inclusive 1-based request:
+
+```typescript
+const page = wb.readCellWindow(
+  { sheet: 'Sheet1', startRow: 1, startColumn: 1, endRow: 40, endColumn: 20 },
+  { expectedStamp: wb.stateStamp() },
+);
+```
+
+It returns a row-major `items` array of typed cell snapshots, together with `stamp`, `resolved`,
+`total`, and `nextOffset`. The result is suitable for a Canvas, Handsontable, or custom grid
+adapter without reading cells individually.
 
 ### Sheet
 

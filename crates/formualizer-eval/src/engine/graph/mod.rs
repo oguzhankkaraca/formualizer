@@ -2812,6 +2812,10 @@ impl DependencyGraph {
         let _ = self.mark_dirty_many(&volatile_ids);
     }
 
+    pub(crate) fn volatile_vertex_count(&self) -> usize {
+        self.volatile_vertices.len()
+    }
+
     /// Re-marks members of iterating SCCs (and, via propagation, their
     /// dependents) dirty for the next evaluation cycle — the volatile-like
     /// redirty that keeps `CyclePolicy::Iterate` cells re-evaluating every

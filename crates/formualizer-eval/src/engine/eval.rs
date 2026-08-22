@@ -5624,15 +5624,21 @@ where
     /// Mark data edited: bump snapshot and set edited flag.
     /// Value-only edits keep the stable-topology schedule cache alive.
     pub fn mark_data_edited(&mut self) {
-        self.snapshot_id
+        let active_snapshot_id = self
+            .snapshot_id
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.lookup_index_cache
+            .retire_stale_snapshots(active_snapshot_id.wrapping_add(1));
         self.has_edited = true;
     }
 
     /// Mark a topology-changing edit: bump snapshot + topology epoch and invalidate cached schedules.
     pub fn mark_topology_edited(&mut self) {
-        self.snapshot_id
+        let active_snapshot_id = self
+            .snapshot_id
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.lookup_index_cache
+            .retire_stale_snapshots(active_snapshot_id.wrapping_add(1));
         self.invalidate_reusable_iterative_sccs();
         self.topology_epoch = self.topology_epoch.wrapping_add(1);
         self.graph.bump_topology_revision();

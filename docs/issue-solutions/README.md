@@ -5,7 +5,7 @@ This directory records the branch-level solutions ported to Formualizer v0.8.4, 
 ## Branch status
 
 | Branch | Status | Main reference |
-|---|---|---|
+| --- | --- | --- |
 | `fix/dependency-aware-scc-reuse` | Merged | [`001`](001-dependency-aware-scc-reuse.md) |
 | `test/lookup-cache-retirement-8.4` | Merged | [`002`](002-lookup-cache-retirement.md) |
 | `fix/port-named-range-bounds-8.4` | Merged | [`003`](003-named-range-concrete-bounds.md) |

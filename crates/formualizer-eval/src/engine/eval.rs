@@ -81,7 +81,7 @@ use formualizer_parse::{ASTNode, ASTNodeType, ExcelError, ExcelErrorKind};
 use rayon::ThreadPoolBuilder;
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
@@ -1007,6 +1007,7 @@ pub struct Engine<R> {
 
     // Runtime-cycle SCC evaluation telemetry (RFC #112, Stage 2)
     last_cycle_telemetry: CycleTelemetry,
+    last_recalc_telemetry: RecalcTelemetry,
 
     // C0 evaluation-resource observability. IDs are never reset or reused.
     next_evaluation_resource_request_id: u64,
@@ -2742,6 +2743,7 @@ where
             last_virtual_dep_telemetry: VirtualDepTelemetry::default(),
             virtual_dep_fallback_activations: 0,
             last_cycle_telemetry: CycleTelemetry::default(),
+            last_recalc_telemetry: RecalcTelemetry::default(),
             next_evaluation_resource_request_id: 1,
             evaluation_resource_request_depth: 0,
             active_evaluation_resource_request: None,
@@ -2903,6 +2905,7 @@ where
             last_virtual_dep_telemetry: VirtualDepTelemetry::default(),
             virtual_dep_fallback_activations: 0,
             last_cycle_telemetry: CycleTelemetry::default(),
+            last_recalc_telemetry: RecalcTelemetry::default(),
             next_evaluation_resource_request_id: 1,
             evaluation_resource_request_depth: 0,
             active_evaluation_resource_request: None,
@@ -2999,6 +3002,10 @@ where
     /// or when `enable_virtual_dep_telemetry` is off).
     pub fn last_cycle_telemetry(&self) -> &CycleTelemetry {
         &self.last_cycle_telemetry
+    }
+
+    pub fn last_recalc_telemetry(&self) -> &RecalcTelemetry {
+        &self.last_recalc_telemetry
     }
 
     /// Resource observations for the most recently completed public evaluation request.
@@ -5617,23 +5624,15 @@ where
     /// Mark data edited: bump snapshot and set edited flag.
     /// Value-only edits keep the stable-topology schedule cache alive.
     pub fn mark_data_edited(&mut self) {
-        let active_snapshot_id = self
-            .snapshot_id
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-            .wrapping_add(1);
-        self.lookup_index_cache
-            .retire_stale_snapshots(active_snapshot_id);
+        self.snapshot_id
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.has_edited = true;
     }
 
     /// Mark a topology-changing edit: bump snapshot + topology epoch and invalidate cached schedules.
     pub fn mark_topology_edited(&mut self) {
-        let active_snapshot_id = self
-            .snapshot_id
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-            .wrapping_add(1);
-        self.lookup_index_cache
-            .retire_stale_snapshots(active_snapshot_id);
+        self.snapshot_id
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.invalidate_reusable_iterative_sccs();
         self.topology_epoch = self.topology_epoch.wrapping_add(1);
         self.graph.bump_topology_revision();

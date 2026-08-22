@@ -45,6 +45,8 @@ export interface ViewportSnapshot {
 export interface WorkbookSnapshot {
   sheetNames: string[];
   stamp: RevisionStamp;
+  evaluationMode: 'iterate';
+  telemetry: CycleTelemetry;
 }
 
 export interface CycleTelemetry {
@@ -69,6 +71,7 @@ export interface EvaluationResult {
 
 export interface MutationResult {
   stamp: RevisionStamp;
+  telemetry: CycleTelemetry;
 }
 
 export interface EvaluateRequest {

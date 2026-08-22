@@ -12,6 +12,7 @@ import { createFormualizerWorkerBackend, type SpreadsheetBackend } from './backe
 import type {
   CellSnapshot,
   CellWindowRequest,
+  CycleTelemetry,
   RevisionStamp,
   ViewportSnapshot,
   WorkbookSnapshot,
@@ -66,6 +67,7 @@ export default function App() {
   const refreshSequence = useRef(0);
   const stampRef = useRef<RevisionStamp | null>(null);
   const [workbook, setWorkbook] = useState<WorkbookSnapshot | null>(null);
+  const [telemetry, setTelemetry] = useState<CycleTelemetry | null>(null);
   const [snapshot, setSnapshot] = useState<ViewportSnapshot | null>(null);
   const [selected, setSelected] = useState<SelectedCell>({
     sheet: 'Sheet1',
@@ -138,6 +140,7 @@ export default function App() {
       const nextSheet = nextWorkbook.sheetNames[0] ?? 'Sheet1';
       stampRef.current = nextWorkbook.stamp;
       setWorkbook(nextWorkbook);
+      setTelemetry(nextWorkbook.telemetry);
       setSnapshot(null);
       setStartRow(1);
       setStartColumn(1);
@@ -249,6 +252,7 @@ export default function App() {
           true,
         );
         stampRef.current = result.stamp;
+        setTelemetry(result.telemetry);
         setEditing(false);
         setDraft(input);
         await refreshWindow(selected.sheet, startRow, startColumn, result.stamp);
@@ -281,6 +285,7 @@ export default function App() {
       try {
         const result = await backend[operation]();
         stampRef.current = result.stamp;
+        setTelemetry(result.telemetry);
         await refreshWindow(selected.sheet, startRow, startColumn, result.stamp);
       } catch (error) {
         setStatus('error');
@@ -443,6 +448,10 @@ export default function App() {
             </button>
           ))}
         </div>
+        <span className="telemetry">
+          iterate · {telemetry?.convergedSccs ?? 0}/{telemetry?.iteratedSccs ?? 0} SCC ·{' '}
+          {telemetry?.cappedSccs ?? 0} capped · {telemetry?.settlePassesTotal ?? 0} passes
+        </span>
         <span className="revision">
           rev {stamp?.mutationRevision ?? '—'} · recalc {stamp?.recalcEpoch ?? '—'}
         </span>

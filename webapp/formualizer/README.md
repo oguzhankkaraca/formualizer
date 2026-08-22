@@ -18,6 +18,7 @@ pnpm --dir webapp/formualizer dev
 
 The current protocol supports:
 
+- iterative calculation with runtime cycle detection (`100` passes, `0.001` threshold);
 - empty workbook creation with a default `Sheet1`;
 - XLSX byte loading;
 - typed viewport reads through `readCellWindow`;

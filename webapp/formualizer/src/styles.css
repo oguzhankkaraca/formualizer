@@ -223,9 +223,17 @@ button {
   font-weight: 600;
 }
 
+.telemetry,
 .revision {
-  margin-left: auto;
   color: #64748b;
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
   font-size: 11px;
+}
+
+.telemetry {
+  margin-left: auto;
+}
+
+.revision {
+  margin-left: 0;
 }

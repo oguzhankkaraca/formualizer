@@ -28,11 +28,17 @@ interface FormualizerWorkbook {
 }
 
 interface FormualizerWorkbookConstructor {
-  new (): FormualizerWorkbook;
-  fromXlsxBytes(bytes: Uint8Array): FormualizerWorkbook;
+  new (options?: unknown): FormualizerWorkbook;
+  fromXlsxBytesWithOptions(bytes: Uint8Array, options: unknown): FormualizerWorkbook;
 }
 
 const workbookConstructor = Workbook as unknown as FormualizerWorkbookConstructor;
+const ITERATIVE_OPTIONS = {
+  cycleDetection: 'runtime',
+  cyclePolicy: 'iterate',
+  iterateMaxIterations: 100,
+  iterateMaxChange: 0.001,
+};
 
 function normalizeError(error: unknown): WorkerError {
   if (error && typeof error === 'object') {
@@ -90,13 +96,16 @@ class FormualizerWorkerRuntime {
   private async execute(request: WorkerRequest): Promise<unknown> {
     if (request.type === 'createWorkbook') {
       await this.ensureInitialized();
-      this.workbook = new workbookConstructor();
+      this.workbook = new workbookConstructor(ITERATIVE_OPTIONS);
       this.workbook.addSheet('Sheet1');
       return this.workbookSnapshot();
     }
     if (request.type === 'loadXlsx') {
       await this.ensureInitialized();
-      this.workbook = workbookConstructor.fromXlsxBytes(new Uint8Array(request.bytes));
+      this.workbook = workbookConstructor.fromXlsxBytesWithOptions(
+        new Uint8Array(request.bytes),
+        ITERATIVE_OPTIONS,
+      );
       this.workbook.evaluateAll();
       return this.workbookSnapshot();
     }
@@ -139,6 +148,8 @@ class FormualizerWorkerRuntime {
     return {
       sheetNames: Array.from(workbook.sheetNames()) as string[],
       stamp: workbook.stateStamp() as RevisionStamp,
+      evaluationMode: 'iterate',
+      telemetry: workbook.lastCycleTelemetry(),
     };
   }
 
@@ -170,7 +181,10 @@ class FormualizerWorkerRuntime {
   }
 
   private mutationResult(workbook: FormualizerWorkbook): MutationResult {
-    return { stamp: workbook.stateStamp() as RevisionStamp };
+    return {
+      stamp: workbook.stateStamp() as RevisionStamp,
+      telemetry: workbook.lastCycleTelemetry(),
+    };
   }
 }
 

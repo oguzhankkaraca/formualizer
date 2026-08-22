@@ -1,8 +1,8 @@
 # Issue Solution: Structured and Table-Backed Defined Names
 
 - **Branch:** `feat/structured-table-defined-names`
-- **Status:** Ready for merge; **not merged into `main` at the time of writing**
-- **PR status:** The `pull/new/...` URL is only a PR creation URL. `gh pr list --head feat/structured-table-defined-names` returned no PR.
+- **Status:** Merged into `main` via PR #8
+- **PR:** https://github.com/oguzhankkaraca/formualizer/pull/8
 - **Commits:** `d4a542f4`, `ab8bc862`, `f9e820f1`, `80018fb1`, `6d4ab4fe`
 
 ## Problem

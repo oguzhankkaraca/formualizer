@@ -13,7 +13,7 @@ This directory records the branch-level solutions ported to Formualizer v0.8.4, 
 | `test/excel-oracle-harness` | Merged | [`005`](005-excel-oracle-harness.md) |
 | `fix/criteria-implicit-intersection` | Merged | [`006`](006-criteria-implicit-intersection.md) |
 | `feat/calamine-native-tables` | Merged | [`007`](007-calamine-native-table-import.md) |
-| `feat/structured-table-defined-names` | Ready; not merged | [`008`](008-structured-table-backed-defined-names.md) |
+| `feat/structured-table-defined-names` | Merged via PR #8 | [`008`](008-structured-table-backed-defined-names.md) |
 
 ## Remaining problems
 

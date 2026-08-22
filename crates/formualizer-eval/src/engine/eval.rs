@@ -1919,6 +1919,8 @@ pub struct SccDirtyRecord {
     pub dynamic_member_count: usize,
     pub volatile_member_samples: Vec<String>,
     pub dynamic_member_samples: Vec<String>,
+    pub member_sheet_counts: Vec<(String, usize)>,
+    pub static_member_samples: Vec<String>,
     pub converged: bool,
     pub exactly_stable: bool,
     pub capped: bool,
@@ -3884,21 +3886,30 @@ where
                 .count();
             let mut volatile_member_samples = Vec::new();
             let mut dynamic_member_samples = Vec::new();
+            let mut static_member_samples = Vec::new();
+            let mut member_sheet_counts = BTreeMap::<String, usize>::new();
             for vertex in &scc.members {
                 let Some(cell) = self.graph.get_cell_ref(*vertex) else {
                     continue;
                 };
+                let sheet_name = self.graph.sheet_name(cell.sheet_id).to_string();
+                *member_sheet_counts.entry(sheet_name.clone()).or_default() += 1;
                 let address = format!(
                     "{}!{}{}",
-                    self.graph.sheet_name(cell.sheet_id),
+                    sheet_name,
                     Self::col_to_letters(cell.coord.col() + 1),
                     cell.coord.row() + 1,
                 );
-                if self.graph.is_volatile(*vertex) && volatile_member_samples.len() < 32 {
+                let is_volatile = self.graph.is_volatile(*vertex);
+                let is_dynamic = self.graph.is_dynamic(*vertex);
+                if is_volatile && volatile_member_samples.len() < 32 {
                     volatile_member_samples.push(address.clone());
                 }
-                if self.graph.is_dynamic(*vertex) && dynamic_member_samples.len() < 32 {
-                    dynamic_member_samples.push(address);
+                if is_dynamic && dynamic_member_samples.len() < 32 {
+                    dynamic_member_samples.push(address.clone());
+                }
+                if !is_volatile && !is_dynamic && static_member_samples.len() < 32 {
+                    static_member_samples.push(address);
                 }
             }
             per_scc.push(SccDirtyRecord {
@@ -3909,6 +3920,8 @@ where
                 dynamic_member_count,
                 volatile_member_samples,
                 dynamic_member_samples,
+                member_sheet_counts: member_sheet_counts.into_iter().collect(),
+                static_member_samples,
                 converged: scc.converged,
                 exactly_stable: scc.exactly_stable,
                 capped: scc.capped,

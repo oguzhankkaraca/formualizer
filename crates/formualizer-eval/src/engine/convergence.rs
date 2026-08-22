@@ -27,6 +27,10 @@ use formualizer_common::{
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct ConvergenceOutcome {
     pub converged: bool,
+    /// The values are semantically identical, not merely within the configured
+    /// iterative tolerance. This is the minimum fixed-point evidence needed
+    /// before a converged SCC can be considered for cross-recalc reuse.
+    pub exactly_stable: bool,
     /// `|Δ|` for numeric-class comparisons (feeds telemetry
     /// `max_abs_delta_at_stop`); `None` for non-numeric pairs and for
     /// NaN-involved comparisons (no meaningful delta).
@@ -39,6 +43,7 @@ impl ConvergenceOutcome {
     fn converged() -> Self {
         Self {
             converged: true,
+            exactly_stable: true,
             abs_delta: None,
             nan_converged: false,
         }
@@ -46,6 +51,7 @@ impl ConvergenceOutcome {
     fn not_converged() -> Self {
         Self {
             converged: false,
+            exactly_stable: false,
             abs_delta: None,
             nan_converged: false,
         }
@@ -87,6 +93,7 @@ pub(crate) fn values_converged(
             if a.to_bits() == b.to_bits() {
                 return ConvergenceOutcome {
                     converged: true,
+                    exactly_stable: false,
                     abs_delta: None,
                     nan_converged: true,
                 };
@@ -98,6 +105,7 @@ pub(crate) fn values_converged(
             // Strict `<`, absolute (Excel semantics). A non-finite delta
             // (Inf-Inf etc.) is NaN or Inf and correctly fails this test.
             converged: delta < max_change,
+            exactly_stable: delta == 0.0,
             abs_delta: Some(delta),
             nan_converged: false,
         };
@@ -141,6 +149,7 @@ pub(crate) fn values_converged(
                     if !e.converged {
                         return ConvergenceOutcome::not_converged();
                     }
+                    out.exactly_stable &= e.exactly_stable;
                     out.nan_converged |= e.nan_converged;
                     out.abs_delta = match (out.abs_delta, e.abs_delta) {
                         (Some(x), Some(y)) => Some(x.max(y)),

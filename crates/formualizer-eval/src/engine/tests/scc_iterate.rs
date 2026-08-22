@@ -239,6 +239,113 @@ fn arithmetic_routing_converges_to_the_closed_form_fixed_point() {
         "got {} passes",
         t.settle_passes_total
     );
+
+    // Tolerance convergence alone is not a reuse proof: the SCC continues
+    // from its sub-threshold residual on the next recalculation.
+    assert_eq!(t.exactly_stable_sccs, 0);
+    engine.evaluate_all().unwrap();
+    assert_eq!(engine.last_cycle_telemetry().iterated_sccs, 1);
+    assert_eq!(engine.last_cycle_telemetry().exactly_stable_sccs, 0);
+}
+
+#[test]
+fn exact_fixed_point_reuses_until_a_dependency_changes() {
+    // This pair reaches the external cap A1 in finitely many passes and then
+    // proves an exact fixed point with a final unchanged full pass.
+    let mut engine = iterate_engine(100, 0.001);
+    set_value(&mut engine, "Sheet1", 1, 1, LiteralValue::Number(3.0)); // A1
+    set_formula(&mut engine, "Sheet1", 1, 2, "=MIN(A1,C1+1)"); // B1
+    set_formula(&mut engine, "Sheet1", 1, 3, "=B1"); // C1
+    engine.evaluate_all().unwrap();
+    assert_eq!(num(&engine, "Sheet1", 1, 2), 3.0);
+    assert_eq!(num(&engine, "Sheet1", 1, 3), 3.0);
+    assert_eq!(engine.last_cycle_telemetry().exactly_stable_sccs, 1);
+    assert_eq!(
+        engine
+            .last_recalc_telemetry()
+            .scc_units_reusable_after_recalc,
+        1
+    );
+
+    engine.evaluate_all().unwrap();
+    assert_eq!(engine.last_cycle_telemetry().iterated_sccs, 0);
+    assert_eq!(engine.last_recalc_telemetry().scc_units_considered, 1);
+    assert_eq!(engine.last_recalc_telemetry().scc_units_reused, 1);
+    assert_eq!(engine.last_recalc_telemetry().scc_units_invalidated, 0);
+
+    // An unrelated value edit leaves the SCC proof valid.
+    set_value(&mut engine, "Sheet1", 1, 4, LiteralValue::Number(9.0));
+    engine.evaluate_all().unwrap();
+    assert_eq!(engine.last_cycle_telemetry().iterated_sccs, 0);
+    assert_eq!(engine.last_recalc_telemetry().scc_units_reused, 1);
+
+    // Existing graph propagation carries a predecessor edit into both SCC
+    // members; the proof is discarded and the generic solver runs again.
+    set_value(&mut engine, "Sheet1", 1, 1, LiteralValue::Number(5.0));
+    engine.evaluate_all().unwrap();
+    assert_eq!(num(&engine, "Sheet1", 1, 2), 5.0);
+    assert_eq!(num(&engine, "Sheet1", 1, 3), 5.0);
+    assert_eq!(engine.last_cycle_telemetry().iterated_sccs, 1);
+    assert_eq!(engine.last_recalc_telemetry().scc_units_invalidated, 1);
+    assert_eq!(
+        engine
+            .last_recalc_telemetry()
+            .scc_units_reusable_after_recalc,
+        1
+    );
+}
+
+#[test]
+fn independent_exact_fixed_point_remains_reusable() {
+    let mut engine = iterate_engine(100, 0.001);
+    set_value(&mut engine, "Sheet1", 1, 1, LiteralValue::Number(3.0));
+    set_formula(&mut engine, "Sheet1", 1, 2, "=MIN(A1,C1+1)");
+    set_formula(&mut engine, "Sheet1", 1, 3, "=B1");
+    set_value(&mut engine, "Sheet1", 1, 4, LiteralValue::Number(4.0));
+    set_formula(&mut engine, "Sheet1", 1, 5, "=MIN(D1,F1+1)");
+    set_formula(&mut engine, "Sheet1", 1, 6, "=E1");
+    engine.evaluate_all().unwrap();
+    assert_eq!(engine.last_cycle_telemetry().exactly_stable_sccs, 2);
+
+    set_value(&mut engine, "Sheet1", 1, 1, LiteralValue::Number(5.0));
+    engine.evaluate_all().unwrap();
+    assert_eq!(num(&engine, "Sheet1", 1, 2), 5.0);
+    assert_eq!(num(&engine, "Sheet1", 1, 5), 4.0);
+    assert_eq!(engine.last_cycle_telemetry().iterated_sccs, 1);
+    assert_eq!(engine.last_recalc_telemetry().scc_units_considered, 2);
+    assert_eq!(engine.last_recalc_telemetry().scc_units_invalidated, 1);
+    assert_eq!(engine.last_recalc_telemetry().scc_units_reused, 1);
+    assert_eq!(
+        engine
+            .last_recalc_telemetry()
+            .scc_units_reusable_after_recalc,
+        2
+    );
+}
+
+#[test]
+fn exact_fixed_point_invalidates_on_formula_topology_and_cycle_config_changes() {
+    let mut engine = iterate_engine(100, 0.001);
+    set_value(&mut engine, "Sheet1", 1, 1, LiteralValue::Number(4.0));
+    set_formula(&mut engine, "Sheet1", 1, 2, "=MIN(A1,C1+1)");
+    set_formula(&mut engine, "Sheet1", 1, 3, "=B1");
+    engine.evaluate_all().unwrap();
+    assert_eq!(engine.last_cycle_telemetry().exactly_stable_sccs, 1);
+
+    set_formula(&mut engine, "Sheet1", 1, 2, "=MIN(A1,C1+2)");
+    engine.evaluate_all().unwrap();
+    assert_eq!(engine.last_cycle_telemetry().iterated_sccs, 1);
+    assert_eq!(engine.last_recalc_telemetry().scc_units_invalidated, 1);
+
+    engine.add_sheet("Other").unwrap();
+    engine.evaluate_all().unwrap();
+    assert_eq!(engine.last_cycle_telemetry().iterated_sccs, 1);
+    assert_eq!(engine.last_recalc_telemetry().scc_units_invalidated, 1);
+
+    engine.config.cycle = CycleConfig::iterate(100, 0.01);
+    engine.evaluate_all().unwrap();
+    assert_eq!(engine.last_cycle_telemetry().iterated_sccs, 1);
+    assert_eq!(engine.last_recalc_telemetry().scc_units_invalidated, 1);
 }
 
 /* ───────────────────── §7.5 genuinely divergent pair ─────────────────── */
@@ -262,6 +369,12 @@ fn divergent_pair_caps_with_deterministic_values() {
     assert_eq!(t.settle_passes_total, 10);
     // Final round: both members moved by 2.
     assert_eq!(t.max_abs_delta_at_stop, 2.0);
+    assert_eq!(
+        engine
+            .last_recalc_telemetry()
+            .scc_units_reusable_after_recalc,
+        0
+    );
 }
 
 /* ──────────── §7.6 accumulator (`max_iterations: 1`, §4 seed) ─────────── */
@@ -472,6 +585,12 @@ fn volatile_inside_cycle_is_pass_stable_and_redirties_next_recalc() {
         "pass 2 must observe the same NOW() sample and converge immediately"
     );
     assert_eq!(t.max_abs_delta_at_stop, 0.0);
+    assert_eq!(
+        engine
+            .last_recalc_telemetry()
+            .scc_units_reusable_after_recalc,
+        0
+    );
 
     // Volatile redirty: the SCC re-evaluates on the next recalc (and the
     // fixed clock keeps the value identical).
@@ -894,15 +1013,15 @@ fn one_delta_per_member_per_recalc_under_iteration() {
     assert_eq!(delta.changed_cells, expected);
     assert_eq!(num(&engine, "Sheet1", 1, 1), 39.0);
 
-    // A converged-and-stable SCC re-runs each recalc but produces NO deltas
-    // when the final values don't move.
+    // An exact-stable SCC produces no delta and is reused on the next recalc.
     let mut engine = iterate_engine(100, 0.001);
     set_formula(&mut engine, "Sheet1", 1, 1, "=IF(B1>2,7,B1+1)");
     set_formula(&mut engine, "Sheet1", 1, 2, "=A1");
     let (_res, delta) = engine.evaluate_all_with_delta().unwrap();
     assert_eq!(delta.changed_cells.len(), 2);
     let (_res, delta) = engine.evaluate_all_with_delta().unwrap();
-    assert_eq!(engine.last_cycle_telemetry().iterated_sccs, 1);
+    assert_eq!(engine.last_cycle_telemetry().iterated_sccs, 0);
+    assert_eq!(engine.last_recalc_telemetry().scc_units_reused, 1);
     assert!(
         delta.changed_cells.is_empty(),
         "stable values must not re-delta: {:?}",

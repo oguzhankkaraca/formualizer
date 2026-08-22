@@ -50,6 +50,28 @@ function Set-OracleCell {
     }
 }
 
+function Add-OracleTable {
+    param(
+        [object]$Worksheet,
+        [object]$Spec
+    )
+
+    $range = $Worksheet.Range([string]$Spec.range)
+    $tables = $Worksheet.ListObjects
+    $table = $null
+    try {
+        $hasHeaders = if ([bool]$Spec.header_row) { 1 } else { 2 }
+        $table = $tables.Add(1, $range, [System.Type]::Missing, $hasHeaders)
+        $table.Name = [string]$Spec.name
+        $table.ShowTotals = [bool]$Spec.totals_row
+    }
+    finally {
+        Release-ComObject $table
+        Release-ComObject $tables
+        Release-ComObject $range
+    }
+}
+
 function Get-OracleResult {
     param(
         [object]$Workbook,
@@ -171,7 +193,19 @@ function Invoke-ExcelOracleCase {
             try {
                 $worksheet.Name = [string]$sheetSpec.name
                 foreach ($cellSpec in $sheetSpec.cells) {
-                    Set-OracleCell -Worksheet $worksheet -Spec $cellSpec
+                    if ($cellSpec.kind -notin @("formula", "formula_iie")) {
+                        Set-OracleCell -Worksheet $worksheet -Spec $cellSpec
+                    }
+                }
+                if ($sheetSpec.PSObject.Properties.Name -contains "tables") {
+                    foreach ($tableSpec in $sheetSpec.tables) {
+                        Add-OracleTable -Worksheet $worksheet -Spec $tableSpec
+                    }
+                }
+                foreach ($cellSpec in $sheetSpec.cells) {
+                    if ($cellSpec.kind -in @("formula", "formula_iie")) {
+                        Set-OracleCell -Worksheet $worksheet -Spec $cellSpec
+                    }
                 }
             }
             finally {

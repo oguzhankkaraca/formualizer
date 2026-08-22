@@ -2,14 +2,14 @@
     "schema":  "formualizer.excel-oracle.snapshot/v1",
     "case_id":  "error-normalization",
     "provenance":  {
-                       "generated_at_utc":  "2026-08-22T08:02:36.8366901Z",
+                       "generated_at_utc":  "2026-08-22T08:28:16.2634472Z",
                        "generator":  "tools/excel-oracle/recalculate_excel.ps1",
                        "excel_version":  "16.0",
                        "excel_file_version":  "16.0.20228.20188",
                        "excel_executable":  "C:\\Program Files\\Microsoft Office\\Root\\Office16\\EXCEL.EXE",
                        "culture":  "en-US",
                        "case_sha256":  "33a56ba14883c99b2820f607a96f6374343c5fa1a25d3da6b106ebc64110584f",
-                       "workbook_sha256":  "be91b5715ff21cf12e39581d64b3616aac62ab2cd1166aaf52fe3962d07a2636",
+                       "workbook_sha256":  "1cceac153402956add8cc8e378f2e7056a68ac636af1ab796669c675b3d5c1b1",
                        "date_system":  "1900",
                        "calculation":  {
                                            "iterate":  false,

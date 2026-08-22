@@ -375,6 +375,12 @@ impl<'a, 'b> ArgumentHandle<'a, 'b> {
             .clone()
     }
 
+    pub(crate) fn value_with_implicit_intersection(
+        &self,
+    ) -> Result<crate::traits::CalcValue<'b>, ExcelError> {
+        self.compute_implicit_intersection_value()
+    }
+
     /// Resolves a scalar that is about to be coerced to text.
     ///
     /// Omitted arguments materialize as numeric zero through `value()`, which is
@@ -427,6 +433,23 @@ impl<'a, 'b> ArgumentHandle<'a, 'b> {
                 }
             }
         }
+    }
+
+    fn compute_implicit_intersection_value(
+        &self,
+    ) -> Result<crate::traits::CalcValue<'b>, ExcelError> {
+        if let Some(reference) = self.reference_attempt() {
+            return match reference {
+                Ok(reference) => Ok(crate::traits::CalcValue::Scalar(
+                    self.interp.implicit_intersection_from_reference(&reference),
+                )),
+                Err(error) if error.kind == ExcelErrorKind::Cancelled => Err(error),
+                Err(error) => Ok(crate::traits::CalcValue::Scalar(LiteralValue::Error(error))),
+            };
+        }
+        Ok(crate::traits::CalcValue::Scalar(
+            self.interp.eval_implicit_intersection_calc(self.value()?),
+        ))
     }
 
     pub fn value_with_env(

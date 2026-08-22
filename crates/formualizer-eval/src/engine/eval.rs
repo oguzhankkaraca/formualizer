@@ -23636,6 +23636,30 @@ where
         self.sheet_index_by_name(current_sheet)
     }
 
+    fn concrete_reference_bounds(
+        &self,
+        reference: &ReferenceType,
+        current_sheet: &str,
+    ) -> Option<(String, u32, u32, u32, u32)> {
+        let ReferenceType::NamedRange(name) = reference else {
+            return None;
+        };
+        let current_id = self.graph.sheet_id(current_sheet)?;
+        let named = self.graph.resolve_name_entry(name, current_id)?;
+        let (start, end) = match &named.definition {
+            NamedDefinition::Cell(cell) => (*cell, *cell),
+            NamedDefinition::Range(range) => (range.start, range.end),
+            NamedDefinition::Literal(_) | NamedDefinition::Formula { .. } => return None,
+        };
+        Some((
+            self.graph.sheet_name(start.sheet_id).to_string(),
+            start.coord.row() + 1,
+            start.coord.col() + 1,
+            end.coord.row() + 1,
+            end.coord.col() + 1,
+        ))
+    }
+
     fn inspect_reference(
         &self,
         reference: &ReferenceType,

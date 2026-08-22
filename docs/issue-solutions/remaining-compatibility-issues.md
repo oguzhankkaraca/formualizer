@@ -22,7 +22,7 @@ The remaining one Formualizer-only result is `CELL("Filename")`. The 21 and 399 
 
 ## 1. IF condition error propagation — 21 cells
 
-### Evidence
+### 1.1 Evidence
 
 Representative formula:
 
@@ -44,11 +44,11 @@ Formualizer result:
 
 The 21 cells are the `Cash_Flow!EK5:...` family. The parser already preserves sheet-qualified error literals as typed `ExcelErrorKind::Ref`; the mismatch occurs when the error is used as the `IF` condition.
 
-### Likely root
+### 1.2 Likely root
 
 The IF implementation handles Boolean, numeric, empty, and non-coercible conditions, but treats an error condition as a generic non-coercible condition and creates `#VALUE!` instead of returning the original error.
 
-### Proposed solution branch
+### 1.3 Proposed solution branch
 
 `fix/if-error-condition-propagation`
 
@@ -59,7 +59,7 @@ The IF implementation handles Boolean, numeric, empty, and non-coercible conditi
 5. Check short-circuit behavior so untaken branches remain unevaluated.
 6. Re-run Fossil and ensure the 21 `#REF! -> #VALUE!` transitions become same-error without changing unrelated error policy.
 
-### Acceptance criteria
+### 1.4 Acceptance criteria
 
 - all isolated oracle cases pass;
 - 21 different-error-kind cells become same Excel error;
@@ -70,7 +70,7 @@ The IF implementation handles Boolean, numeric, empty, and non-coercible conditi
 
 ## 2. SUMIF error-range propagation — 399 cells
 
-### Evidence
+### 2.1 Evidence
 
 Representative formula:
 
@@ -92,11 +92,11 @@ Formualizer value:
 
 This affects the `Cash_Flow` columns beginning at `IV180` and continues through the repeated formula family.
 
-### Cache freshness check
+### 2.2 Cache freshness check
 
 These results are not being treated as stale-cache evidence. A copy of the original workbook was opened in Microsoft Excel with iterative calculation enabled, recalculated with `CalculateFullRebuild`, and inspected without modifying the original file. Representative cells remained `#REF!` after recalculation.
 
-### Likely root
+### 2.3 Likely root
 
 The criteria aggregate implementation currently reduces the matched sum range while skipping or neutralizing error cells in a way that differs from Excel’s `SUMIF` behavior when the selected sum range contains broken references. The exact rule must be separated by:
 
@@ -107,7 +107,7 @@ The criteria aggregate implementation currently reduces the matched sum range wh
 - range size mismatch and whole-column bounds;
 - cached error versus evaluated error.
 
-### Proposed solution branch
+### 2.4 Proposed solution branch
 
 `fix/sumif-error-range-parity`
 
@@ -119,7 +119,7 @@ The criteria aggregate implementation currently reduces the matched sum range wh
 6. Add matched/unmatched error and repeated-column regressions.
 7. Re-run all 399 cells and classify any remaining transition with the report runner.
 
-### Acceptance criteria
+### 2.5 Acceptance criteria
 
 - isolated Excel matrix passes;
 - the 399 cells are either same-error or a proven representation/staleness category;
@@ -130,7 +130,7 @@ The criteria aggregate implementation currently reduces the matched sum range wh
 
 ## 3. `CELL("Filename")` workbook context — 1 cell
 
-### Evidence
+### 3.1 Evidence
 
 Representative formula:
 
@@ -140,7 +140,7 @@ Representative formula:
 
 Excel cached value contains the workbook path, sheet, and workbook name. Formualizer returns `#NAME?` because the engine has no host/workbook identity provider.
 
-### Proposed solution branch
+### 3.2 Proposed solution branch
 
 `feat/cell-workbook-context`
 
@@ -151,7 +151,7 @@ Excel cached value contains the workbook path, sheet, and workbook name. Formual
 - add saved, unsaved, native, and WASM oracle cases;
 - do not infer or fabricate a local path in browser code.
 
-### Acceptance criteria
+### 3.3 Acceptance criteria
 
 - native saved workbook behavior matches Excel oracle;
 - browser behavior is deterministic and privacy-safe;

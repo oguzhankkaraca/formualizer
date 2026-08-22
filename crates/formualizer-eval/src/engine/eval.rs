@@ -81,7 +81,7 @@ use formualizer_parse::{ASTNode, ASTNodeType, ExcelError, ExcelErrorKind};
 use rayon::ThreadPoolBuilder;
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
@@ -1013,6 +1013,7 @@ pub struct Engine<R> {
 
     // Runtime-cycle SCC evaluation telemetry (RFC #112, Stage 2)
     last_cycle_telemetry: CycleTelemetry,
+    last_recalc_telemetry: RecalcTelemetry,
 
     // C0 evaluation-resource observability. IDs are never reset or reused.
     next_evaluation_resource_request_id: u64,
@@ -2759,6 +2760,7 @@ where
             last_virtual_dep_telemetry: VirtualDepTelemetry::default(),
             virtual_dep_fallback_activations: 0,
             last_cycle_telemetry: CycleTelemetry::default(),
+            last_recalc_telemetry: RecalcTelemetry::default(),
             next_evaluation_resource_request_id: 1,
             evaluation_resource_request_depth: 0,
             active_evaluation_resource_request: None,
@@ -2923,6 +2925,7 @@ where
             last_virtual_dep_telemetry: VirtualDepTelemetry::default(),
             virtual_dep_fallback_activations: 0,
             last_cycle_telemetry: CycleTelemetry::default(),
+            last_recalc_telemetry: RecalcTelemetry::default(),
             next_evaluation_resource_request_id: 1,
             evaluation_resource_request_depth: 0,
             active_evaluation_resource_request: None,
@@ -3019,6 +3022,10 @@ where
     /// or when `enable_virtual_dep_telemetry` is off).
     pub fn last_cycle_telemetry(&self) -> &CycleTelemetry {
         &self.last_cycle_telemetry
+    }
+
+    pub fn last_recalc_telemetry(&self) -> &RecalcTelemetry {
+        &self.last_recalc_telemetry
     }
 
     /// Resource observations for the most recently completed public evaluation request.

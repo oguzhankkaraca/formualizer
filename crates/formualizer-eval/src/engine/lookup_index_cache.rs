@@ -247,6 +247,9 @@ pub struct LookupIndexCacheReport {
     pub(crate) skipped_below_threshold: usize,
     pub(crate) bytes_in_cache: usize,
     pub(crate) entries_count: usize,
+    pub(crate) snapshots_retired: usize,
+    pub(crate) entries_evicted: usize,
+    pub(crate) bytes_evicted: usize,
 }
 
 pub struct LookupIndexCache {
@@ -264,6 +267,9 @@ pub struct LookupIndexCache {
     skipped_tiny: AtomicUsize,
     skipped_cap: AtomicUsize,
     skipped_below_threshold: AtomicUsize,
+    snapshots_retired: AtomicUsize,
+    entries_evicted: AtomicUsize,
+    bytes_evicted: AtomicUsize,
 }
 
 fn volatile_key(mut key: LookupIndexKey) -> LookupIndexKey {
@@ -288,6 +294,9 @@ impl LookupIndexCache {
             skipped_tiny: AtomicUsize::new(0),
             skipped_cap: AtomicUsize::new(0),
             skipped_below_threshold: AtomicUsize::new(0),
+            snapshots_retired: AtomicUsize::new(0),
+            entries_evicted: AtomicUsize::new(0),
+            bytes_evicted: AtomicUsize::new(0),
         }
     }
 
@@ -372,6 +381,41 @@ impl LookupIndexCache {
         }
     }
 
+    pub(crate) fn retire_stale_snapshots(&self, active_snapshot_id: u64) {
+        let (entries_evicted, bytes_evicted) = {
+            let Ok(mut guard) = self.inner.write() else {
+                return;
+            };
+            let mut removed_entries = 0usize;
+            let mut removed_bytes = 0usize;
+            guard.retain(|key, index| {
+                if key.snapshot_id == active_snapshot_id {
+                    true
+                } else {
+                    removed_entries = removed_entries.saturating_add(1);
+                    removed_bytes = removed_bytes.saturating_add(index.bytes);
+                    false
+                }
+            });
+            (removed_entries, removed_bytes)
+        };
+
+        if bytes_evicted != 0 {
+            let previous = self
+                .bytes_in_use
+                .fetch_sub(bytes_evicted, Ordering::Relaxed);
+            debug_assert!(previous >= bytes_evicted);
+        }
+        if let Ok(mut guard) = self.call_counts.write() {
+            guard.retain(|key, _| key.snapshot_id == active_snapshot_id);
+        }
+        self.snapshots_retired.fetch_add(1, Ordering::Relaxed);
+        self.entries_evicted
+            .fetch_add(entries_evicted, Ordering::Relaxed);
+        self.bytes_evicted
+            .fetch_add(bytes_evicted, Ordering::Relaxed);
+    }
+
     pub(crate) fn note_skipped_volatile(&self) {
         self.skipped_volatile.fetch_add(1, Ordering::Relaxed);
     }
@@ -416,6 +460,9 @@ impl LookupIndexCache {
             skipped_below_threshold: self.skipped_below_threshold.load(Ordering::Relaxed),
             bytes_in_cache: self.bytes_in_use.load(Ordering::Relaxed),
             entries_count,
+            snapshots_retired: self.snapshots_retired.load(Ordering::Relaxed),
+            entries_evicted: self.entries_evicted.load(Ordering::Relaxed),
+            bytes_evicted: self.bytes_evicted.load(Ordering::Relaxed),
         }
     }
 }

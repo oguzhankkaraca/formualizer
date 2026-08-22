@@ -103,6 +103,9 @@ enum JsonDefinedNameDefinition {
     Literal {
         value: JsonValue,
     },
+    Formula {
+        formula: String,
+    },
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -312,6 +315,12 @@ impl JsonAdapter {
                         value: literal_to_json(&value),
                     },
                 },
+                DefinedNameDefinition::Formula { formula } => JsonDefinedName {
+                    name: dn.name,
+                    scope: dn.scope,
+                    scope_sheet: dn.scope_sheet,
+                    definition: JsonDefinedNameDefinition::Formula { formula },
+                },
             })
             .collect();
     }
@@ -392,6 +401,11 @@ impl SpreadsheetReader for JsonAdapter {
                                 &self.read_options,
                                 &format!("defined_names[{idx}].definition.value"),
                             )?,
+                        }
+                    }
+                    JsonDefinedNameDefinition::Formula { formula } => {
+                        DefinedNameDefinition::Formula {
+                            formula: formula.clone(),
                         }
                     }
                 };
@@ -993,6 +1007,25 @@ where
                         }
                     }
                     DefinedNameDefinition::Literal { value } => NamedDefinition::Literal(value),
+                    DefinedNameDefinition::Formula { formula } => {
+                        let ast = formualizer_parse::parser::parse(&formula).unwrap_or_else(|_| {
+                            formualizer_parse::parser::ASTNode::new(
+                                formualizer_parse::parser::ASTNodeType::Literal(
+                                    formualizer_common::LiteralValue::Error(
+                                        formualizer_common::ExcelError::new(
+                                            formualizer_common::ExcelErrorKind::Name,
+                                        ),
+                                    ),
+                                ),
+                                None,
+                            )
+                        });
+                        NamedDefinition::Formula {
+                            ast,
+                            dependencies: Vec::new(),
+                            range_deps: Vec::new(),
+                        }
+                    }
                 };
 
                 engine.define_name(&dn.name, definition, scope)?;

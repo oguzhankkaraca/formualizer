@@ -2,7 +2,6 @@
   "schema": "formualizer.excel-oracle.case/v1",
   "id": "criteria-implicit-intersection",
   "description": "Apply Excel implicit intersection when criteria-family scalar arguments receive ranges.",
-  "skip": "Remove in fix/criteria-implicit-intersection after the Excel snapshot is generated.",
   "documentation": [
     {
       "title": "Implicit intersection operator: @",

@@ -46,6 +46,9 @@
           { "address": "J1", "kind": "formula_iie", "value": "=AVERAGEIF(Data!$E$1:$E$3,$H:$H,Data!$P$1:$P$3)" },
           { "address": "J2", "kind": "formula_iie", "value": "=SUMIF(Data!$E$1:$E$3,$H:$H,Data!$P$1:$P$3)" },
           { "address": "J3", "kind": "formula_iie", "value": "=COUNTIF(Data!$E$1:$E$3,$H:$H)" },
+          { "address": "K1", "kind": "formula_iie", "value": "=AVERAGEIFS(Data!$P$1:$P$3,Data!$E$1:$E$3,$H:$H)" },
+          { "address": "K2", "kind": "formula_iie", "value": "=SUMIFS(Data!$P$1:$P$3,Data!$E$1:$E$3,$H:$H)" },
+          { "address": "K3", "kind": "formula_iie", "value": "=COUNTIFS(Data!$E$1:$E$3,$H:$H)" },
           { "address": "A10", "kind": "number", "value": 1 },
           { "address": "B10", "kind": "number", "value": 2 },
           { "address": "C10", "kind": "number", "value": 3 },
@@ -57,7 +60,15 @@
       }
     ]
   },
-  "targets": ["Cases!J1", "Cases!J2", "Cases!J3", "Cases!B15"],
+  "targets": [
+    "Cases!J1",
+    "Cases!J2",
+    "Cases!J3",
+    "Cases!K1",
+    "Cases!K2",
+    "Cases!K3",
+    "Cases!B15"
+  ],
   "comparison": {
     "absolute_tolerance": 1e-9,
     "relative_tolerance": 1e-9

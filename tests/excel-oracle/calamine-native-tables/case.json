@@ -28,7 +28,15 @@
           { "address": "B3", "kind": "number", "value": 20 },
           { "address": "A4", "kind": "text", "value": "C" },
           { "address": "B4", "kind": "number", "value": 30 },
-          { "address": "D2", "kind": "formula", "value": "=SUM(SalesTable[Amount])" }
+          { "address": "D2", "kind": "formula", "value": "=SUM(SalesTable[Amount])" },
+          { "address": "D3", "kind": "formula", "value": "=SUM(SalesAmounts)" },
+          { "address": "D4", "kind": "formula", "value": "=SUM(LocalAmounts)" },
+          { "address": "D5", "kind": "formula", "value": "=SUM(SalesAllAmounts)" },
+          { "address": "D6", "kind": "formula", "value": "=SUM(CoercedAmounts)" },
+          { "address": "D7", "kind": "formula", "value": "=SUM(VALUE(SalesAllAmounts))" },
+          { "address": "D8", "kind": "formula", "value": "=MATCH(20,VALUE(SalesAllAmounts),1)" },
+          { "address": "D9", "kind": "formula", "value": "=MATCH(20,VALUE(SalesAllAmounts),0)" },
+          { "address": "D10", "kind": "formula", "value": "=ScopeProbe" }
         ],
         "tables": [
           {
@@ -38,10 +46,59 @@
             "totals_row": false
           }
         ]
+      },
+      {
+        "name": "Other",
+        "cells": [
+          { "address": "D2", "kind": "formula", "value": "=ScopeProbe" }
+        ]
+      }
+    ],
+    "defined_names": [
+      {
+        "name": "SalesAmounts",
+        "formula": "=SalesTable[Amount]",
+        "fallback_formula": "=Data!$B$2:$B$4"
+      },
+      {
+        "name": "LocalAmounts",
+        "scope_sheet": "Data",
+        "formula": "=SalesTable[Amount]",
+        "fallback_formula": "=Data!$B$2:$B$4"
+      },
+      {
+        "name": "SalesAllAmounts",
+        "formula": "=SalesTable[[#All],[Amount]]",
+        "fallback_formula": "=Data!$B$1:$B$4"
+      },
+      {
+        "name": "CoercedAmounts",
+        "formula": "=VALUE(SalesTable[Amount])",
+        "fallback_formula": "=Data!$B$2:$B$4"
+      },
+      {
+        "name": "ScopeProbe",
+        "formula": "=Data!$B$2"
+      },
+      {
+        "name": "ScopeProbe",
+        "scope_sheet": "Data",
+        "formula": "=Data!$B$3"
       }
     ]
   },
-  "targets": ["Data!D2"],
+  "targets": [
+    "Data!D2",
+    "Data!D3",
+    "Data!D4",
+    "Data!D5",
+    "Data!D6",
+    "Data!D7",
+    "Data!D8",
+    "Data!D9",
+    "Data!D10",
+    "Other!D2"
+  ],
   "comparison": {
     "absolute_tolerance": 1e-9,
     "relative_tolerance": 1e-9

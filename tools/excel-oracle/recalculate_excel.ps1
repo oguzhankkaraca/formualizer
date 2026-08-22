@@ -72,6 +72,142 @@ function Add-OracleTable {
     }
 }
 
+function Add-OracleDefinedName {
+    param(
+        [object]$Workbook,
+        [object]$Spec
+    )
+
+    $name = [string]$Spec.name
+    if ($Spec.PSObject.Properties.Name -contains "scope_sheet" -and
+        -not [string]::IsNullOrWhiteSpace([string]$Spec.scope_sheet)) {
+        $name = "{0}!{1}" -f [string]$Spec.scope_sheet, $name
+    }
+    $names = $Workbook.Names
+    $defined = $null
+    try {
+        $refersTo = if ($Spec.PSObject.Properties.Name -contains "fallback_formula" -and
+            -not [string]::IsNullOrWhiteSpace([string]$Spec.fallback_formula)) {
+            [string]$Spec.fallback_formula
+        }
+        else {
+            [string]$Spec.formula
+        }
+        try {
+            $defined = $names.Add($name, $refersTo)
+        }
+        catch {
+            throw "Failed to add defined name '$name' with formula '$($Spec.formula)': $($_.Exception.Message)"
+        }
+    }
+    finally {
+        Release-ComObject $defined
+        Release-ComObject $names
+    }
+}
+
+function Patch-OracleDefinedNames {
+    param(
+        [string]$WorkbookPath,
+        [object]$Case
+    )
+
+    Add-Type -AssemblyName System.IO.Compression
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $archive = [System.IO.Compression.ZipFile]::Open(
+        $WorkbookPath,
+        [System.IO.Compression.ZipArchiveMode]::Update
+    )
+    try {
+        $entry = $archive.GetEntry("xl/workbook.xml")
+        if ($null -eq $entry) {
+            throw "Workbook has no xl/workbook.xml entry"
+        }
+        $input = $entry.Open()
+        $xmlBytes = $null
+        try {
+            $memory = New-Object System.IO.MemoryStream
+            try {
+                $input.CopyTo($memory)
+                $xmlBytes = $memory.ToArray()
+            }
+            finally {
+                $memory.Dispose()
+            }
+        }
+        finally {
+            $input.Dispose()
+        }
+
+        $document = New-Object System.Xml.XmlDocument
+        $document.PreserveWhitespace = $true
+        $document.LoadXml([System.Text.UTF8Encoding]::new($false).GetString($xmlBytes))
+        $definedNodes = $document.SelectNodes("//*[local-name()='definedName']")
+        foreach ($spec in $Case.workbook.defined_names) {
+            $scopeIndex = $null
+            if ($spec.PSObject.Properties.Name -contains "scope_sheet" -and
+                -not [string]::IsNullOrWhiteSpace([string]$spec.scope_sheet)) {
+                for ($index = 0; $index -lt $Case.workbook.sheets.Count; $index++) {
+                    if ([string]$Case.workbook.sheets[$index].name -eq [string]$spec.scope_sheet) {
+                        $scopeIndex = $index
+                        break
+                    }
+                }
+                if ($null -eq $scopeIndex) {
+                    throw "Defined name scope sheet not found: $($spec.scope_sheet)"
+                }
+            }
+
+            $matches = @($definedNodes | Where-Object {
+                    $nameMatches = $_.GetAttribute("name") -eq [string]$spec.name
+                    $scopeMatches = if ($null -eq $scopeIndex) {
+                        -not $_.HasAttribute("localSheetId")
+                    }
+                    else {
+                        $_.GetAttribute("localSheetId") -eq [string]$scopeIndex
+                    }
+                    $nameMatches -and $scopeMatches
+                })
+            if ($matches.Count -ne 1) {
+                throw "Expected one XML defined name for '$($spec.name)', found $($matches.Count)"
+            }
+            $formula = [string]$spec.formula
+            $matches[0].InnerText = $formula.TrimStart('=')
+        }
+
+        $settings = New-Object System.Xml.XmlWriterSettings
+        $settings.Encoding = [System.Text.UTF8Encoding]::new($false)
+        $settings.Indent = $false
+        $output = New-Object System.IO.MemoryStream
+        try {
+            $writer = [System.Xml.XmlWriter]::Create($output, $settings)
+            try {
+                $document.Save($writer)
+                $writer.Flush()
+            }
+            finally {
+                $writer.Dispose()
+            }
+            $updatedXml = $output.ToArray()
+        }
+        finally {
+            $output.Dispose()
+        }
+
+        $replacementStream = $entry.Open()
+        try {
+            $replacementStream.SetLength(0)
+            $replacementStream.Write($updatedXml, 0, $updatedXml.Length)
+        }
+        finally {
+            $replacementStream.Dispose()
+        }
+    }
+    finally {
+        $archive.Dispose()
+    }
+}
+
 function Get-OracleResult {
     param(
         [object]$Workbook,
@@ -202,6 +338,21 @@ function Invoke-ExcelOracleCase {
                         Add-OracleTable -Worksheet $worksheet -Spec $tableSpec
                     }
                 }
+            }
+            finally {
+                Release-ComObject $worksheet
+            }
+        }
+
+        if ($case.workbook.PSObject.Properties.Name -contains "defined_names") {
+            foreach ($nameSpec in $case.workbook.defined_names) {
+                Add-OracleDefinedName -Workbook $workbook -Spec $nameSpec
+            }
+        }
+
+        foreach ($sheetSpec in $case.workbook.sheets) {
+            $worksheet = $workbook.Worksheets.Item([string]$sheetSpec.name)
+            try {
                 foreach ($cellSpec in $sheetSpec.cells) {
                     if ($cellSpec.kind -in @("formula", "formula_iie")) {
                         Set-OracleCell -Worksheet $worksheet -Spec $cellSpec
@@ -214,6 +365,14 @@ function Invoke-ExcelOracleCase {
         }
 
         $workbook.SaveAs($workbookPath, 51)
+        if ($case.workbook.PSObject.Properties.Name -contains "defined_names" -and
+            $case.workbook.defined_names.Count -gt 0) {
+            $workbook.Close($true)
+            Release-ComObject $workbook
+            $workbook = $null
+            Patch-OracleDefinedNames -WorkbookPath $workbookPath -Case $case
+            $workbook = $excel.Workbooks.Open($workbookPath)
+        }
         $excel.CalculateFullRebuild()
         while ($excel.CalculationState -ne 0) {
             Start-Sleep -Milliseconds 25

@@ -2,14 +2,14 @@
     "schema":  "formualizer.excel-oracle.snapshot/v1",
     "case_id":  "calamine-native-tables",
     "provenance":  {
-                       "generated_at_utc":  "2026-08-22T08:51:31.3159458Z",
+                       "generated_at_utc":  "2026-08-22T10:22:44.3335226Z",
                        "generator":  "tools/excel-oracle/recalculate_excel.ps1",
                        "excel_version":  "16.0",
                        "excel_file_version":  "16.0.20228.20188",
                        "excel_executable":  "C:\\Program Files\\Microsoft Office\\Root\\Office16\\EXCEL.EXE",
                        "culture":  "en-US",
-                       "case_sha256":  "285487c484bafd00efc0de02331fe3bdf9453de3b8e94f3715bd2936fe2fe185",
-                       "workbook_sha256":  "c8ceb2c06f65b58d7abd45fbbc38a93a44161d992bc3fefe8f8c92237bfbc064",
+                       "case_sha256":  "4d07b7786002e6e9daf2e62773fe7aeb4e6a726409159953a0d4aceb33f85f93",
+                       "workbook_sha256":  "9a9b9419bb46a75b5721ea872cb3fe3ddd399bf120a98359072f0bac058b3406",
                        "date_system":  "1900",
                        "calculation":  {
                                            "iterate":  false,
@@ -26,6 +26,87 @@
                                     "formula":  "=SUM(SalesTable[Amount])",
                                     "formula2":  "=SUM(SalesTable[Amount])",
                                     "number_format":  "General"
-                                }
+                                },
+                    "Data!D3":  {
+                                    "kind":  "number",
+                                    "value":  60,
+                                    "error":  null,
+                                    "text":  "60",
+                                    "formula":  "=SUM(SalesAmounts)",
+                                    "formula2":  "=SUM(SalesAmounts)",
+                                    "number_format":  "General"
+                                },
+                    "Data!D4":  {
+                                    "kind":  "number",
+                                    "value":  60,
+                                    "error":  null,
+                                    "text":  "60",
+                                    "formula":  "=SUM(LocalAmounts)",
+                                    "formula2":  "=SUM(LocalAmounts)",
+                                    "number_format":  "General"
+                                },
+                    "Data!D5":  {
+                                    "kind":  "number",
+                                    "value":  60,
+                                    "error":  null,
+                                    "text":  "60",
+                                    "formula":  "=SUM(SalesAllAmounts)",
+                                    "formula2":  "=SUM(SalesAllAmounts)",
+                                    "number_format":  "General"
+                                },
+                    "Data!D6":  {
+                                    "kind":  "number",
+                                    "value":  60,
+                                    "error":  null,
+                                    "text":  "60",
+                                    "formula":  "=SUM(CoercedAmounts)",
+                                    "formula2":  "=SUM(CoercedAmounts)",
+                                    "number_format":  "General"
+                                },
+                    "Data!D7":  {
+                                    "kind":  "error",
+                                    "value":  null,
+                                    "error":  "#VALUE!",
+                                    "text":  "#VALUE!",
+                                    "formula":  "=SUM(VALUE(SalesAllAmounts))",
+                                    "formula2":  "=SUM(VALUE(SalesAllAmounts))",
+                                    "number_format":  "General"
+                                },
+                    "Data!D8":  {
+                                    "kind":  "number",
+                                    "value":  3,
+                                    "error":  null,
+                                    "text":  "3",
+                                    "formula":  "=MATCH(20,VALUE(SalesAllAmounts),1)",
+                                    "formula2":  "=MATCH(20,VALUE(SalesAllAmounts),1)",
+                                    "number_format":  "General"
+                                },
+                    "Data!D9":  {
+                                    "kind":  "number",
+                                    "value":  3,
+                                    "error":  null,
+                                    "text":  "3",
+                                    "formula":  "=MATCH(20,VALUE(SalesAllAmounts),0)",
+                                    "formula2":  "=MATCH(20,VALUE(SalesAllAmounts),0)",
+                                    "number_format":  "General"
+                                },
+                    "Data!D10":  {
+                                     "kind":  "number",
+                                     "value":  20,
+                                     "error":  null,
+                                     "text":  "20",
+                                     "formula":  "=ScopeProbe",
+                                     "formula2":  "=ScopeProbe",
+                                     "number_format":  "General"
+                                 },
+                    "Other!D2":  {
+                                     "kind":  "number",
+                                     "value":  10,
+                                     "error":  null,
+                                     "text":  "10",
+                                     "formula":  "=ScopeProbe",
+                                     "formula2":  "=ScopeProbe",
+                                     "number_format":  "General"
+                                 }
                 }
 }

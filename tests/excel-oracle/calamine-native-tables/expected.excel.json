@@ -1,0 +1,31 @@
+{
+    "schema":  "formualizer.excel-oracle.snapshot/v1",
+    "case_id":  "calamine-native-tables",
+    "provenance":  {
+                       "generated_at_utc":  "2026-08-22T08:51:31.3159458Z",
+                       "generator":  "tools/excel-oracle/recalculate_excel.ps1",
+                       "excel_version":  "16.0",
+                       "excel_file_version":  "16.0.20228.20188",
+                       "excel_executable":  "C:\\Program Files\\Microsoft Office\\Root\\Office16\\EXCEL.EXE",
+                       "culture":  "en-US",
+                       "case_sha256":  "285487c484bafd00efc0de02331fe3bdf9453de3b8e94f3715bd2936fe2fe185",
+                       "workbook_sha256":  "c8ceb2c06f65b58d7abd45fbbc38a93a44161d992bc3fefe8f8c92237bfbc064",
+                       "date_system":  "1900",
+                       "calculation":  {
+                                           "iterate":  false,
+                                           "max_iterations":  100,
+                                           "max_change":  0.001
+                                       }
+                   },
+    "results":  {
+                    "Data!D2":  {
+                                    "kind":  "number",
+                                    "value":  60,
+                                    "error":  null,
+                                    "text":  "60",
+                                    "formula":  "=SUM(SalesTable[Amount])",
+                                    "formula2":  "=SUM(SalesTable[Amount])",
+                                    "number_format":  "General"
+                                }
+                }
+}

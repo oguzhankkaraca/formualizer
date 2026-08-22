@@ -2,14 +2,14 @@
     "schema":  "formualizer.excel-oracle.snapshot/v1",
     "case_id":  "criteria-implicit-intersection",
     "provenance":  {
-                       "generated_at_utc":  "2026-08-22T08:21:39.8016692Z",
+                       "generated_at_utc":  "2026-08-22T08:23:59.4626039Z",
                        "generator":  "tools/excel-oracle/recalculate_excel.ps1",
                        "excel_version":  "16.0",
                        "excel_file_version":  "16.0.20228.20188",
                        "excel_executable":  "C:\\Program Files\\Microsoft Office\\Root\\Office16\\EXCEL.EXE",
                        "culture":  "en-US",
-                       "case_sha256":  "d2a45400d6842849504379237621708eb07a23d0c3fe367dccd395db6ced37ff",
-                       "workbook_sha256":  "f998a0663ff84686f24284dd6fe469aaebf3bc834dca1d7cf2282f780100503a",
+                       "case_sha256":  "e6d12a956cef6d7cd8a7ec0701745d373cb7a5076049235030cdcdec2ca3abfe",
+                       "workbook_sha256":  "21a33562a191b15747d3d8dd9865bc94f0ee7c73c8807673c6b85c354d4c998b",
                        "date_system":  "1900",
                        "calculation":  {
                                            "iterate":  false,
@@ -43,6 +43,33 @@
                                      "text":  "1",
                                      "formula":  "=COUNTIF(Data!$E$1:$E$3,$H:$H)",
                                      "formula2":  "=COUNTIF(Data!$E$1:$E$3,@$H:$H)",
+                                     "number_format":  "General"
+                                 },
+                    "Cases!K1":  {
+                                     "kind":  "number",
+                                     "value":  10,
+                                     "error":  null,
+                                     "text":  "10",
+                                     "formula":  "=AVERAGEIFS(Data!$P$1:$P$3,Data!$E$1:$E$3,$H:$H)",
+                                     "formula2":  "=AVERAGEIFS(Data!$P$1:$P$3,Data!$E$1:$E$3,@$H:$H)",
+                                     "number_format":  "General"
+                                 },
+                    "Cases!K2":  {
+                                     "kind":  "number",
+                                     "value":  20,
+                                     "error":  null,
+                                     "text":  "20",
+                                     "formula":  "=SUMIFS(Data!$P$1:$P$3,Data!$E$1:$E$3,$H:$H)",
+                                     "formula2":  "=SUMIFS(Data!$P$1:$P$3,Data!$E$1:$E$3,@$H:$H)",
+                                     "number_format":  "General"
+                                 },
+                    "Cases!K3":  {
+                                     "kind":  "number",
+                                     "value":  1,
+                                     "error":  null,
+                                     "text":  "1",
+                                     "formula":  "=COUNTIFS(Data!$E$1:$E$3,$H:$H)",
+                                     "formula2":  "=COUNTIFS(Data!$E$1:$E$3,@$H:$H)",
                                      "number_format":  "General"
                                  },
                     "Cases!B15":  {

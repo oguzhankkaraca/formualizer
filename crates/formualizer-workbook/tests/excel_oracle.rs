@@ -110,6 +110,20 @@ fn discover_cases(root: &Path) -> Vec<PathBuf> {
 
 fn sha256_file(path: &Path) -> String {
     let bytes = fs::read(path).unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
+    sha256_bytes(&bytes)
+}
+
+fn sha256_text_file(path: &Path) -> String {
+    let text =
+        fs::read_to_string(path).unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
+    let normalized = text
+        .trim_start_matches('\u{feff}')
+        .replace("\r\n", "\n")
+        .replace('\r', "\n");
+    sha256_bytes(normalized.as_bytes())
+}
+
+fn sha256_bytes(bytes: &[u8]) -> String {
     let digest = Sha256::digest(bytes);
     digest.iter().map(|byte| format!("{byte:02x}")).collect()
 }
@@ -265,7 +279,7 @@ fn excel_oracle_snapshots() {
         assert_eq!(snapshot.case_id, case.id, "{} snapshot id", case.id);
         assert_eq!(
             snapshot.provenance.case_sha256,
-            sha256_file(&case_path),
+            sha256_text_file(&case_path),
             "{} case changed without an Excel oracle refresh",
             case.id
         );

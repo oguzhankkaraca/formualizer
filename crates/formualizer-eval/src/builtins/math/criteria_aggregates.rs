@@ -85,6 +85,12 @@ fn range_or_scalar<'a, 'b>(
     })
 }
 
+fn scalar_criteria<'a, 'b>(
+    arg: &ArgumentHandle<'a, 'b>,
+) -> Result<crate::args::CriteriaPredicate, ExcelError> {
+    crate::args::parse_criteria(&arg.value_with_implicit_intersection()?.into_literal())
+}
+
 fn eval_if_family<'a, 'b>(
     args: &[ArgumentHandle<'a, 'b>],
     ctx: &dyn FunctionContext<'b>,
@@ -117,7 +123,7 @@ fn eval_if_family<'a, 'b>(
                 )),
             )));
         }
-        let pred = crate::args::parse_criteria(&args[1].value()?.into_literal())?;
+        let pred = scalar_criteria(&args[1])?;
         let (crit_rv, crit_val) = resolve_range_or_scalar!(&args[0]);
         crit_specs.push((crit_rv, pred, crit_val));
 
@@ -159,7 +165,7 @@ fn eval_if_family<'a, 'b>(
                     }
                 }
 
-                let pred = crate::args::parse_criteria(&args[i + 1].value()?.into_literal())?;
+                let pred = scalar_criteria(&args[i + 1])?;
                 crit_specs.push((rv, pred, val));
             }
         } else {
@@ -184,7 +190,7 @@ fn eval_if_family<'a, 'b>(
                     }
                 }
 
-                let pred = crate::args::parse_criteria(&args[i + 1].value()?.into_literal())?;
+                let pred = scalar_criteria(&args[i + 1])?;
                 crit_specs.push((rv, pred, val));
             }
         }

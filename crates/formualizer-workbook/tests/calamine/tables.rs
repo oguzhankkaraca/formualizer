@@ -30,6 +30,16 @@ fn assert_reader_metadata(mut adapter: CalamineAdapter) {
 
 fn assert_defined_name_metadata(mut adapter: CalamineAdapter) {
     let names = adapter.defined_names().expect("read defined names");
+    let derived_name = names
+        .iter()
+        .find(|name| name.name == "DerivedAmounts")
+        .expect("DerivedAmounts");
+    assert!(matches!(
+        &derived_name.definition,
+        formualizer_workbook::DefinedNameDefinition::Formula { formula }
+            if formula == "=SUM(SalesAmounts)"
+    ));
+
     let workbook_name = names
         .iter()
         .find(|name| name.name == "SalesAmounts")
@@ -124,6 +134,10 @@ fn assert_workbook_evaluation(adapter: CalamineAdapter) {
         Some(LiteralValue::Number(20.0))
     );
     assert_eq!(
+        workbook.get_value("Data", 11, 4),
+        Some(LiteralValue::Number(60.0))
+    );
+    assert_eq!(
         workbook.get_value("Other", 2, 4),
         Some(LiteralValue::Number(10.0))
     );
@@ -208,4 +222,8 @@ fn table_updates_invalidate_formula_backed_names() {
             "updated named formula result at row {row}"
         );
     }
+    assert_eq!(
+        workbook.get_value("Data", 11, 4),
+        Some(LiteralValue::Number(100.0))
+    );
 }

@@ -266,7 +266,7 @@ impl DependencyGraph {
         let mut final_definition = definition;
         // Extract dependencies if formula
         if let NamedDefinition::Formula { ref ast, .. } = final_definition {
-            let (deps, range_deps, _, _) = self.extract_dependencies(
+            let (deps, range_deps, _, _, _) = self.extract_dependencies_with_pending_names(
                 ast,
                 match scope {
                     NameScope::Sheet(id) => id,
@@ -682,7 +682,32 @@ impl DependencyGraph {
                     if let Some(ast) = self.get_formula(formula_vertex) {
                         self.rebuild_formula_dependencies(formula_vertex, &ast);
                     } else {
-                        self.clear_pending_name_references(formula_vertex);
+                        let named_definition = self
+                            .named_ranges
+                            .values()
+                            .find(|named_range| named_range.vertex == formula_vertex)
+                            .map(|named_range| (named_range.scope, named_range.definition.clone()))
+                            .or_else(|| {
+                                self.sheet_named_ranges
+                                    .values()
+                                    .find(|named_range| named_range.vertex == formula_vertex)
+                                    .map(|named_range| {
+                                        (named_range.scope, named_range.definition.clone())
+                                    })
+                            });
+                        if let Some((name_scope, definition)) = named_definition {
+                            if let Ok(referenced_names) = self.rebuild_name_dependencies(
+                                formula_vertex,
+                                &definition,
+                                name_scope,
+                            ) {
+                                if !referenced_names.is_empty() {
+                                    self.attach_vertex_to_names(formula_vertex, &referenced_names);
+                                }
+                            }
+                        } else {
+                            self.clear_pending_name_references(formula_vertex);
+                        }
                     }
                 } else {
                     self.record_pending_name_reference(sheet_id, name, formula_vertex);
@@ -729,16 +754,21 @@ impl DependencyGraph {
                 NameScope::Sheet(id) => id,
                 NameScope::Workbook => self.default_sheet_id,
             };
-            let (dependencies, range_dependencies, _, _, _pending_names) =
+            let (dependencies, range_dependencies, _, _, pending_names) =
                 self.extract_dependencies_with_pending_names(ast, current_sheet_id)?;
-            Some((dependencies, range_dependencies))
+            Some((dependencies, range_dependencies, pending_names))
         } else {
             None
         };
 
         self.remove_dependent_edges(vertex);
         self.unregister_name_cell_dependencies(vertex);
+        self.clear_pending_name_references(vertex);
 
+        let pending_names = formula_dependencies
+            .as_ref()
+            .map(|(_, _, pending_names)| pending_names.clone())
+            .unwrap_or_default();
         let mut dependencies: Vec<VertexId> = Vec::new();
         let mut range_dependencies: Vec<SharedRangeRef<'static>> = Vec::new();
         let mut placeholders = Vec::new();
@@ -805,12 +835,12 @@ impl DependencyGraph {
                 // No dependencies.
             }
             NamedDefinition::Formula { .. } => {
-                let Some((formula_deps, range_deps)) = formula_dependencies else {
+                let Some((formula_deps, range_deps, _)) = formula_dependencies.as_ref() else {
                     return Err(ExcelError::new(ExcelErrorKind::Error)
                         .with_message("Internal error: formula dependencies were not extracted"));
                 };
-                dependencies.extend(formula_deps);
-                range_dependencies.extend(range_deps);
+                dependencies.extend(formula_deps.iter().copied());
+                range_dependencies.extend(range_deps.iter().cloned());
             }
         }
 
@@ -825,6 +855,16 @@ impl DependencyGraph {
                 NameScope::Workbook => self.default_sheet_id,
             };
             self.add_range_dependent_edges(vertex, &range_dependencies, sheet_id);
+        }
+
+        if !pending_names.is_empty() {
+            let sheet_id = match scope {
+                NameScope::Sheet(id) => id,
+                NameScope::Workbook => self.default_sheet_id,
+            };
+            for name in pending_names {
+                self.record_pending_name_reference(sheet_id, &name, vertex);
+            }
         }
 
         Ok(dependencies

@@ -2,14 +2,14 @@
     "schema":  "formualizer.excel-oracle.snapshot/v1",
     "case_id":  "calamine-native-tables",
     "provenance":  {
-                       "generated_at_utc":  "2026-08-22T10:22:44.3335226Z",
+                       "generated_at_utc":  "2026-08-22T19:39:40.9286932Z",
                        "generator":  "tools/excel-oracle/recalculate_excel.ps1",
                        "excel_version":  "16.0",
                        "excel_file_version":  "16.0.20228.20188",
                        "excel_executable":  "C:\\Program Files\\Microsoft Office\\Root\\Office16\\EXCEL.EXE",
                        "culture":  "en-US",
-                       "case_sha256":  "4d07b7786002e6e9daf2e62773fe7aeb4e6a726409159953a0d4aceb33f85f93",
-                       "workbook_sha256":  "9a9b9419bb46a75b5721ea872cb3fe3ddd399bf120a98359072f0bac058b3406",
+                       "case_sha256":  "a9d30285020531a88888e66bc6cef7596e61ffd9dd3b39eadd1bf844baa6645e",
+                       "workbook_sha256":  "d80f272b555d2855409f80ae7822e1d45b9335b3a2469576c8d00f5586b5fe08",
                        "date_system":  "1900",
                        "calculation":  {
                                            "iterate":  false,
@@ -97,6 +97,15 @@
                                      "text":  "20",
                                      "formula":  "=ScopeProbe",
                                      "formula2":  "=ScopeProbe",
+                                     "number_format":  "General"
+                                 },
+                    "Data!D11":  {
+                                     "kind":  "number",
+                                     "value":  60,
+                                     "error":  null,
+                                     "text":  "60",
+                                     "formula":  "=DerivedAmounts",
+                                     "formula2":  "=@DerivedAmounts",
                                      "number_format":  "General"
                                  },
                     "Other!D2":  {

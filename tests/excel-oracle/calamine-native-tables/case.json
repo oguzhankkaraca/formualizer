@@ -36,7 +36,8 @@
           { "address": "D7", "kind": "formula", "value": "=SUM(VALUE(SalesAllAmounts))" },
           { "address": "D8", "kind": "formula", "value": "=MATCH(20,VALUE(SalesAllAmounts),1)" },
           { "address": "D9", "kind": "formula", "value": "=MATCH(20,VALUE(SalesAllAmounts),0)" },
-          { "address": "D10", "kind": "formula", "value": "=ScopeProbe" }
+          { "address": "D10", "kind": "formula", "value": "=ScopeProbe" },
+          { "address": "D11", "kind": "formula", "value": "=DerivedAmounts" }
         ],
         "tables": [
           {
@@ -55,6 +56,11 @@
       }
     ],
     "defined_names": [
+      {
+        "name": "DerivedAmounts",
+        "formula": "=SUM(SalesAmounts)",
+        "fallback_formula": "=Data!$B$2"
+      },
       {
         "name": "SalesAmounts",
         "formula": "=SalesTable[Amount]",
@@ -97,6 +103,7 @@
     "Data!D8",
     "Data!D9",
     "Data!D10",
+    "Data!D11",
     "Other!D2"
   ],
   "comparison": {

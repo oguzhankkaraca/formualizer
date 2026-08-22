@@ -134,7 +134,8 @@ pub struct NamedRange {
 
 /// Stable representation of workbook/sheet scoped defined names.
 ///
-/// Stage 1 supports only range-backed and literal-backed names.
+/// Formula-backed definitions retain their formula text so loaders can preserve
+/// reference-valued names such as structured table references.
 #[cfg_attr(feature = "json", derive(Serialize, Deserialize))]
 #[cfg_attr(feature = "json", serde(rename_all = "lowercase"))]
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Default)]
@@ -150,6 +151,7 @@ pub enum DefinedNameScope {
 pub enum DefinedNameDefinition {
     Range { address: RangeAddress },
     Literal { value: LiteralValue },
+    Formula { formula: String },
 }
 
 #[cfg_attr(feature = "json", derive(Serialize, Deserialize))]

@@ -1000,12 +1000,6 @@ impl UmyaAdapter {
         if let Some(rest) = trimmed.strip_prefix('=') {
             trimmed = rest.trim();
         }
-        if trimmed.is_empty() || trimmed.contains(',') {
-            return None;
-        }
-
-        // Only support cell/range references for Stage 1.
-        let reference = ReferenceType::from_string(trimmed).ok()?;
 
         // Scope is determined solely by the presence of local_sheet_id in the OOXML.
         // declared_on_sheet is only used as a fallback for resolving an address that
@@ -1022,13 +1016,32 @@ impl UmyaAdapter {
         } else {
             DefinedNameScope::Workbook
         };
+        let formula = if trimmed.is_empty() {
+            "=".to_string()
+        } else {
+            format!("={trimmed}")
+        };
+        let formula_definition = || WorkbookDefinedName {
+            name: defined.get_name().to_string(),
+            scope: scope.clone(),
+            scope_sheet: scope_sheet.clone(),
+            definition: DefinedNameDefinition::Formula {
+                formula: formula.clone(),
+            },
+        };
+        let reference = match ReferenceType::from_string(trimmed) {
+            Ok(reference) => reference,
+            Err(_) => return Some(formula_definition()),
+        };
 
         let base_sheet = scope_sheet.as_deref().or(declared_on_sheet);
         let (sheet_name, start_row, start_col, end_row, end_col) = match reference {
             ReferenceType::Cell {
                 sheet, row, col, ..
             } => {
-                let sheet = sheet.or_else(|| base_sheet.map(|s| s.to_string()))?;
+                let Some(sheet) = sheet.or_else(|| base_sheet.map(|s| s.to_string())) else {
+                    return Some(formula_definition());
+                };
                 let (row, col) = Self::clamp_excel_cell(row, col);
                 (sheet, row, col, row, col)
             }
@@ -1040,15 +1053,24 @@ impl UmyaAdapter {
                 end_col,
                 ..
             } => {
-                let (sr, sc, er, ec) =
-                    Self::normalize_open_ended_bounds(start_row, start_col, end_row, end_col)?;
-                let sheet = sheet.or_else(|| base_sheet.map(|s| s.to_string()))?;
+                let Some((sr, sc, er, ec)) =
+                    Self::normalize_open_ended_bounds(start_row, start_col, end_row, end_col)
+                else {
+                    return Some(formula_definition());
+                };
+                let Some(sheet) = sheet.or_else(|| base_sheet.map(|s| s.to_string())) else {
+                    return Some(formula_definition());
+                };
                 (sheet, sr, sc, er, ec)
             }
-            _ => return None,
+            _ => return Some(formula_definition()),
         };
 
-        let address = RangeAddress::new(sheet_name, start_row, start_col, end_row, end_col).ok()?;
+        let Some(address) =
+            RangeAddress::new(sheet_name, start_row, start_col, end_row, end_col).ok()
+        else {
+            return Some(formula_definition());
+        };
 
         Some(WorkbookDefinedName {
             name: defined.get_name().to_string(),
@@ -1551,6 +1573,25 @@ where
                         }
                     }
                     DefinedNameDefinition::Literal { value } => NamedDefinition::Literal(value),
+                    DefinedNameDefinition::Formula { formula } => {
+                        let ast = formualizer_parse::parser::parse(&formula).unwrap_or_else(|_| {
+                            formualizer_parse::parser::ASTNode::new(
+                                formualizer_parse::parser::ASTNodeType::Literal(
+                                    formualizer_common::LiteralValue::Error(
+                                        formualizer_common::ExcelError::new(
+                                            formualizer_common::ExcelErrorKind::Name,
+                                        ),
+                                    ),
+                                ),
+                                None,
+                            )
+                        });
+                        NamedDefinition::Formula {
+                            ast,
+                            dependencies: Vec::new(),
+                            range_deps: Vec::new(),
+                        }
+                    }
                 };
 
                 engine.define_name(&dn.name, definition, scope)?;

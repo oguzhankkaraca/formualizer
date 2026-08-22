@@ -929,6 +929,70 @@ impl PyWorkbook {
         ))
     }
 
+    pub fn last_scc_dirty_telemetry(&self, py: Python<'_>) -> PyResult<PyObject> {
+        let wb = self.read_inner()?;
+        let telemetry = wb.engine().last_scc_dirty_telemetry();
+        let out = PyDict::new(py);
+        out.set_item("dirty_at_request_start", telemetry.dirty_at_request_start)?;
+        out.set_item(
+            "vertices_added_since_attribution_baseline",
+            telemetry.vertices_added_since_attribution_baseline,
+        )?;
+        out.set_item(
+            "naturally_dirty_before_redirty",
+            telemetry.naturally_dirty_before_redirty,
+        )?;
+        out.set_item(
+            "dirty_after_volatile_redirty",
+            telemetry.dirty_after_volatile_redirty,
+        )?;
+        out.set_item(
+            "dirty_after_iterative_redirty",
+            telemetry.dirty_after_iterative_redirty,
+        )?;
+        out.set_item(
+            "vertices_added_solely_by_iterative_policy",
+            telemetry.vertices_added_solely_by_iterative_policy,
+        )?;
+        out.set_item(
+            "sccs_intersecting_naturally_dirty",
+            telemetry.sccs_intersecting_naturally_dirty,
+        )?;
+        out.set_item(
+            "scc_cells_intersecting_naturally_dirty",
+            telemetry.scc_cells_intersecting_naturally_dirty,
+        )?;
+        out.set_item(
+            "sccs_added_solely_by_iterative_policy",
+            telemetry.sccs_added_solely_by_iterative_policy,
+        )?;
+        out.set_item(
+            "scc_cells_added_solely_by_iterative_policy",
+            telemetry.scc_cells_added_solely_by_iterative_policy,
+        )?;
+        let per_scc = PyList::empty(py);
+        for record in &telemetry.per_scc {
+            let row = PyDict::new(py);
+            row.set_item("stable_id", record.stable_id)?;
+            row.set_item("member_count", record.member_count)?;
+            row.set_item("volatile_member_count", record.volatile_member_count)?;
+            row.set_item("dynamic_member_count", record.dynamic_member_count)?;
+            row.set_item("volatile_member_samples", &record.volatile_member_samples)?;
+            row.set_item("dynamic_member_samples", &record.dynamic_member_samples)?;
+            row.set_item(
+                "naturally_dirty_member_count",
+                record.naturally_dirty_member_count,
+            )?;
+            row.set_item("converged", record.converged)?;
+            row.set_item("exactly_stable", record.exactly_stable)?;
+            row.set_item("capped", record.capped)?;
+            row.set_item("reason", record.reason)?;
+            per_scc.append(row)?;
+        }
+        out.set_item("per_scc", per_scc)?;
+        Ok(out.into())
+    }
+
     pub fn evaluate_cells(
         &self,
         py: Python<'_>,

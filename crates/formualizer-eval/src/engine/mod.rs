@@ -61,7 +61,8 @@ pub use arena::AstNodeId;
 pub use cancel::CancelToken;
 pub use eval::{
     CycleTelemetry, Engine, EngineAction, EngineBaselineStats, EvalResult, RecalcPlan,
-    RecalcTelemetry, SourceFormulaIngress, TableMetadata, VirtualDepTelemetry,
+    RecalcTelemetry, SccDirtyRecord, SccDirtyTelemetry, SourceFormulaIngress, TableMetadata,
+    VirtualDepTelemetry,
 };
 pub use eval_delta::{
     DeltaMode, EvalDelta, EvalDeltaCompatibilityPolicy, EvalDeltaRecord, TARGET_EVAL_DELTA_VERSION,

@@ -1915,6 +1915,10 @@ pub struct SccDirtyRecord {
     pub stable_id: u64,
     pub member_count: usize,
     pub naturally_dirty_member_count: usize,
+    pub volatile_member_count: usize,
+    pub dynamic_member_count: usize,
+    pub volatile_member_samples: Vec<String>,
+    pub dynamic_member_samples: Vec<String>,
     pub converged: bool,
     pub exactly_stable: bool,
     pub capped: bool,
@@ -3034,6 +3038,10 @@ where
         &self.last_cycle_telemetry
     }
 
+    pub fn last_scc_dirty_telemetry(&self) -> &SccDirtyTelemetry {
+        &self.last_scc_dirty_telemetry
+    }
+
     pub fn last_recalc_telemetry(&self) -> &RecalcTelemetry {
         &self.last_recalc_telemetry
     }
@@ -3864,10 +3872,43 @@ where
             } else {
                 "unknown"
             };
+            let volatile_member_count = scc
+                .members
+                .iter()
+                .filter(|vertex| self.graph.is_volatile(**vertex))
+                .count();
+            let dynamic_member_count = scc
+                .members
+                .iter()
+                .filter(|vertex| self.graph.is_dynamic(**vertex))
+                .count();
+            let mut volatile_member_samples = Vec::new();
+            let mut dynamic_member_samples = Vec::new();
+            for vertex in &scc.members {
+                let Some(cell) = self.graph.get_cell_ref(*vertex) else {
+                    continue;
+                };
+                let address = format!(
+                    "{}!{}{}",
+                    self.graph.sheet_name(cell.sheet_id),
+                    Self::col_to_letters(cell.coord.col() + 1),
+                    cell.coord.row() + 1,
+                );
+                if self.graph.is_volatile(*vertex) && volatile_member_samples.len() < 32 {
+                    volatile_member_samples.push(address.clone());
+                }
+                if self.graph.is_dynamic(*vertex) && dynamic_member_samples.len() < 32 {
+                    dynamic_member_samples.push(address);
+                }
+            }
             per_scc.push(SccDirtyRecord {
                 stable_id,
                 member_count: scc.members.len(),
                 naturally_dirty_member_count,
+                volatile_member_count,
+                dynamic_member_count,
+                volatile_member_samples,
+                dynamic_member_samples,
                 converged: scc.converged,
                 exactly_stable: scc.exactly_stable,
                 capped: scc.capped,

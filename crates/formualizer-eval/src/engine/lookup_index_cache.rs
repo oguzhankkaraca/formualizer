@@ -1,5 +1,5 @@
 use std::hash::{Hash, Hasher};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
 
 use formualizer_common::{ExcelError, LiteralValue, SheetId};
@@ -241,6 +241,9 @@ pub struct LookupIndexCacheReport {
     pub(crate) skipped_below_threshold: usize,
     pub(crate) bytes_in_cache: usize,
     pub(crate) entries_count: usize,
+    pub(crate) snapshots_retired: u64,
+    pub(crate) entries_evicted: usize,
+    pub(crate) bytes_evicted: usize,
 }
 
 pub struct LookupIndexCache {
@@ -258,6 +261,9 @@ pub struct LookupIndexCache {
     skipped_tiny: AtomicUsize,
     skipped_cap: AtomicUsize,
     skipped_below_threshold: AtomicUsize,
+    snapshots_retired: AtomicU64,
+    entries_evicted: AtomicUsize,
+    bytes_evicted: AtomicUsize,
 }
 
 fn volatile_key(mut key: LookupIndexKey) -> LookupIndexKey {
@@ -282,7 +288,46 @@ impl LookupIndexCache {
             skipped_tiny: AtomicUsize::new(0),
             skipped_cap: AtomicUsize::new(0),
             skipped_below_threshold: AtomicUsize::new(0),
+            snapshots_retired: AtomicU64::new(0),
+            entries_evicted: AtomicUsize::new(0),
+            bytes_evicted: AtomicUsize::new(0),
         }
+    }
+
+    /// Retire cache state that cannot be used by the newly active data snapshot.
+    /// Cloned `Arc` handles remain valid until their current evaluation drops them.
+    pub(crate) fn retire_stale_snapshots(&self, active_snapshot_id: u64) {
+        let (entries_evicted, bytes_evicted) = if let Ok(mut guard) = self.inner.write() {
+            let mut entries_evicted = 0usize;
+            let mut bytes_evicted = 0usize;
+            guard.retain(|key, index| {
+                if key.snapshot_id == active_snapshot_id {
+                    true
+                } else {
+                    entries_evicted = entries_evicted.saturating_add(1);
+                    bytes_evicted = bytes_evicted.saturating_add(index.bytes);
+                    false
+                }
+            });
+            (entries_evicted, bytes_evicted)
+        } else {
+            (0, 0)
+        };
+
+        if bytes_evicted != 0 {
+            let previous = self
+                .bytes_in_use
+                .fetch_sub(bytes_evicted, Ordering::Relaxed);
+            debug_assert!(previous >= bytes_evicted);
+        }
+        if let Ok(mut guard) = self.call_counts.write() {
+            guard.retain(|key, _| key.snapshot_id == active_snapshot_id);
+        }
+        self.snapshots_retired.fetch_add(1, Ordering::Relaxed);
+        self.entries_evicted
+            .fetch_add(entries_evicted, Ordering::Relaxed);
+        self.bytes_evicted
+            .fetch_add(bytes_evicted, Ordering::Relaxed);
     }
 
     pub(crate) fn get(&self, key: &LookupIndexKey) -> Option<Arc<LookupIndex>> {
@@ -410,6 +455,94 @@ impl LookupIndexCache {
             skipped_below_threshold: self.skipped_below_threshold.load(Ordering::Relaxed),
             bytes_in_cache: self.bytes_in_use.load(Ordering::Relaxed),
             entries_count,
+            snapshots_retired: self.snapshots_retired.load(Ordering::Relaxed),
+            entries_evicted: self.entries_evicted.load(Ordering::Relaxed),
+            bytes_evicted: self.bytes_evicted.load(Ordering::Relaxed),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn key(snapshot_id: u64, start_col: u32) -> LookupIndexKey {
+        LookupIndexKey {
+            sheet_id: 1,
+            start_row: 1,
+            start_col,
+            end_row: 100,
+            end_col: start_col,
+            axis: LookupAxis::ColumnInView(0),
+            snapshot_id,
+        }
+    }
+
+    fn index(bytes: usize) -> LookupIndex {
+        LookupIndex {
+            len: 1,
+            bytes,
+            entries: FxHashMap::default(),
+            cell_values: vec![LiteralValue::Number(1.0)].into_boxed_slice(),
+            first_empty: None,
+        }
+    }
+
+    #[test]
+    fn retiring_stale_snapshot_reclaims_entries_and_capacity() {
+        let cache = LookupIndexCache::new(100);
+        assert!(cache.insert_if_room(key(1, 1), index(80)).is_some());
+
+        cache.retire_stale_snapshots(2);
+
+        let report = cache.report();
+        assert_eq!(report.entries_count, 0);
+        assert_eq!(report.bytes_in_cache, 0);
+        assert_eq!(report.snapshots_retired, 1);
+        assert_eq!(report.entries_evicted, 1);
+        assert_eq!(report.bytes_evicted, 80);
+        assert!(cache.insert_if_room(key(2, 1), index(80)).is_some());
+    }
+
+    #[test]
+    fn retirement_keeps_live_arc_handle_valid() {
+        let cache = LookupIndexCache::new(100);
+        let handle = cache
+            .insert_if_room(key(1, 1), index(80))
+            .expect("index admitted");
+
+        cache.retire_stale_snapshots(2);
+
+        assert_eq!(handle.len, 1);
+        assert_eq!(handle.cell_values[0], LiteralValue::Number(1.0));
+        assert_eq!(cache.report().entries_count, 0);
+    }
+
+    #[test]
+    fn retirement_preserves_entries_for_active_snapshot() {
+        let cache = LookupIndexCache::new(200);
+        assert!(cache.insert_if_room(key(1, 1), index(80)).is_some());
+        assert!(cache.insert_if_room(key(2, 2), index(90)).is_some());
+
+        cache.retire_stale_snapshots(2);
+
+        let report = cache.report();
+        assert_eq!(report.entries_count, 1);
+        assert_eq!(report.bytes_in_cache, 90);
+        assert!(cache.get(&key(2, 2)).is_some());
+        assert!(cache.get(&key(1, 1)).is_none());
+    }
+
+    #[test]
+    fn retirement_does_not_admit_index_larger_than_capacity() {
+        let cache = LookupIndexCache::new(100);
+        assert!(cache.insert_if_room(key(1, 1), index(80)).is_some());
+        cache.retire_stale_snapshots(2);
+
+        assert!(cache.insert_if_room(key(2, 1), index(101)).is_none());
+        let report = cache.report();
+        assert_eq!(report.entries_count, 0);
+        assert_eq!(report.bytes_in_cache, 0);
+        assert_eq!(report.skipped_cap, 1);
     }
 }

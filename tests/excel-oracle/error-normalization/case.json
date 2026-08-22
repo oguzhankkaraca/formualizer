@@ -1,0 +1,37 @@
+{
+  "schema": "formualizer.excel-oracle.case/v1",
+  "id": "error-normalization",
+  "description": "Preserve Excel error kinds and ordinary error handling across XLSX load and evaluation.",
+  "documentation": [
+    {
+      "title": "Detect formula errors in Excel",
+      "url": "https://support.microsoft.com/en-us/excel/detect-formula-errors-in-excel"
+    }
+  ],
+  "workbook": {
+    "file": "fixture.xlsx",
+    "date_system": "1900",
+    "calculation": {
+      "iterate": false,
+      "max_iterations": 100,
+      "max_change": 0.001
+    },
+    "sheets": [
+      {
+        "name": "Cases",
+        "cells": [
+          { "address": "A1", "kind": "formula", "value": "=NA()" },
+          { "address": "A2", "kind": "formula", "value": "=1/0" },
+          { "address": "A3", "kind": "formula", "value": "=#REF!" },
+          { "address": "A4", "kind": "formula", "value": "=#VALUE!" },
+          { "address": "A5", "kind": "formula", "value": "=IFERROR(1/0,42)" }
+        ]
+      }
+    ]
+  },
+  "targets": ["Cases!A1", "Cases!A2", "Cases!A3", "Cases!A4", "Cases!A5"],
+  "comparison": {
+    "absolute_tolerance": 1e-9,
+    "relative_tolerance": 1e-9
+  }
+}

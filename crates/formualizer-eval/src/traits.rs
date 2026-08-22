@@ -1555,6 +1555,14 @@ pub trait EvaluationContext: Resolver + FunctionProvider + SourceResolver {
         Ok(None)
     }
 
+    fn concrete_reference_bounds(
+        &self,
+        _reference: &ReferenceType,
+        _current_sheet: &str,
+    ) -> Option<(String, u32, u32, u32, u32)> {
+        None
+    }
+
     /// Retrieve formula text for a concrete cell, if that cell stores a formula.
     fn formula_text_at_cell(&self, _cell: CellRef) -> Result<Option<String>, ExcelError> {
         Ok(None)
@@ -1754,6 +1762,13 @@ pub trait FunctionContext<'ctx> {
         Ok(None)
     }
 
+    fn concrete_reference_bounds(
+        &self,
+        _reference: &ReferenceType,
+    ) -> Option<(String, u32, u32, u32, u32)> {
+        None
+    }
+
     fn formula_text_at_cell(&self, _cell: CellRef) -> Result<Option<String>, ExcelError> {
         Ok(None)
     }
@@ -1879,6 +1894,14 @@ impl<'a> FunctionContext<'a> for DefaultFunctionContext<'a> {
         reference: &ReferenceType,
     ) -> Result<Option<ReferenceInfo>, ExcelError> {
         self.base.inspect_reference(reference, self.current_sheet)
+    }
+
+    fn concrete_reference_bounds(
+        &self,
+        reference: &ReferenceType,
+    ) -> Option<(String, u32, u32, u32, u32)> {
+        self.base
+            .concrete_reference_bounds(reference, self.current_sheet)
     }
 
     fn formula_text_at_cell(&self, cell: CellRef) -> Result<Option<String>, ExcelError> {

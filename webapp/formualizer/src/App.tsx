@@ -260,6 +260,16 @@ export default function App() {
     [refreshWindow, selected, startColumn, startRow],
   );
 
+  const commitCellEdit = useCallback(() => {
+    setEditing(false);
+    void commitInput(draft);
+  }, [commitInput, draft]);
+
+  const cancelCellEdit = useCallback(() => {
+    setDraft(inputForCell(selectedSnapshot));
+    setEditing(false);
+  }, [selectedSnapshot]);
+
   const runHistory = useCallback(
     async (operation: 'undo' | 'redo') => {
       const backend = backendRef.current;
@@ -340,6 +350,7 @@ export default function App() {
     (event: KeyboardEvent<HTMLInputElement>) => {
       if (event.key === 'Enter') {
         event.preventDefault();
+        setEditing(false);
         void commitInput(draft);
       } else if (event.key === 'Escape') {
         event.preventDefault();
@@ -383,12 +394,13 @@ export default function App() {
           onFocus={() => setEditing(true)}
           onChange={(event) => setDraft(event.target.value)}
           onKeyDown={handleEditorKeyDown}
+          onBlur={() => {
+            if (editing) {
+              setEditing(false);
+              void commitInput(draft);
+            }
+          }}
         />
-        {editing && (
-          <button type="button" className="commit-button" onClick={() => void commitInput(draft)}>
-            Apply
-          </button>
-        )}
       </section>
 
       <section className="grid-panel">
@@ -399,6 +411,11 @@ export default function App() {
           onEdit={() => setEditing(true)}
           onNavigate={navigate}
           onKeyDown={handleGridKeyDown}
+          editing={editing}
+          editValue={draft}
+          onEditValueChange={setDraft}
+          onCommitEdit={commitCellEdit}
+          onCancelEdit={cancelCellEdit}
         />
       </section>
 

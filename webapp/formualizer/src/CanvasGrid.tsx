@@ -20,6 +20,11 @@ interface CanvasGridProps {
   onEdit: () => void;
   onNavigate: (rowDelta: number, columnDelta: number) => void;
   onKeyDown: (event: ReactKeyboardEvent<HTMLCanvasElement>) => void;
+  editing: boolean;
+  editValue: string;
+  onEditValueChange: (value: string) => void;
+  onCommitEdit: () => void;
+  onCancelEdit: () => void;
 }
 
 function columnName(column: number): string {
@@ -65,8 +70,14 @@ export function CanvasGrid({
   onEdit,
   onNavigate,
   onKeyDown,
+  editing,
+  editValue,
+  onEditValueChange,
+  onCommitEdit,
+  onCancelEdit,
 }: CanvasGridProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const editorRef = useRef<HTMLInputElement>(null);
   const viewport = viewportFromSnapshot(snapshot) ?? {
     sheet: selected.sheet,
     startRow: 1,
@@ -207,6 +218,23 @@ export function CanvasGrid({
     };
   };
 
+  const selectedRowIndex = selected.startRow - viewport.startRow;
+  const selectedColumnIndex = selected.startColumn - viewport.startColumn;
+  const editorVisible =
+    editing &&
+    selected.sheet === viewport.sheet &&
+    selectedRowIndex >= 0 &&
+    selectedRowIndex < VISIBLE_ROWS &&
+    selectedColumnIndex >= 0 &&
+    selectedColumnIndex < VISIBLE_COLUMNS;
+
+  useEffect(() => {
+    if (editorVisible) {
+      editorRef.current?.focus();
+      editorRef.current?.setSelectionRange(editValue.length, editValue.length);
+    }
+  }, [editValue.length, editorVisible]);
+
   return (
     <div className="grid-shell">
       <canvas
@@ -231,6 +259,36 @@ export function CanvasGrid({
           onNavigate(event.deltaY > 0 ? 3 : -3, event.deltaX > 0 ? 3 : -3);
         }}
       />
+      {editorVisible && (
+        <input
+          ref={editorRef}
+          className="cell-editor"
+          aria-label={`Edit ${columnName(selected.startColumn)}${selected.startRow}`}
+          style={{
+            left: `${ROW_HEADER_WIDTH + selectedColumnIndex * CELL_WIDTH + 1}px`,
+            top: `${COLUMN_HEADER_HEIGHT + selectedRowIndex * CELL_HEIGHT + 1}px`,
+            width: `${CELL_WIDTH - 2}px`,
+            height: `${CELL_HEIGHT - 2}px`,
+          }}
+          value={editValue}
+          onChange={(event) => onEditValueChange(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter') {
+              event.preventDefault();
+              onCommitEdit();
+            } else if (event.key === 'Tab') {
+              event.preventDefault();
+              onCommitEdit();
+              onNavigate(0, 1);
+            } else if (event.key === 'Escape') {
+              event.preventDefault();
+              onCancelEdit();
+            }
+          }}
+          onBlur={onCommitEdit}
+          onPointerDown={(event) => event.stopPropagation()}
+        />
+      )}
     </div>
   );
 }

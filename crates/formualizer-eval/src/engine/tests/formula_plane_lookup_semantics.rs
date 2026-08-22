@@ -751,6 +751,81 @@ fn lookup_cache_threshold_resets_across_snapshots() {
 }
 
 #[test]
+fn lookup_cache_retires_old_snapshot_when_lookup_source_is_unchanged() {
+    let mut engine = repeated_vlookup_engine(EvalConfig::default());
+    engine.evaluate_all().unwrap();
+    let first = engine.last_lookup_index_cache_report();
+    assert_eq!(first.entries_count, 1, "{first:?}");
+    let first_bytes = first.bytes_in_cache;
+
+    number(&mut engine, "Sheet1", 1, 1, 2.0);
+    let retired = engine.last_lookup_index_cache_report();
+    assert_eq!(retired.entries_count, 0, "{retired:?}");
+    assert_eq!(retired.bytes_in_cache, 0, "{retired:?}");
+    assert_eq!(retired.entries_evicted, 1, "{retired:?}");
+    assert_eq!(retired.bytes_evicted, first_bytes, "{retired:?}");
+
+    engine.evaluate_all().unwrap();
+    let recalculated = engine.last_lookup_index_cache_report();
+    assert_eq!(recalculated.entries_count, 0, "{recalculated:?}");
+    assert_eq!(recalculated.bytes_in_cache, 0, "{recalculated:?}");
+    assert_eq!(recalculated.skipped_below_threshold, 1, "{recalculated:?}");
+    assert_eq!(
+        engine.get_cell_value("Sheet1", 1, 2),
+        Some(LiteralValue::Number(20.0))
+    );
+}
+
+#[test]
+fn lookup_cache_retires_old_snapshot_when_lookup_source_changes() {
+    let mut engine = repeated_vlookup_engine(EvalConfig::default());
+    engine.evaluate_all().unwrap();
+    let first = engine.last_lookup_index_cache_report();
+    assert_eq!(first.entries_count, 1, "{first:?}");
+
+    number(&mut engine, "Sheet1", 42, 5, 999.0);
+    assert_eq!(engine.last_lookup_index_cache_report().entries_count, 0);
+    engine.evaluate_all().unwrap();
+
+    let rebuilt = engine.last_lookup_index_cache_report();
+    assert_eq!(rebuilt.entries_count, 1, "{rebuilt:?}");
+    assert_eq!(
+        engine.get_cell_value("Sheet1", 42, 2),
+        Some(LiteralValue::Number(999.0))
+    );
+}
+
+#[test]
+fn lookup_cache_multiple_mutations_before_evaluation_do_not_accumulate_old_snapshot_state() {
+    let mut engine = repeated_vlookup_engine(EvalConfig::default());
+    engine.evaluate_all().unwrap();
+    let first = engine.last_lookup_index_cache_report();
+    assert_eq!(first.entries_count, 1, "{first:?}");
+
+    number(&mut engine, "Sheet1", 1, 1, 2.0);
+    number(&mut engine, "Sheet1", 2, 1, 3.0);
+    number(&mut engine, "Sheet1", 3, 1, 4.0);
+
+    let retired = engine.last_lookup_index_cache_report();
+    assert_eq!(retired.entries_count, 0, "{retired:?}");
+    assert_eq!(retired.bytes_in_cache, 0, "{retired:?}");
+    assert_eq!(retired.entries_evicted, 1, "{retired:?}");
+    assert!(retired.snapshots_retired >= 3, "{retired:?}");
+
+    engine.evaluate_all().unwrap();
+    let recalculated = engine.last_lookup_index_cache_report();
+    assert_eq!(recalculated.entries_count, 0, "{recalculated:?}");
+    assert_eq!(recalculated.bytes_in_cache, 0, "{recalculated:?}");
+    assert_eq!(recalculated.skipped_below_threshold, 3, "{recalculated:?}");
+    for (row, expected) in [(1, 20.0), (2, 30.0), (3, 40.0)] {
+        assert_eq!(
+            engine.get_cell_value("Sheet1", row, 2),
+            Some(LiteralValue::Number(expected))
+        );
+    }
+}
+
+#[test]
 fn lookup_cache_repeated_calls_to_same_table_eventually_build() {
     let mut engine = repeated_vlookup_engine(EvalConfig::default());
     engine.evaluate_all().unwrap();

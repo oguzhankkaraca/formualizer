@@ -81,8 +81,8 @@ use formualizer_parse::{ASTNode, ASTNodeType, ExcelError, ExcelErrorKind};
 use rayon::ThreadPoolBuilder;
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
-use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 type StagedFormulaEntry = (u32, u32, String);
@@ -17139,9 +17139,9 @@ where
         // Mirror into Arrow overlay when enabled
         self.mirror_value_to_overlay(sheet, row, col, &value);
         // Advance snapshot to reflect external mutation
-        self.snapshot_id
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        self.has_edited = true;
+        if sheet_existed && !replaced_formula {
+            self.mark_data_edited();
+        }
         Ok(())
     }
 

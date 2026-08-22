@@ -19,6 +19,9 @@ computed values (numbers, booleans, text, errors).
 
 Fixtures can be skipped by setting `skip` in `case.json` (for dragons not implemented yet).
 
+Branch-level issue solutions and the remaining compatibility backlog are tracked in
+[`docs/issue-solutions/`](issue-solutions/README.md).
+
 ## Blessing Snapshots
 
 To update snapshots locally:

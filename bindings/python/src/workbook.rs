@@ -922,6 +922,13 @@ impl PyWorkbook {
         ))
     }
 
+    pub fn last_recalc_telemetry(&self) -> PyResult<PyRecalcTelemetry> {
+        let wb = self.read_inner()?;
+        Ok(PyRecalcTelemetry::from_engine(
+            wb.engine().last_recalc_telemetry(),
+        ))
+    }
+
     pub fn evaluate_cells(
         &self,
         py: Python<'_>,
@@ -1255,8 +1262,127 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyWorkbookConfig>()?;
     m.add_class::<PyRangeAddress>()?;
     m.add_class::<PyCycleTelemetry>()?;
+    m.add_class::<PyRecalcTelemetry>()?;
     m.add_class::<PyCell>()?;
     Ok(())
+}
+
+#[cfg_attr(not(target_os = "emscripten"), gen_stub_pyclass)]
+#[pyclass(
+    name = "RecalcTelemetry",
+    module = "formualizer.formualizer_py",
+    from_py_object
+)]
+#[derive(Clone, Debug)]
+pub struct PyRecalcTelemetry {
+    #[pyo3(get)]
+    pub total_ns: u64,
+    #[pyo3(get)]
+    pub graph_build_ns: u64,
+    #[pyo3(get)]
+    pub dirty_detection_ns: u64,
+    #[pyo3(get)]
+    pub plan_build_ns: u64,
+    #[pyo3(get)]
+    pub acyclic_evaluation_ns: u64,
+    #[pyo3(get)]
+    pub iterative_scc_evaluation_ns: u64,
+    #[pyo3(get)]
+    pub virtual_dependency_change_detection_ns: u64,
+    #[pyo3(get)]
+    pub cleanup_ns: u64,
+    #[pyo3(get)]
+    pub evaluation_passes: usize,
+    #[pyo3(get)]
+    pub dirty_roots: usize,
+    #[pyo3(get)]
+    pub planned_vertices: usize,
+    #[pyo3(get)]
+    pub planned_layers: usize,
+    #[pyo3(get)]
+    pub planned_sccs: usize,
+    #[pyo3(get)]
+    pub evaluated_vertices: usize,
+    #[pyo3(get)]
+    pub acyclic_vertices_evaluated: usize,
+    #[pyo3(get)]
+    pub scc_tasks_evaluated: usize,
+    #[pyo3(get)]
+    pub scc_units_considered: usize,
+    #[pyo3(get)]
+    pub scc_units_reused: usize,
+    #[pyo3(get)]
+    pub scc_units_invalidated: usize,
+    #[pyo3(get)]
+    pub scc_units_reusable_after_recalc: usize,
+    #[pyo3(get)]
+    pub scc_reuse_metadata_bytes: usize,
+    #[pyo3(get)]
+    pub scc_member_count: usize,
+    #[pyo3(get)]
+    pub scc_member_evaluations: usize,
+    #[pyo3(get)]
+    pub volatile_vertices_redirtied: usize,
+    #[pyo3(get)]
+    pub iterative_vertices_redirtied: usize,
+}
+
+impl PyRecalcTelemetry {
+    fn from_engine(t: &formualizer::eval::engine::RecalcTelemetry) -> Self {
+        Self {
+            total_ns: u64::try_from(t.total_ns).unwrap_or(u64::MAX),
+            graph_build_ns: u64::try_from(t.graph_build_ns).unwrap_or(u64::MAX),
+            dirty_detection_ns: u64::try_from(t.dirty_detection_ns).unwrap_or(u64::MAX),
+            plan_build_ns: u64::try_from(t.plan_build_ns).unwrap_or(u64::MAX),
+            acyclic_evaluation_ns: u64::try_from(t.acyclic_evaluation_ns).unwrap_or(u64::MAX),
+            iterative_scc_evaluation_ns: u64::try_from(t.iterative_scc_evaluation_ns)
+                .unwrap_or(u64::MAX),
+            virtual_dependency_change_detection_ns: u64::try_from(
+                t.virtual_dependency_change_detection_ns,
+            )
+            .unwrap_or(u64::MAX),
+            cleanup_ns: u64::try_from(t.cleanup_ns).unwrap_or(u64::MAX),
+            evaluation_passes: t.evaluation_passes,
+            dirty_roots: t.dirty_roots,
+            planned_vertices: t.planned_vertices,
+            planned_layers: t.planned_layers,
+            planned_sccs: t.planned_sccs,
+            evaluated_vertices: t.evaluated_vertices,
+            acyclic_vertices_evaluated: t.acyclic_vertices_evaluated,
+            scc_tasks_evaluated: t.scc_tasks_evaluated,
+            scc_units_considered: t.scc_units_considered,
+            scc_units_reused: t.scc_units_reused,
+            scc_units_invalidated: t.scc_units_invalidated,
+            scc_units_reusable_after_recalc: t.scc_units_reusable_after_recalc,
+            scc_reuse_metadata_bytes: t.scc_reuse_metadata_bytes,
+            scc_member_count: t.scc_member_count,
+            scc_member_evaluations: t.scc_member_evaluations,
+            volatile_vertices_redirtied: t.volatile_vertices_redirtied,
+            iterative_vertices_redirtied: t.iterative_vertices_redirtied,
+        }
+    }
+}
+
+#[cfg_attr(not(target_os = "emscripten"), gen_stub_pymethods)]
+#[pymethods]
+impl PyRecalcTelemetry {
+    fn __repr__(&self) -> String {
+        format!(
+            "RecalcTelemetry(total_ns={}, graph_build_ns={}, dirty_detection_ns={}, plan_build_ns={}, acyclic_evaluation_ns={}, iterative_scc_evaluation_ns={}, cleanup_ns={}, planned_vertices={}, planned_sccs={}, evaluated_vertices={}, scc_member_count={}, scc_member_evaluations={})",
+            self.total_ns,
+            self.graph_build_ns,
+            self.dirty_detection_ns,
+            self.plan_build_ns,
+            self.acyclic_evaluation_ns,
+            self.iterative_scc_evaluation_ns,
+            self.cleanup_ns,
+            self.planned_vertices,
+            self.planned_sccs,
+            self.evaluated_vertices,
+            self.scc_member_count,
+            self.scc_member_evaluations,
+        )
+    }
 }
 
 /// Per-recalc telemetry from runtime SCC evaluation (RFC #113, spec §10).

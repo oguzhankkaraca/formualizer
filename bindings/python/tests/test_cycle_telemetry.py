@@ -94,3 +94,16 @@ def test_telemetry_repr_is_informative():
     r = repr(wb.last_cycle_telemetry())
     assert r.startswith("CycleTelemetry(")
     assert "converged_sccs=0" in r
+
+
+def test_recalc_telemetry_reports_scc_work():
+    wb = _iterate_workbook()
+    wb.add_sheet("S")
+    wb.set_formula("S", 1, 1, "=B1+1")
+    wb.set_formula("S", 1, 2, "=A1/2")
+    wb.evaluate_all()
+
+    telemetry = wb.last_recalc_telemetry()
+    assert telemetry.scc_tasks_evaluated == 1
+    assert telemetry.scc_member_count == 2
+    assert telemetry.scc_member_evaluations >= 4

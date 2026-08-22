@@ -1,0 +1,18 @@
+{
+  "name": "@formualizer/ui-worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "test": "pnpm run build && node --test dist/backend.test.js"
+  },
+  "dependencies": {
+    "formualizer": "file:../../bindings/wasm"
+  },
+  "devDependencies": {
+    "@types/node": "20.19.37",
+    "typescript": "5.9.3"
+  }
+}

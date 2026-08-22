@@ -1,11 +1,11 @@
 /// Unified data storage for all value types using arenas
 /// Provides conversion between LiteralValue and ValueRef
 use super::array::ArrayArena;
-use super::ast::{AstArena, AstNodeId, CompactRefType, SheetKey};
+use super::ast::{AstArena, AstNodeData, AstNodeId, CompactRefType, SheetKey};
 use super::error_arena::{ErrorArena, ErrorRef};
 use super::scalar::ScalarArena;
 use super::string_interner::{StringId, StringInterner};
-use super::value_ref::ValueRef;
+use super::value_ref::{ValueRef, ValueType};
 use crate::engine::sheet_registry::SheetRegistry;
 use formualizer_common::{ExcelError, ExcelErrorKind, LiteralValue};
 use formualizer_parse::parser::{
@@ -852,6 +852,8 @@ impl DataStore {
     pub fn memory_usage(&self) -> DataStoreStats {
         DataStoreStats {
             scalar_bytes: self.scalars.memory_usage(),
+            scalar_capacity: self.scalars.capacity(),
+            scalar_reused_slots: self.scalars.reused_slots(),
             string_bytes: self.strings.memory_usage(),
             array_bytes: self.arrays.memory_usage(),
             ast_bytes: self.asts.memory_usage(),
@@ -862,6 +864,85 @@ impl DataStore {
             total_ast_nodes: self.asts.stats().node_count,
             total_errors: self.errors.len(),
         }
+    }
+
+    pub fn reachable_scalar_slots<I, J>(&self, value_roots: I, ast_roots: J) -> usize
+    where
+        I: IntoIterator<Item = ValueRef>,
+        J: IntoIterator<Item = AstNodeId>,
+    {
+        let mut live_floats = vec![false; self.scalars.float_len()];
+        let mut live_integers = vec![false; self.scalars.integer_len()];
+        let mut visited_arrays = vec![false; self.arrays.len()];
+        let mut visited_asts = vec![false; self.asts.stats().node_count];
+        let mut value_stack: Vec<ValueRef> = value_roots.into_iter().collect();
+        let mut ast_stack: Vec<AstNodeId> = ast_roots.into_iter().collect();
+
+        loop {
+            while let Some(value_ref) = value_stack.pop() {
+                let Some(index) = value_ref.arena_index().map(|index| index as usize) else {
+                    continue;
+                };
+                match value_ref.value_type() {
+                    ValueType::Number | ValueType::DateTime => {
+                        if let Some(slot) = live_floats.get_mut(index) {
+                            *slot = true;
+                        }
+                    }
+                    ValueType::LargeInt | ValueType::Duration => {
+                        if let Some(slot) = live_integers.get_mut(index) {
+                            *slot = true;
+                        }
+                    }
+                    ValueType::Array => {
+                        if visited_arrays.get(index).copied().unwrap_or(true) {
+                            continue;
+                        }
+                        visited_arrays[index] = true;
+                        if let Some(elements) =
+                            self.arrays.elements(super::array::ArrayRef(index as u32))
+                        {
+                            value_stack.extend(elements.iter().copied());
+                        }
+                    }
+                    ValueType::FormulaAst => ast_stack.push(AstNodeId::from_u32(index as u32)),
+                    _ => {}
+                }
+            }
+
+            let Some(ast_id) = ast_stack.pop() else {
+                break;
+            };
+            let index = ast_id.as_u32() as usize;
+            if visited_asts.get(index).copied().unwrap_or(true) {
+                continue;
+            }
+            visited_asts[index] = true;
+            match self.asts.get(ast_id) {
+                Some(AstNodeData::Literal(value_ref)) => value_stack.push(*value_ref),
+                Some(AstNodeData::UnaryOp { expr_id, .. }) => ast_stack.push(*expr_id),
+                Some(AstNodeData::BinaryOp {
+                    left_id, right_id, ..
+                }) => {
+                    ast_stack.push(*left_id);
+                    ast_stack.push(*right_id);
+                }
+                Some(AstNodeData::Function { .. }) => {
+                    if let Some(args) = self.asts.get_function_args(ast_id) {
+                        ast_stack.extend(args.iter().copied());
+                    }
+                }
+                Some(AstNodeData::Array { .. }) => {
+                    if let Some(elements) = self.asts.get_array_elements(ast_id) {
+                        ast_stack.extend(elements.iter().copied());
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        live_floats.into_iter().filter(|live| *live).count()
+            + live_integers.into_iter().filter(|live| *live).count()
     }
 
     /// Clear all data from the store
@@ -884,6 +965,8 @@ impl Default for DataStore {
 #[derive(Debug, Clone)]
 pub struct DataStoreStats {
     pub scalar_bytes: usize,
+    pub scalar_capacity: usize,
+    pub scalar_reused_slots: u64,
     pub string_bytes: usize,
     pub array_bytes: usize,
     pub ast_bytes: usize,
@@ -1033,6 +1116,30 @@ mod tests {
             ASTNodeType::Literal(lit) => assert_eq!(lit, LiteralValue::Number(42.0)),
             _ => panic!("Expected literal"),
         }
+    }
+
+    #[test]
+    fn test_reachable_scalar_slots_follow_value_and_ast_roots() {
+        let mut store = DataStore::new();
+        let orphan = store.store_value(LiteralValue::Number(1.0));
+        let array_root = store.store_value(LiteralValue::Array(vec![vec![
+            LiteralValue::Number(2.0),
+            LiteralValue::Number(3.0),
+        ]]));
+        let mut sheet_registry = SheetRegistry::new();
+        sheet_registry.id_for("Sheet1");
+        let ast_root = store.store_ast(
+            &ASTNode {
+                node_type: ASTNodeType::Literal(LiteralValue::Number(4.0)),
+                source_token: None,
+                contains_volatile: false,
+            },
+            &sheet_registry,
+        );
+
+        assert_eq!(store.memory_usage().total_scalars, 4);
+        assert_eq!(store.reachable_scalar_slots([array_root], [ast_root]), 3);
+        assert_eq!(store.reachable_scalar_slots([orphan], []), 1);
     }
 
     #[test]

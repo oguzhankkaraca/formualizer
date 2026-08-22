@@ -5,7 +5,9 @@
 //! the fixed behavior: unbounded dimensions are clamped to the used region via
 //! `resolve_range_view`, exactly like MATCH/VLOOKUP.
 
+use crate::engine::named_range::{NameScope, NamedDefinition};
 use crate::engine::{Engine, EvalConfig, FormulaPlaneMode};
+use crate::reference::{CellRef, Coord, RangeRef};
 use crate::test_workbook::TestWorkbook;
 use formualizer_common::{ExcelErrorKind, LiteralValue};
 use formualizer_parse::parser::parse;
@@ -27,6 +29,173 @@ fn assert_number(engine: &Engine<TestWorkbook>, sheet: &str, row: u32, col: u32,
         }
         other => panic!("{sheet}!R{row}C{col}: expected {expected}, got {other:?}"),
     }
+}
+
+fn seed_two_way_lookup_table(engine: &mut Engine<TestWorkbook>, sheet: &str) {
+    engine.add_sheet(sheet).unwrap();
+    for (row, value) in [(1, "Metric"), (2, "Gas"), (3, "Wind"), (4, "Solar")] {
+        engine
+            .set_cell_value(sheet, row, 1, LiteralValue::Text(value.into()))
+            .unwrap();
+    }
+    for (col, value) in [(2, "Capex"), (3, "Opex"), (4, "Total")] {
+        engine
+            .set_cell_value(sheet, 1, col, LiteralValue::Text(value.into()))
+            .unwrap();
+    }
+    for (row, values) in [(2, [10, 20, 30]), (3, [40, 50, 90]), (4, [70, 80, 150])] {
+        for (offset, value) in values.into_iter().enumerate() {
+            engine
+                .set_cell_value(sheet, row, offset as u32 + 2, LiteralValue::Int(value))
+                .unwrap();
+        }
+    }
+}
+
+#[test]
+fn index_match_match_template_shape_tracks_keys_and_table_edits() {
+    let mut engine = new_engine();
+    seed_two_way_lookup_table(&mut engine, "NamedRange");
+    engine
+        .set_cell_value("Sheet1", 1, 1, LiteralValue::Text("Wind".into()))
+        .unwrap();
+    engine
+        .set_cell_value("Sheet1", 1, 2, LiteralValue::Text("Opex".into()))
+        .unwrap();
+    engine
+        .set_cell_formula(
+            "Sheet1",
+            1,
+            3,
+            parse("=INDEX('NamedRange'!$A$1:$D$4,MATCH(A1,'NamedRange'!$A$1:$A$4,0),MATCH(B1,'NamedRange'!$A$1:$D$1,0))")
+                .unwrap(),
+        )
+        .unwrap();
+
+    engine.evaluate_all().unwrap();
+    assert_number(&engine, "Sheet1", 1, 3, 50.0);
+
+    engine
+        .set_cell_value("NamedRange", 3, 3, LiteralValue::Int(55))
+        .unwrap();
+    engine.evaluate_all().unwrap();
+    assert_number(&engine, "Sheet1", 1, 3, 55.0);
+
+    engine
+        .set_cell_value("Sheet1", 1, 1, LiteralValue::Text("Solar".into()))
+        .unwrap();
+    engine
+        .set_cell_value("Sheet1", 1, 2, LiteralValue::Text("Total".into()))
+        .unwrap();
+    engine.evaluate_all().unwrap();
+    assert_number(&engine, "Sheet1", 1, 3, 150.0);
+}
+
+#[test]
+fn index_match_match_supports_registered_named_ranges() {
+    let mut engine = new_engine();
+    seed_two_way_lookup_table(&mut engine, "NamedRange");
+    let named_sheet = engine.sheet_id("NamedRange").unwrap();
+    for (name, start_row, start_col, end_row, end_col) in [
+        ("State_Basic", 1, 1, 4, 4),
+        ("State_Abbv", 1, 1, 4, 1),
+        ("State_Basic_C_SS", 1, 1, 1, 4),
+    ] {
+        let start = CellRef::new(
+            named_sheet,
+            Coord::from_excel(start_row, start_col, true, true),
+        );
+        let end = CellRef::new(named_sheet, Coord::from_excel(end_row, end_col, true, true));
+        engine
+            .define_name(
+                name,
+                NamedDefinition::Range(RangeRef::new(start, end)),
+                NameScope::Workbook,
+            )
+            .unwrap();
+    }
+    engine
+        .set_cell_value("Sheet1", 1, 1, LiteralValue::Text("Wind".into()))
+        .unwrap();
+    engine
+        .set_cell_value("Sheet1", 1, 2, LiteralValue::Text("Opex".into()))
+        .unwrap();
+    engine
+        .set_cell_formula(
+            "Sheet1",
+            1,
+            3,
+            parse("=INDEX(State_Basic,MATCH(A1,State_Abbv,0),MATCH(B1,State_Basic_C_SS,0))")
+                .unwrap(),
+        )
+        .unwrap();
+
+    engine.evaluate_all().unwrap();
+    assert_number(&engine, "Sheet1", 1, 3, 50.0);
+}
+
+#[test]
+fn index_match_match_template_shape_supports_full_axis_match_ranges() {
+    let mut engine = new_engine();
+    seed_two_way_lookup_table(&mut engine, "Development");
+    engine
+        .set_cell_value("Sheet1", 1, 1, LiteralValue::Text("Wind".into()))
+        .unwrap();
+    engine
+        .set_cell_value("Sheet1", 1, 2, LiteralValue::Text("Opex".into()))
+        .unwrap();
+    engine
+        .set_cell_formula(
+            "Sheet1",
+            1,
+            3,
+            parse("=INDEX('Development'!$A$1:$D$4,MATCH(A1,'Development'!$A$1:$A$1048576,0),MATCH(B1,'Development'!$A$1:$XFD$1,0))")
+                .unwrap(),
+        )
+        .unwrap();
+
+    engine.evaluate_all().unwrap();
+    assert_number(&engine, "Sheet1", 1, 3, 50.0);
+}
+
+#[test]
+fn index_match_match_template_shape_supports_approximate_row_offset() {
+    let mut engine = new_engine();
+    engine.add_sheet("NamedRange").unwrap();
+    for (col, value) in [(2, "Capex"), (3, "Opex")] {
+        engine
+            .set_cell_value("NamedRange", 1, col, LiteralValue::Text(value.into()))
+            .unwrap();
+    }
+    for (row, threshold, capex, opex) in [(2, 100, 10, 20), (3, 200, 40, 50), (4, 300, 70, 80)] {
+        engine
+            .set_cell_value("NamedRange", row, 1, LiteralValue::Int(threshold))
+            .unwrap();
+        engine
+            .set_cell_value("NamedRange", row, 2, LiteralValue::Int(capex))
+            .unwrap();
+        engine
+            .set_cell_value("NamedRange", row, 3, LiteralValue::Int(opex))
+            .unwrap();
+    }
+    engine
+        .set_cell_value("Sheet1", 1, 1, LiteralValue::Int(250))
+        .unwrap();
+    engine
+        .set_cell_value("Sheet1", 1, 2, LiteralValue::Text("Opex".into()))
+        .unwrap();
+    engine
+        .set_cell_formula(
+            "Sheet1",
+            1,
+            3,
+            parse("=INDEX('NamedRange'!$A$1:$C$4,MATCH(A1,'NamedRange'!$A$2:$A$4,1)+1,MATCH(B1,'NamedRange'!$A$1:$C$1,0))")
+                .unwrap(),
+        )
+        .unwrap();
+
+    engine.evaluate_all().unwrap();
+    assert_number(&engine, "Sheet1", 1, 3, 50.0);
 }
 
 #[test]

@@ -1,0 +1,67 @@
+{
+    "schema":  "formualizer.excel-oracle.snapshot/v1",
+    "case_id":  "error-normalization",
+    "provenance":  {
+                       "generated_at_utc":  "2026-08-22T08:02:36.8366901Z",
+                       "generator":  "tools/excel-oracle/recalculate_excel.ps1",
+                       "excel_version":  "16.0",
+                       "excel_file_version":  "16.0.20228.20188",
+                       "excel_executable":  "C:\\Program Files\\Microsoft Office\\Root\\Office16\\EXCEL.EXE",
+                       "culture":  "en-US",
+                       "case_sha256":  "33a56ba14883c99b2820f607a96f6374343c5fa1a25d3da6b106ebc64110584f",
+                       "workbook_sha256":  "be91b5715ff21cf12e39581d64b3616aac62ab2cd1166aaf52fe3962d07a2636",
+                       "date_system":  "1900",
+                       "calculation":  {
+                                           "iterate":  false,
+                                           "max_iterations":  100,
+                                           "max_change":  0.001
+                                       }
+                   },
+    "results":  {
+                    "Cases!A1":  {
+                                     "kind":  "error",
+                                     "value":  null,
+                                     "error":  "#N/A",
+                                     "text":  "#N/A",
+                                     "formula":  "=NA()",
+                                     "formula2":  "=NA()",
+                                     "number_format":  "General"
+                                 },
+                    "Cases!A2":  {
+                                     "kind":  "error",
+                                     "value":  null,
+                                     "error":  "#DIV/0!",
+                                     "text":  "#DIV/0!",
+                                     "formula":  "=1/0",
+                                     "formula2":  "=1/0",
+                                     "number_format":  "General"
+                                 },
+                    "Cases!A3":  {
+                                     "kind":  "error",
+                                     "value":  null,
+                                     "error":  "#REF!",
+                                     "text":  "#REF!",
+                                     "formula":  "=#REF!",
+                                     "formula2":  "=#REF!",
+                                     "number_format":  "General"
+                                 },
+                    "Cases!A4":  {
+                                     "kind":  "error",
+                                     "value":  null,
+                                     "error":  "#VALUE!",
+                                     "text":  "#VALUE!",
+                                     "formula":  "=#VALUE!",
+                                     "formula2":  "=#VALUE!",
+                                     "number_format":  "General"
+                                 },
+                    "Cases!A5":  {
+                                     "kind":  "number",
+                                     "value":  42,
+                                     "error":  null,
+                                     "text":  "42",
+                                     "formula":  "=IFERROR(1/0,42)",
+                                     "formula2":  "=IFERROR(1/0,42)",
+                                     "number_format":  "General"
+                                 }
+                }
+}

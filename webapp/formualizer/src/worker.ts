@@ -106,7 +106,6 @@ class FormualizerWorkerRuntime {
         new Uint8Array(request.bytes),
         ITERATIVE_OPTIONS,
       );
-      this.workbook.evaluateAll();
       return this.workbookSnapshot();
     }
 

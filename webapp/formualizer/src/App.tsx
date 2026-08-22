@@ -152,6 +152,8 @@ export default function App() {
         endColumn: 1,
       });
       setEditing(false);
+      setStatus('ready');
+      setMessage('Ready');
     },
     [],
   );
@@ -274,6 +276,24 @@ export default function App() {
     setEditing(false);
   }, [selectedSnapshot]);
 
+  const recalculate = useCallback(async () => {
+    const backend = backendRef.current;
+    if (!backend) {
+      return;
+    }
+    setStatus('busy');
+    setMessage('Recalculating…');
+    try {
+      const result = await backend.evaluate();
+      stampRef.current = result.stamp;
+      setTelemetry(result.telemetry);
+      await refreshWindow(selected.sheet, startRow, startColumn, result.stamp);
+    } catch (error) {
+      setStatus('error');
+      setMessage(errorMessage(error));
+    }
+  }, [refreshWindow, selected.sheet, startColumn, startRow]);
+
   const runHistory = useCallback(
     async (operation: 'undo' | 'redo') => {
       const backend = backendRef.current;
@@ -382,6 +402,9 @@ export default function App() {
         </button>
         <button type="button" className="toolbar-button" onClick={() => void runHistory('redo')}>
           Redo
+        </button>
+        <button type="button" className="toolbar-button" onClick={() => void recalculate()}>
+          Recalculate
         </button>
         <span className={`status status-${status}`}>{message}</span>
       </header>

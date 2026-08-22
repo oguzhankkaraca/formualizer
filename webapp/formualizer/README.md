@@ -20,7 +20,8 @@ The current protocol supports:
 
 - iterative calculation with runtime cycle detection (`100` passes, `0.001` threshold);
 - empty workbook creation with a default `Sheet1`;
-- XLSX byte loading;
+- XLSX byte loading without blocking load on full recalculation;
+- explicit full recalculation through the UI action;
 - typed viewport reads through `readCellWindow`;
 - raw user input commits;
 - full or targeted evaluation;

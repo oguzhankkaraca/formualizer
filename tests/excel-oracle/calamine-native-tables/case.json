@@ -1,0 +1,49 @@
+{
+  "schema": "formualizer.excel-oracle.case/v1",
+  "id": "calamine-native-tables",
+  "description": "Import native XLSX table metadata before evaluating structured references.",
+  "documentation": [
+    {
+      "title": "Using structured references with Excel tables",
+      "url": "https://support.microsoft.com/en-us/excel/using-structured-references-with-excel-tables"
+    }
+  ],
+  "workbook": {
+    "file": "fixture.xlsx",
+    "date_system": "1900",
+    "calculation": {
+      "iterate": false,
+      "max_iterations": 100,
+      "max_change": 0.001
+    },
+    "sheets": [
+      {
+        "name": "Data",
+        "cells": [
+          { "address": "A1", "kind": "text", "value": "Key" },
+          { "address": "B1", "kind": "text", "value": "Amount" },
+          { "address": "A2", "kind": "text", "value": "A" },
+          { "address": "B2", "kind": "number", "value": 10 },
+          { "address": "A3", "kind": "text", "value": "B" },
+          { "address": "B3", "kind": "number", "value": 20 },
+          { "address": "A4", "kind": "text", "value": "C" },
+          { "address": "B4", "kind": "number", "value": 30 },
+          { "address": "D2", "kind": "formula", "value": "=SUM(SalesTable[Amount])" }
+        ],
+        "tables": [
+          {
+            "name": "SalesTable",
+            "range": "A1:B4",
+            "header_row": true,
+            "totals_row": false
+          }
+        ]
+      }
+    ]
+  },
+  "targets": ["Data!D2"],
+  "comparison": {
+    "absolute_tolerance": 1e-9,
+    "relative_tolerance": 1e-9
+  }
+}

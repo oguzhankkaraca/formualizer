@@ -6,6 +6,31 @@ fn normalize_name_key(name: &str) -> String {
     name.to_lowercase()
 }
 
+fn formula_is_array(ast: &ASTNode) -> bool {
+    match &ast.node_type {
+        ASTNodeType::Reference { reference, .. } => matches!(
+            reference,
+            ReferenceType::Range { .. }
+                | ReferenceType::Range3D { .. }
+                | ReferenceType::Table(_)
+                | ReferenceType::External(_)
+        ),
+        ASTNodeType::Array(_) => true,
+        ASTNodeType::UnaryOp { op, expr } => op != "@" && formula_is_array(expr),
+        ASTNodeType::BinaryOp { op, left, right } => {
+            op == ":" || formula_is_array(left) || formula_is_array(right)
+        }
+        ASTNodeType::Function { name, .. } => {
+            crate::function_registry::get("", name).is_some_and(|function| {
+                function.caps().intersects(
+                    crate::function::FnCaps::RETURNS_REFERENCE | crate::function::FnCaps::MAY_SPILL,
+                )
+            })
+        }
+        ASTNodeType::Call { .. } | ASTNodeType::Literal(_) | ASTNodeType::Omitted => false,
+    }
+}
+
 /// Validate that a name conforms to Excel naming rules.
 fn is_valid_excel_name(name: &str) -> bool {
     // Excel name rules:
@@ -265,11 +290,19 @@ impl DependencyGraph {
             vertex: vertex_id,
         };
 
-        if matches!(named_range.definition, NamedDefinition::Range(_)) {
-            self.store.set_kind(vertex_id, VertexKind::NamedArray);
-        } else {
-            self.store.set_kind(vertex_id, VertexKind::NamedScalar);
-        }
+        let is_array = match &named_range.definition {
+            NamedDefinition::Range(_) => true,
+            NamedDefinition::Formula { ast, .. } => formula_is_array(ast),
+            NamedDefinition::Cell(_) | NamedDefinition::Literal(_) => false,
+        };
+        self.store.set_kind(
+            vertex_id,
+            if is_array {
+                VertexKind::NamedArray
+            } else {
+                VertexKind::NamedScalar
+            },
+        );
 
         // Formula dependencies are re-extracted here to share registration with update/reindex paths.
         let referenced_names =
@@ -427,7 +460,11 @@ impl DependencyGraph {
             let mut update_data: Option<(VertexId, NameScope, NamedDefinition, bool)> = None;
             if let Some(named_range) = named_range {
                 named_range.definition = new_definition;
-                let is_range = matches!(named_range.definition, NamedDefinition::Range(_));
+                let is_range = match &named_range.definition {
+                    NamedDefinition::Range(_) => true,
+                    NamedDefinition::Formula { ast, .. } => formula_is_array(ast),
+                    NamedDefinition::Cell(_) | NamedDefinition::Literal(_) => false,
+                };
                 update_data = Some((
                     named_range.vertex,
                     named_range.scope,

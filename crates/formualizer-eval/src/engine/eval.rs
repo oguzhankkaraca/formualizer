@@ -4740,6 +4740,21 @@ where
         Ok(())
     }
 
+    pub fn update_table(
+        &mut self,
+        name: &str,
+        range: crate::reference::RangeRef,
+        header_row: bool,
+        headers: Vec<String>,
+        totals_row: bool,
+    ) -> Result<(), ExcelError> {
+        self.graph
+            .update_table(name, range, header_row, headers, totals_row)?;
+        self.record_formula_plane_structural_change(StructuralScope::AllSheets);
+        self.mark_topology_edited();
+        Ok(())
+    }
+
     pub fn define_source_scalar(
         &mut self,
         name: &str,
@@ -24035,6 +24050,119 @@ where
     }
 }
 
+fn merge_table_axis(target: &mut Option<(usize, usize)>, incoming: (usize, usize)) {
+    *target = Some(match *target {
+        Some((start, end)) => (start.max(incoming.0), end.min(incoming.1)),
+        None => incoming,
+    });
+}
+
+fn table_selector_bounds(
+    table: &crate::engine::graph::TableEntry,
+    specifier: &formualizer_parse::parser::TableSpecifier,
+) -> Result<((usize, usize), (usize, usize)), ExcelError> {
+    use formualizer_parse::parser::{SpecialItem, TableSpecifier};
+
+    let sr = table.range.start.coord.row() as usize;
+    let sc = table.range.start.coord.col() as usize;
+    let er = table.range.end.coord.row() as usize;
+    let ec = table.range.end.coord.col() as usize;
+    let data_sr = if table.header_row {
+        sr.saturating_add(1)
+    } else {
+        sr
+    };
+    let data_er = if table.totals_row {
+        er.saturating_sub(1)
+    } else {
+        er
+    };
+    let mut row_bounds = None;
+    let mut col_bounds = None;
+    fn visit(
+        specifier: &TableSpecifier,
+        table: &crate::engine::graph::TableEntry,
+        sr: usize,
+        sc: usize,
+        er: usize,
+        data_sr: usize,
+        data_er: usize,
+        row_bounds: &mut Option<(usize, usize)>,
+        col_bounds: &mut Option<(usize, usize)>,
+    ) -> Result<(), ExcelError> {
+        match specifier {
+            TableSpecifier::All | TableSpecifier::SpecialItem(SpecialItem::All) => {
+                merge_table_axis(row_bounds, (sr, er));
+            }
+            TableSpecifier::Data | TableSpecifier::SpecialItem(SpecialItem::Data) => {
+                merge_table_axis(row_bounds, (data_sr, data_er));
+            }
+            TableSpecifier::Headers | TableSpecifier::SpecialItem(SpecialItem::Headers) => {
+                merge_table_axis(row_bounds, if table.header_row { (sr, sr) } else { (1, 0) });
+            }
+            TableSpecifier::Totals | TableSpecifier::SpecialItem(SpecialItem::Totals) => {
+                merge_table_axis(row_bounds, if table.totals_row { (er, er) } else { (1, 0) });
+            }
+            TableSpecifier::Column(column) => {
+                let Some(index) = table.col_index(column) else {
+                    return Err(ExcelError::new(ExcelErrorKind::Ref)
+                        .with_message("Column refers to unknown table column".to_string()));
+                };
+                merge_table_axis(col_bounds, (sc + index, sc + index));
+            }
+            TableSpecifier::ColumnRange(start, end) => {
+                let Some(start_index) = table.col_index(start) else {
+                    return Err(ExcelError::new(ExcelErrorKind::Ref)
+                        .with_message("Column range refers to unknown column(s)".to_string()));
+                };
+                let Some(end_index) = table.col_index(end) else {
+                    return Err(ExcelError::new(ExcelErrorKind::Ref)
+                        .with_message("Column range refers to unknown column(s)".to_string()));
+                };
+                merge_table_axis(
+                    col_bounds,
+                    (
+                        sc + start_index.min(end_index),
+                        sc + start_index.max(end_index),
+                    ),
+                );
+            }
+            TableSpecifier::SpecialItem(SpecialItem::ThisRow) | TableSpecifier::Row(_) => {
+                return Err(ExcelError::new(ExcelErrorKind::NImpl)
+                    .with_message("This-row/table-row structured references need row context"));
+            }
+            TableSpecifier::Combination(parts) => {
+                for part in parts {
+                    visit(
+                        part, table, sr, sc, er, data_sr, data_er, row_bounds, col_bounds,
+                    )?;
+                }
+            }
+        }
+        Ok(())
+    }
+    visit(
+        specifier,
+        table,
+        sr,
+        sc,
+        er,
+        data_sr,
+        data_er,
+        &mut row_bounds,
+        &mut col_bounds,
+    )?;
+    let rows = row_bounds.unwrap_or_else(|| {
+        if col_bounds.is_some() {
+            (data_sr, data_er)
+        } else {
+            (sr, er)
+        }
+    });
+    let cols = col_bounds.unwrap_or((sc, ec));
+    Ok((rows, cols))
+}
+
 // Override EvaluationContext to provide thread pool access
 impl<R> crate::traits::EvaluationContext for Engine<R>
 where
@@ -24252,6 +24380,27 @@ where
         };
         let current_id = self.graph.sheet_id(current_sheet)?;
         let named = self.graph.resolve_name_entry(name, current_id)?;
+        if let NamedDefinition::Formula { ast, .. } = &named.definition
+            && let formualizer_parse::parser::ASTNodeType::Reference { reference, .. } =
+                &ast.node_type
+            && matches!(
+                reference,
+                ReferenceType::Cell { .. } | ReferenceType::Range { .. } | ReferenceType::Table(_)
+            )
+        {
+            let view = self.resolve_range_view(reference, current_sheet).ok()?;
+            if view.is_empty() {
+                return None;
+            }
+            let to_excel = |index: usize| u32::try_from(index + 1).ok();
+            return Some((
+                view.sheet_name().to_string(),
+                to_excel(view.start_row())?,
+                to_excel(view.start_col())?,
+                to_excel(view.end_row())?,
+                to_excel(view.end_col())?,
+            ));
+        }
         let (start, end) = match &named.definition {
             NamedDefinition::Cell(cell) => (*cell, *cell),
             NamedDefinition::Range(range) => (range.start, range.end),
@@ -24675,8 +24824,12 @@ where
                         }
                         NamedDefinition::Formula { .. } => {
                             if let Some(value) = self.graph.get_value(named.vertex) {
+                                let rows = match value {
+                                    LiteralValue::Array(rows) => rows,
+                                    other => vec![vec![other]],
+                                };
                                 return Ok(RangeView::from_owned_rows(
-                                    vec![vec![value]],
+                                    rows,
                                     self.config.date_system,
                                 ));
                             }
@@ -24706,24 +24859,6 @@ where
                         .sheet(sheet_name)
                         .expect("Arrow sheet missing for table reference");
 
-                    let sr0 = table.range.start.coord.row() as usize;
-                    let sc0 = table.range.start.coord.col() as usize;
-                    let er0 = table.range.end.coord.row() as usize;
-                    let ec0 = table.range.end.coord.col() as usize;
-
-                    let has_totals = table.totals_row;
-                    let has_headers = table.header_row;
-                    let data_sr = if has_headers {
-                        sr0.saturating_add(1)
-                    } else {
-                        sr0
-                    };
-                    let data_er = if has_totals {
-                        er0.saturating_sub(1)
-                    } else {
-                        er0
-                    };
-
                     let select = |sr: usize, sc: usize, er: usize, ec: usize| {
                         if sr > er || sc > ec {
                             asheet.range_view(1, 1, 0, 0)
@@ -24732,86 +24867,23 @@ where
                         }
                     };
 
-                    let av = match &tref.specifier {
-                        None => {
-                            return Err(ExcelError::new(ExcelErrorKind::NImpl).with_message(
-                                "Table reference without specifier is unsupported".to_string(),
-                            ));
-                        }
-                        Some(formualizer_parse::parser::TableSpecifier::Column(col)) => {
-                            let Some(idx) = table.col_index(col) else {
-                                return Err(ExcelError::new(ExcelErrorKind::Ref).with_message(
-                                    "Column refers to unknown table column".to_string(),
-                                ));
-                            };
-                            let c0 = sc0 + idx;
-                            select(data_sr, c0, data_er, c0)
-                        }
-                        Some(formualizer_parse::parser::TableSpecifier::ColumnRange(
-                            start,
-                            end,
-                        )) => {
-                            let Some(si) = table.col_index(start) else {
-                                return Err(ExcelError::new(ExcelErrorKind::Ref).with_message(
-                                    "Column range refers to unknown column(s)".to_string(),
-                                ));
-                            };
-                            let Some(ei) = table.col_index(end) else {
-                                return Err(ExcelError::new(ExcelErrorKind::Ref).with_message(
-                                    "Column range refers to unknown column(s)".to_string(),
-                                ));
-                            };
-                            let (mut a, mut b) = (si, ei);
-                            if a > b {
-                                std::mem::swap(&mut a, &mut b);
-                            }
-                            let c_start = sc0 + a;
-                            let c_end = sc0 + b;
-                            select(data_sr, c_start, data_er, c_end)
-                        }
-                        Some(formualizer_parse::parser::TableSpecifier::All)
-                        | Some(formualizer_parse::parser::TableSpecifier::SpecialItem(
-                            formualizer_parse::parser::SpecialItem::All,
-                        )) => select(sr0, sc0, er0, ec0),
-                        Some(formualizer_parse::parser::TableSpecifier::Data)
-                        | Some(formualizer_parse::parser::TableSpecifier::SpecialItem(
-                            formualizer_parse::parser::SpecialItem::Data,
-                        )) => select(data_sr, sc0, data_er, ec0),
-                        Some(formualizer_parse::parser::TableSpecifier::Headers)
-                        | Some(formualizer_parse::parser::TableSpecifier::SpecialItem(
-                            formualizer_parse::parser::SpecialItem::Headers,
-                        )) => {
-                            if !has_headers {
-                                asheet.range_view(1, 1, 0, 0)
-                            } else {
-                                select(sr0, sc0, sr0, ec0)
-                            }
-                        }
-                        Some(formualizer_parse::parser::TableSpecifier::Totals)
-                        | Some(formualizer_parse::parser::TableSpecifier::SpecialItem(
-                            formualizer_parse::parser::SpecialItem::Totals,
-                        )) => {
-                            if !has_totals {
-                                asheet.range_view(1, 1, 0, 0)
-                            } else {
-                                select(er0, sc0, er0, ec0)
-                            }
-                        }
-                        Some(formualizer_parse::parser::TableSpecifier::SpecialItem(
-                            formualizer_parse::parser::SpecialItem::ThisRow,
-                        )) => {
-                            return Err(ExcelError::new(ExcelErrorKind::NImpl).with_message(
-                                "@ (This Row) requires table-aware context; not yet supported"
-                                    .to_string(),
-                            ));
-                        }
-                        Some(formualizer_parse::parser::TableSpecifier::Row(_))
-                        | Some(formualizer_parse::parser::TableSpecifier::Combination(_)) => {
-                            return Err(ExcelError::new(ExcelErrorKind::NImpl).with_message(
-                                "Complex structured references not yet supported".to_string(),
-                            ));
-                        }
-                    };
+                    let ((row_start, row_end), (col_start, col_end)) =
+                        if let Some(specifier) = &tref.specifier {
+                            table_selector_bounds(table, specifier)?
+                        } else {
+                            let row_start = table.range.start.coord.row() as usize
+                                + usize::from(table.header_row);
+                            let row_end = table.range.end.coord.row() as usize
+                                - usize::from(table.totals_row);
+                            (
+                                (row_start, row_end),
+                                (
+                                    table.range.start.coord.col() as usize,
+                                    table.range.end.coord.col() as usize,
+                                ),
+                            )
+                        };
+                    let av = select(row_start, col_start, row_end, col_end);
 
                     return Ok(av);
                 }

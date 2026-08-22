@@ -155,6 +155,16 @@ pub struct GraphBaselineStats {
     pub graph_vertex_count: usize,
     pub graph_formula_vertex_count: usize,
     pub graph_edge_count: usize,
+    pub graph_value_count: usize,
+    pub value_cache_enabled: bool,
+    pub scalar_slots_allocated: usize,
+    pub scalar_slots_live: usize,
+    pub scalar_slots_reused: u64,
+    pub scalar_capacity: usize,
+    pub scalar_bytes: usize,
+    pub value_update_attempts: u64,
+    pub persistent_value_commits: u64,
+    pub persistent_scalar_commits: u64,
     pub dirty_vertex_count: usize,
     pub evaluation_vertex_count: usize,
     pub formula_ast_root_count: usize,
@@ -174,6 +184,9 @@ pub struct DependencyGraph {
     data_store: DataStore,
     vertex_values: FxHashMap<VertexId, ValueRef>,
     vertex_formulas: FxHashMap<VertexId, AstNodeId>,
+    value_update_attempts: u64,
+    persistent_value_commits: u64,
+    persistent_scalar_commits: u64,
 
     /// Gate for storing grid-backed (cell/formula) LiteralValue payloads inside the dependency graph.
     ///
@@ -442,10 +455,24 @@ impl DependencyGraph {
     /// Return read-only baseline counters for FormulaPlane/dispatch benchmarking.
     pub fn baseline_stats(&self) -> GraphBaselineStats {
         let data_stats = self.data_store.memory_usage();
+        let scalar_slots_live = self.data_store.reachable_scalar_slots(
+            self.vertex_values.values().copied(),
+            self.vertex_formulas.values().copied(),
+        );
         GraphBaselineStats {
             graph_vertex_count: self.store.len(),
             graph_formula_vertex_count: self.vertex_formulas.len(),
             graph_edge_count: self.edges.num_edges_exact(),
+            graph_value_count: self.vertex_values.len(),
+            value_cache_enabled: self.value_cache_enabled,
+            scalar_slots_allocated: data_stats.total_scalars,
+            scalar_slots_live,
+            scalar_slots_reused: data_stats.scalar_reused_slots,
+            scalar_capacity: data_stats.scalar_capacity,
+            scalar_bytes: data_stats.scalar_bytes,
+            value_update_attempts: self.value_update_attempts,
+            persistent_value_commits: self.persistent_value_commits,
+            persistent_scalar_commits: self.persistent_scalar_commits,
             dirty_vertex_count: self.formula_dirty.legacy_len(),
             evaluation_vertex_count: self.get_evaluation_vertices().len(),
             formula_ast_root_count: self.vertex_formulas.len(),
@@ -1193,6 +1220,9 @@ impl DependencyGraph {
             data_store: DataStore::new(),
             vertex_values: FxHashMap::default(),
             vertex_formulas: FxHashMap::default(),
+            value_update_attempts: 0,
+            persistent_value_commits: 0,
+            persistent_scalar_commits: 0,
             // Phase 1 (ticket 610): Arrow-truth is the only supported mode.
             // The dependency graph does not cache cell/formula literal payloads.
             value_cache_enabled: false,
@@ -3306,6 +3336,7 @@ impl DependencyGraph {
 
     /// Updates the cached value of a formula vertex.
     pub(crate) fn update_vertex_value(&mut self, vertex_id: VertexId, value: LiteralValue) {
+        self.value_update_attempts = self.value_update_attempts.saturating_add(1);
         if !self.value_cache_enabled {
             // Canonical mode: cell/formula vertices must not store values in the graph.
             match self.store.kind(vertex_id) {
@@ -3321,8 +3352,22 @@ impl DependencyGraph {
                 }
             }
         }
-        let value_ref = self.data_store.store_value(normalize_stored_literal(value));
+        let value = normalize_stored_literal(value);
+        let is_scalar = matches!(
+            value,
+            LiteralValue::Number(_)
+                | LiteralValue::Int(_)
+                | LiteralValue::DateTime(_)
+                | LiteralValue::Date(_)
+                | LiteralValue::Time(_)
+                | LiteralValue::Duration(_)
+        );
+        let value_ref = self.data_store.store_value(value);
         self.vertex_values.insert(vertex_id, value_ref);
+        self.persistent_value_commits = self.persistent_value_commits.saturating_add(1);
+        if is_scalar {
+            self.persistent_scalar_commits = self.persistent_scalar_commits.saturating_add(1);
+        }
     }
 
     /// Plan a spill region for an anchor; returns #SPILL! if blocked

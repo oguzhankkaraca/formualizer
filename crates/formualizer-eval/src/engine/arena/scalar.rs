@@ -54,6 +54,7 @@ impl ScalarRef {
 pub struct ScalarArena {
     floats: Vec<f64>,
     integers: Vec<i64>,
+    reused_slots: u64,
 }
 
 impl ScalarArena {
@@ -61,6 +62,7 @@ impl ScalarArena {
         Self {
             floats: Vec::new(),
             integers: Vec::new(),
+            reused_slots: 0,
         }
     }
 
@@ -68,6 +70,7 @@ impl ScalarArena {
         Self {
             floats: Vec::with_capacity(cap / 2),
             integers: Vec::with_capacity(cap / 2),
+            reused_slots: 0,
         }
     }
 
@@ -124,6 +127,23 @@ impl ScalarArena {
     /// Returns the total number of scalars stored
     pub fn len(&self) -> usize {
         self.floats.len() + self.integers.len()
+    }
+
+    /// Returns the total number of scalar slots reserved by the backing vectors.
+    pub fn capacity(&self) -> usize {
+        self.floats.capacity() + self.integers.capacity()
+    }
+
+    pub fn float_len(&self) -> usize {
+        self.floats.len()
+    }
+
+    pub fn integer_len(&self) -> usize {
+        self.integers.len()
+    }
+
+    pub fn reused_slots(&self) -> u64 {
+        self.reused_slots
     }
 
     /// Returns true if the arena is empty

@@ -27,12 +27,12 @@ use crate::engine::used_extent::{
 };
 use crate::engine::virtual_deps::{DynamicRefVirtualDepProvider, VirtualDepBuilder};
 use crate::engine::{
-    CycleDetection, CyclePolicy, DependencyGraph, EvalConfig, EvaluationRequestKind,
-    EvaluationRequestOutcome, EvaluationResourceBaselineStats, EvaluationResourceReason,
-    EvaluationResourceRequestStats, FormulaDirtyLeaseOutcome, FormulaIngestBatch,
-    FormulaIngestRecord, FormulaIngestReport, FormulaParseDiagnostic, FormulaParsePolicy,
-    FormulaPlaneMode, FormulaPlaneRoute, FormulaPlaneRouteEvent, FormulaPlaneRoutePhase,
-    FormulaPlaneRouteTransitionReason, FormulaPlaneTopologyCacheOutcome,
+    CycleConfig, CycleDetection, CyclePolicy, DateSystem, DependencyGraph, EvalConfig,
+    EvaluationRequestKind, EvaluationRequestOutcome, EvaluationResourceBaselineStats,
+    EvaluationResourceReason, EvaluationResourceRequestStats, FormulaDirtyLeaseOutcome,
+    FormulaIngestBatch, FormulaIngestRecord, FormulaIngestReport, FormulaParseDiagnostic,
+    FormulaParsePolicy, FormulaPlaneMode, FormulaPlaneRoute, FormulaPlaneRouteEvent,
+    FormulaPlaneRoutePhase, FormulaPlaneRouteTransitionReason, FormulaPlaneTopologyCacheOutcome,
     FormulaPlaneTopologyStrategy, ResourceLedger, RowVisibilitySource, ScheduleUnit, Scheduler,
     VertexId, VertexKind, VisibilityMaskMode,
 };
@@ -1040,6 +1040,22 @@ pub struct Engine<R> {
     /// not exist or settles as phantom, nothing re-registers, and the
     /// redirty chain stops by itself.
     pending_iterative_redirty: Vec<VertexId>,
+    pending_iterative_state_refresh: Vec<VertexId>,
+    pending_iterative_scc_redirty: Vec<PendingIterativeSccRedirty>,
+    reusable_iterative_sccs: Vec<ReusableIterativeScc>,
+    scc_reuse_cycle_config: CycleConfig,
+    scc_reuse_date_system: DateSystem,
+    scc_reuse_workbook_seed: u64,
+    scc_reuse_volatile_level: crate::traits::VolatileLevel,
+    scc_reuse_deterministic_mode: crate::engine::DeterministicMode,
+    scc_reuse_invalidated_before_request: usize,
+    last_scc_dirty_telemetry: SccDirtyTelemetry,
+    scc_dirty_telemetry_enabled: bool,
+    scc_dirty_attribution_baseline: Option<FxHashSet<VertexId>>,
+    request_naturally_dirty: Option<FxHashSet<VertexId>>,
+    request_dirty_count: usize,
+    formula_timing_enabled: bool,
+    formula_timings: Mutex<FxHashMap<VertexId, FormulaTimingAggregate>>,
 
     /// Final committed values of iterating-SCC members as of the end of the
     /// most recent recalc (spec §4 persistence). In canonical (value-cache
@@ -1815,6 +1831,8 @@ pub struct CycleTelemetry {
     /// Iterating SCC tasks that stopped because every member passed the
     /// spec-§6 convergence test.
     pub converged_sccs: usize,
+    /// Converged SCCs whose final two full passes were semantically identical.
+    pub exactly_stable_sccs: usize,
     /// SCC tasks that stopped at a pass cap. Under `CyclePolicy::Iterate`
     /// this is the Excel `max_iterations` cap (NOT an error — last values
     /// are kept; includes the no-convergence-test `max_iterations: 1`
@@ -1830,6 +1848,96 @@ pub struct CycleTelemetry {
     pub nan_converged: usize,
     /// Total wall-clock time spent inside Runtime SCC tasks.
     pub elapsed_ms: u128,
+}
+
+/// Per-request work and wall-clock measurements for recalculation profiling.
+/// Counters reset at the start of every evaluation request.
+#[derive(Debug, Clone, Default, PartialEq)]
+#[non_exhaustive]
+pub struct RecalcTelemetry {
+    pub total_ns: u128,
+    pub graph_build_ns: u128,
+    pub dirty_detection_ns: u128,
+    pub plan_build_ns: u128,
+    pub acyclic_evaluation_ns: u128,
+    pub iterative_scc_evaluation_ns: u128,
+    pub virtual_dependency_change_detection_ns: u128,
+    pub cleanup_ns: u128,
+    pub evaluation_passes: usize,
+    pub dirty_roots: usize,
+    pub planned_vertices: usize,
+    pub planned_layers: usize,
+    pub planned_sccs: usize,
+    pub evaluated_vertices: usize,
+    pub acyclic_vertices_evaluated: usize,
+    pub scc_tasks_evaluated: usize,
+    pub scc_units_considered: usize,
+    pub scc_units_reused: usize,
+    pub scc_units_invalidated: usize,
+    pub scc_units_reusable_after_recalc: usize,
+    pub scc_reuse_metadata_bytes: usize,
+    pub scc_member_count: usize,
+    pub scc_member_evaluations: usize,
+    pub volatile_vertices_redirtied: usize,
+    pub iterative_vertices_redirtied: usize,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct SccDirtyTelemetry {
+    pub dirty_at_request_start: usize,
+    pub vertices_added_since_attribution_baseline: usize,
+    pub naturally_dirty_before_redirty: usize,
+    pub dirty_after_volatile_redirty: usize,
+    pub dirty_after_iterative_redirty: usize,
+    pub vertices_added_solely_by_iterative_policy: usize,
+    pub sccs_intersecting_naturally_dirty: usize,
+    pub scc_cells_intersecting_naturally_dirty: usize,
+    pub sccs_added_solely_by_iterative_policy: usize,
+    pub scc_cells_added_solely_by_iterative_policy: usize,
+    pub per_scc: Vec<SccDirtyRecord>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct SccDirtyRecord {
+    pub stable_id: u64,
+    pub member_count: usize,
+    pub naturally_dirty_member_count: usize,
+    pub converged: bool,
+    pub exactly_stable: bool,
+    pub capped: bool,
+    pub reason: &'static str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct FormulaTimingRecord {
+    pub stable_id: u64,
+    pub calls: u64,
+    pub total_ns: u128,
+    pub max_ns: u128,
+    pub source: &'static str,
+}
+
+#[derive(Debug, Clone, Default)]
+struct FormulaTimingAggregate {
+    calls: u64,
+    total_ns: u128,
+    max_ns: u128,
+}
+
+#[derive(Debug, Clone)]
+struct PendingIterativeSccRedirty {
+    members: Vec<VertexId>,
+    converged: bool,
+    exactly_stable: bool,
+    capped: bool,
+}
+
+#[derive(Debug, Clone)]
+struct ReusableIterativeScc {
+    members: Box<[VertexId]>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -2596,6 +2704,11 @@ where
 
         // C1a retained/cache budgets are observational; cache defaults stay explicit.
         let lookup_cache_max_bytes = config.lookup_index_cache_max_bytes;
+        let scc_reuse_cycle_config = config.cycle;
+        let scc_reuse_date_system = config.date_system;
+        let scc_reuse_workbook_seed = config.workbook_seed;
+        let scc_reuse_volatile_level = config.volatile_level;
+        let scc_reuse_deterministic_mode = config.deterministic_mode.clone();
         let function_provider_revision_seen = resolver.planning_semantic_revision();
         let mut engine = Self {
             graph: DependencyGraph::new_with_config(config.clone()),
@@ -2656,6 +2769,22 @@ where
             evaluation_resource_config_diagnostic: resolved_resources.diagnostic,
             active_resource_ledger: None,
             pending_iterative_redirty: Vec::new(),
+            pending_iterative_state_refresh: Vec::new(),
+            pending_iterative_scc_redirty: Vec::new(),
+            reusable_iterative_sccs: Vec::new(),
+            scc_reuse_cycle_config,
+            scc_reuse_date_system,
+            scc_reuse_workbook_seed,
+            scc_reuse_volatile_level,
+            scc_reuse_deterministic_mode,
+            scc_reuse_invalidated_before_request: 0,
+            last_scc_dirty_telemetry: SccDirtyTelemetry::default(),
+            scc_dirty_telemetry_enabled: true,
+            scc_dirty_attribution_baseline: None,
+            request_naturally_dirty: None,
+            request_dirty_count: 0,
+            formula_timing_enabled: false,
+            formula_timings: Mutex::new(FxHashMap::default()),
             iterative_state_values: FxHashMap::default(),
             function_semantic_epoch_seen: crate::function_registry::semantic_epoch(),
             function_provider_revision_seen,
@@ -2739,6 +2868,11 @@ where
         });
         // C1a retained/cache budgets are observational; cache defaults stay explicit.
         let lookup_cache_max_bytes = config.lookup_index_cache_max_bytes;
+        let scc_reuse_cycle_config = config.cycle;
+        let scc_reuse_date_system = config.date_system;
+        let scc_reuse_workbook_seed = config.workbook_seed;
+        let scc_reuse_volatile_level = config.volatile_level;
+        let scc_reuse_deterministic_mode = config.deterministic_mode.clone();
         let function_provider_revision_seen = resolver.planning_semantic_revision();
         let mut engine = Self {
             graph: DependencyGraph::new_with_config(config.clone()),
@@ -2799,6 +2933,22 @@ where
             evaluation_resource_config_diagnostic: resolved_resources.diagnostic,
             active_resource_ledger: None,
             pending_iterative_redirty: Vec::new(),
+            pending_iterative_state_refresh: Vec::new(),
+            pending_iterative_scc_redirty: Vec::new(),
+            reusable_iterative_sccs: Vec::new(),
+            scc_reuse_cycle_config,
+            scc_reuse_date_system,
+            scc_reuse_workbook_seed,
+            scc_reuse_volatile_level,
+            scc_reuse_deterministic_mode,
+            scc_reuse_invalidated_before_request: 0,
+            last_scc_dirty_telemetry: SccDirtyTelemetry::default(),
+            scc_dirty_telemetry_enabled: true,
+            scc_dirty_attribution_baseline: None,
+            request_naturally_dirty: None,
+            request_dirty_count: 0,
+            formula_timing_enabled: false,
+            formula_timings: Mutex::new(FxHashMap::default()),
             iterative_state_values: FxHashMap::default(),
             function_semantic_epoch_seen: crate::function_registry::semantic_epoch(),
             function_provider_revision_seen,
@@ -3519,16 +3669,71 @@ where
     /// take the per-recalc volatile clock sample. Called at the start of
     /// every evaluation request that walks schedule units.
     fn begin_evaluation_request(&mut self) {
+        self.last_cycle_telemetry = CycleTelemetry::default();
+        self.last_recalc_telemetry = RecalcTelemetry::default();
+        if self.formula_timing_enabled
+            && let Ok(mut timings) = self.formula_timings.lock()
+        {
+            timings.clear();
+        }
+        if self.scc_reuse_cycle_config != self.config.cycle
+            || self.scc_reuse_date_system != self.config.date_system
+            || self.scc_reuse_workbook_seed != self.config.workbook_seed
+            || self.scc_reuse_volatile_level != self.config.volatile_level
+            || self.scc_reuse_deterministic_mode != self.config.deterministic_mode
+        {
+            self.invalidate_reusable_iterative_sccs();
+            self.scc_reuse_cycle_config = self.config.cycle;
+            self.scc_reuse_date_system = self.config.date_system;
+            self.scc_reuse_workbook_seed = self.config.workbook_seed;
+            self.scc_reuse_volatile_level = self.config.volatile_level;
+            self.scc_reuse_deterministic_mode = self.config.deterministic_mode.clone();
+        }
+        let reusable_before = self.reusable_iterative_sccs.len();
+        let request_dirty = (self.scc_dirty_telemetry_enabled || reusable_before != 0).then(|| {
+            self.graph
+                .get_evaluation_vertices()
+                .into_iter()
+                .collect::<FxHashSet<VertexId>>()
+        });
+        let invalidated = if let Some(dirty) = request_dirty.as_ref() {
+            let before = self.reusable_iterative_sccs.len();
+            self.reusable_iterative_sccs
+                .retain(|scc| !scc.members.iter().any(|member| dirty.contains(member)));
+            before.saturating_sub(self.reusable_iterative_sccs.len())
+        } else {
+            0
+        };
+        self.last_recalc_telemetry.scc_units_considered =
+            reusable_before.saturating_add(self.scc_reuse_invalidated_before_request);
+        self.last_recalc_telemetry.scc_units_reused = reusable_before.saturating_sub(invalidated);
+        self.last_recalc_telemetry.scc_units_invalidated =
+            invalidated.saturating_add(self.scc_reuse_invalidated_before_request);
+        self.scc_reuse_invalidated_before_request = 0;
+        let request_dirty = self
+            .scc_dirty_telemetry_enabled
+            .then(|| request_dirty.unwrap_or_default());
+        self.request_dirty_count = request_dirty.as_ref().map_or(0, FxHashSet::len);
+        self.request_naturally_dirty = match (
+            request_dirty.as_ref(),
+            self.scc_dirty_attribution_baseline.take(),
+        ) {
+            (Some(request), Some(baseline)) => {
+                Some(request.difference(&baseline).copied().collect())
+            }
+            _ => None,
+        };
         #[cfg(test)]
         {
             self.evaluation_request_begin_count_for_test = self
                 .evaluation_request_begin_count_for_test
                 .saturating_add(1);
         }
-        self.last_cycle_telemetry = CycleTelemetry::default();
         // Defensive: consumed at the end of the previous request; a request
         // that errored out mid-walk must not leak its members into this one.
         self.pending_iterative_redirty.clear();
+        self.pending_iterative_state_refresh.clear();
+        self.pending_iterative_scc_redirty.clear();
         // Spec §7.11: NOW()/TODAY() sample the clock ONCE per recalc; every
         // read within this request (including SCC iteration passes) observes
         // this sample.
@@ -3542,15 +3747,33 @@ where
     /// redirty). Replaces the bare `graph.redirty_volatiles()` call at every
     /// evaluation-flow exit; must run AFTER the flow's `clear_dirty_flags`.
     fn redirty_for_next_recalc(&mut self) {
+        let request_dirty_count = self.request_dirty_count;
+        let request_naturally_dirty = self.request_naturally_dirty.take();
+        let naturally_dirty = self.scc_dirty_telemetry_enabled.then(|| {
+            self.graph
+                .get_evaluation_vertices()
+                .into_iter()
+                .collect::<FxHashSet<VertexId>>()
+        });
+        self.last_recalc_telemetry.volatile_vertices_redirtied = self.graph.volatile_vertex_count();
         self.graph.redirty_volatiles();
+        let after_volatile = self.scc_dirty_telemetry_enabled.then(|| {
+            self.graph
+                .get_evaluation_vertices()
+                .into_iter()
+                .collect::<FxHashSet<VertexId>>()
+        });
         let pending = std::mem::take(&mut self.pending_iterative_redirty);
+        let state_refresh = std::mem::take(&mut self.pending_iterative_state_refresh);
+        let pending_sccs = std::mem::take(&mut self.pending_iterative_scc_redirty);
+        self.last_recalc_telemetry.iterative_vertices_redirtied = pending.len();
         // Refresh the §4-persistence snapshot: these final values survive
         // structural edits that clear the computed overlay (the only value
         // home in canonical mode) so the next SCC task can re-seed from them
-        // (see `iterative_state_values`). Replaced wholesale each recalc —
-        // when nothing iterates the map empties and stays free.
-        self.iterative_state_values.clear();
-        for &vertex in &pending {
+        // (see `iterative_state_values`). Reusable SCC entries persist while
+        // skipped; entries no longer owned by a reusable or redirtied SCC are
+        // pruned below.
+        for &vertex in &state_refresh {
             if !self.graph.vertex_exists(vertex) {
                 continue;
             }
@@ -3564,9 +3787,106 @@ where
                 }
             }
         }
+        let mut active_iterative_members: FxHashSet<VertexId> = pending.iter().copied().collect();
+        active_iterative_members.extend(
+            self.reusable_iterative_sccs
+                .iter()
+                .flat_map(|scc| scc.members.iter().copied()),
+        );
+        self.iterative_state_values
+            .retain(|vertex, _| active_iterative_members.contains(vertex));
         if !pending.is_empty() {
             self.graph.redirty_iterative_members(&pending);
         }
+        self.last_recalc_telemetry.scc_units_reusable_after_recalc =
+            self.reusable_iterative_sccs.len();
+        self.last_recalc_telemetry.scc_reuse_metadata_bytes = self
+            .reusable_iterative_sccs
+            .capacity()
+            .saturating_mul(std::mem::size_of::<ReusableIterativeScc>())
+            .saturating_add(
+                self.reusable_iterative_sccs
+                    .iter()
+                    .map(|scc| {
+                        scc.members
+                            .len()
+                            .saturating_mul(std::mem::size_of::<VertexId>())
+                    })
+                    .sum::<usize>(),
+            );
+        if !self.scc_dirty_telemetry_enabled {
+            return;
+        }
+        let naturally_dirty = naturally_dirty.expect("enabled telemetry has a natural dirty set");
+        let after_volatile = after_volatile.expect("enabled telemetry has a volatile dirty set");
+        let after_iterative: FxHashSet<VertexId> =
+            self.graph.get_evaluation_vertices().into_iter().collect();
+        let mut per_scc = Vec::with_capacity(pending_sccs.len());
+        for scc in pending_sccs {
+            let naturally_dirty_member_count = scc
+                .members
+                .iter()
+                .filter(|vertex| {
+                    request_naturally_dirty
+                        .as_ref()
+                        .is_some_and(|dirty| dirty.contains(vertex))
+                })
+                .count();
+            let stable_id = scc
+                .members
+                .iter()
+                .fold(0xcbf29ce484222325_u64, |hash, vertex| {
+                    (hash ^ vertex.0 as u64).wrapping_mul(0x100000001b3)
+                });
+            let reason = if request_naturally_dirty.is_none() {
+                "unknown"
+            } else if naturally_dirty_member_count == 0 {
+                "globally_forced_by_iterative_policy"
+            } else if scc.capped {
+                "previous_iteration_not_converged"
+            } else {
+                "unknown"
+            };
+            per_scc.push(SccDirtyRecord {
+                stable_id,
+                member_count: scc.members.len(),
+                naturally_dirty_member_count,
+                converged: scc.converged,
+                exactly_stable: scc.exactly_stable,
+                capped: scc.capped,
+                reason,
+            });
+        }
+        self.last_scc_dirty_telemetry = SccDirtyTelemetry {
+            dirty_at_request_start: request_dirty_count,
+            vertices_added_since_attribution_baseline: request_naturally_dirty
+                .as_ref()
+                .map_or(0, FxHashSet::len),
+            naturally_dirty_before_redirty: naturally_dirty.len(),
+            dirty_after_volatile_redirty: after_volatile.len(),
+            dirty_after_iterative_redirty: after_iterative.len(),
+            vertices_added_solely_by_iterative_policy: after_iterative
+                .difference(&after_volatile)
+                .count(),
+            sccs_intersecting_naturally_dirty: per_scc
+                .iter()
+                .filter(|record| record.naturally_dirty_member_count > 0)
+                .count(),
+            scc_cells_intersecting_naturally_dirty: per_scc
+                .iter()
+                .map(|record| record.naturally_dirty_member_count)
+                .sum(),
+            sccs_added_solely_by_iterative_policy: per_scc
+                .iter()
+                .filter(|record| record.naturally_dirty_member_count == 0)
+                .count(),
+            scc_cells_added_solely_by_iterative_policy: per_scc
+                .iter()
+                .filter(|record| record.naturally_dirty_member_count == 0)
+                .map(|record| record.member_count)
+                .sum(),
+            per_scc,
+        };
     }
 
     pub fn virtual_dep_fallback_activations(&self) -> u64 {
@@ -3868,11 +4188,13 @@ where
 
     /// Update the workbook seed for deterministic RNGs in functions.
     pub fn set_workbook_seed(&mut self, seed: u64) {
+        self.invalidate_reusable_iterative_sccs();
         self.config.workbook_seed = seed;
     }
 
     /// Set the volatile level policy (Always/OnRecalc/OnOpen)
     pub fn set_volatile_level(&mut self, level: crate::traits::VolatileLevel) {
+        self.invalidate_reusable_iterative_sccs();
         self.config.volatile_level = level;
     }
 
@@ -3891,6 +4213,7 @@ where
         mode: crate::engine::DeterministicMode,
     ) -> Result<(), ExcelError> {
         let clock = mode.build_clock()?;
+        self.invalidate_reusable_iterative_sccs();
         self.config.deterministic_mode = mode;
         self.clock = crate::timezone::SnapshotClock::new(clock);
         Ok(())
@@ -3904,6 +4227,7 @@ where
     /// that recalc (including SCC iteration passes) observe the frozen
     /// sample.
     pub fn set_clock(&mut self, clock: Arc<dyn crate::timezone::ClockProvider>) {
+        self.invalidate_reusable_iterative_sccs();
         self.clock = crate::timezone::SnapshotClock::new(clock);
     }
 
@@ -5374,18 +5698,42 @@ where
         self.cached_static_schedule = None;
     }
 
+    fn invalidate_reusable_iterative_sccs(&mut self) {
+        if self.reusable_iterative_sccs.is_empty() {
+            return;
+        }
+        let invalidated = std::mem::take(&mut self.reusable_iterative_sccs);
+        let members: Vec<VertexId> = invalidated
+            .iter()
+            .flat_map(|scc| scc.members.iter().copied())
+            .collect();
+        self.scc_reuse_invalidated_before_request = self
+            .scc_reuse_invalidated_before_request
+            .saturating_add(invalidated.len());
+        self.graph.redirty_iterative_members(&members);
+    }
+
     /// Mark data edited: bump snapshot and set edited flag.
     /// Value-only edits keep the stable-topology schedule cache alive.
     pub fn mark_data_edited(&mut self) {
-        self.snapshot_id
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let active_snapshot_id = self
+            .snapshot_id
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            .wrapping_add(1);
+        self.lookup_index_cache
+            .retire_stale_snapshots(active_snapshot_id);
         self.has_edited = true;
     }
 
     /// Mark a topology-changing edit: bump snapshot + topology epoch and invalidate cached schedules.
     pub fn mark_topology_edited(&mut self) {
-        self.snapshot_id
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let active_snapshot_id = self
+            .snapshot_id
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            .wrapping_add(1);
+        self.lookup_index_cache
+            .retire_stale_snapshots(active_snapshot_id);
+        self.invalidate_reusable_iterative_sccs();
         self.topology_epoch = self.topology_epoch.wrapping_add(1);
         self.graph.bump_topology_revision();
         self.clear_cached_static_schedule();
@@ -12377,6 +12725,7 @@ where
         }
         if global_changed && !changed.is_empty() || provider_changed {
             self.cached_static_schedule = None;
+            self.invalidate_reusable_iterative_sccs();
         }
         self.function_semantic_epoch_seen = changes.epoch;
         self.function_provider_revision_seen = provider_revision;
@@ -22162,13 +22511,8 @@ where
                             ));
                         }
 
-                        if self.handle_cycle_unit(
-                            schedule.unit_cycle(i),
-                            None,
-                            None,
-                            Some(cancel_flag),
-                        )? > 0
-                        {
+                        let members = schedule.unit_cycle(i);
+                        if self.handle_cycle_unit(members, None, None, Some(cancel_flag))? > 0 {
                             cycle_errors += 1;
                         }
                     }
@@ -24963,6 +25307,7 @@ where
         // ── Iterate-policy state ──
         let mut iterating = false;
         let mut converged = false;
+        let mut exactly_stable = false;
         // Values committed by the last *full* pass; `None` until the first
         // iteration pass runs (pass 1 has no predecessor to compare against)
         // and reset when a settle pass runs (no cross-kind comparisons).
@@ -25056,6 +25401,7 @@ where
                             let mut round_max_delta = 0f64;
                             let mut round_nan = 0usize;
                             let mut all_converged = true;
+                            let mut all_exactly_stable = true;
                             for i in 0..n {
                                 if excluded[i] {
                                     // Stamped mid-iteration (array result,
@@ -25078,6 +25424,7 @@ where
                                 if !out.converged {
                                     all_converged = false;
                                 }
+                                all_exactly_stable &= out.exactly_stable;
                             }
                             // Overwrite (not max): telemetry reports the
                             // round observed at stop.
@@ -25085,6 +25432,7 @@ where
                             iter_nan_converged = round_nan;
                             if all_converged {
                                 converged = true;
+                                exactly_stable = all_exactly_stable;
                                 break;
                             }
                         }
@@ -25193,6 +25541,7 @@ where
         // settle cap (`capped` + stamping) is not.
         if iterating && !converged && !capped {
             converged = true;
+            exactly_stable = true;
         }
 
         // ── 5. End of task: one delta per member whose final value differs
@@ -25210,17 +25559,40 @@ where
             }
         }
 
-        // Members of an SCC that iterated re-evaluate on EVERY recalc, like
-        // Excel's circular cells: register them for the end-of-recalc
-        // volatile-like redirty (see `pending_iterative_redirty`). Marking
-        // any one member propagates around the (strongly connected) SCC and
-        // to downstream dependents, but all members are registered so the
-        // contract survives partial structural edits between recalcs.
+        // Preserve final member values for structural-overlay recovery. Only
+        // SCCs proven exact fixed points may remain clean; tolerance-only and
+        // capped SCCs retain the Excel volatile-like redirty contract.
         if iterating {
-            self.pending_iterative_redirty
-                .extend(members.iter().map(|m| m.vertex));
+            self.pending_iterative_state_refresh
+                .extend(members.iter().map(|member| member.vertex));
+            let mut member_ids: Vec<VertexId> =
+                members.iter().map(|member| member.vertex).collect();
+            member_ids.sort_unstable_by_key(|vertex| vertex.0);
+            self.reusable_iterative_sccs
+                .retain(|scc| scc.members.as_ref() != member_ids.as_slice());
+            let reuse_safe = member_ids
+                .iter()
+                .all(|&member| !self.graph.is_volatile(member) && !self.graph.is_dynamic(member));
+            if converged && exactly_stable && !capped && reuse_safe {
+                self.reusable_iterative_sccs.push(ReusableIterativeScc {
+                    members: member_ids.into_boxed_slice(),
+                });
+            } else {
+                self.pending_iterative_redirty
+                    .extend(members.iter().map(|member| member.vertex));
+                if self.scc_dirty_telemetry_enabled {
+                    self.pending_iterative_scc_redirty
+                        .push(PendingIterativeSccRedirty {
+                            members: members.iter().map(|member| member.vertex).collect(),
+                            converged,
+                            exactly_stable,
+                            capped,
+                        });
+                }
+            }
         }
 
+        let task_elapsed = task_start.elapsed();
         {
             let t = &mut self.last_cycle_telemetry;
             t.static_sccs += 1;
@@ -25236,14 +25608,21 @@ where
                 if converged {
                     t.converged_sccs += 1;
                 }
+                if exactly_stable {
+                    t.exactly_stable_sccs += 1;
+                }
                 t.max_abs_delta_at_stop = t.max_abs_delta_at_stop.max(iter_max_delta);
                 t.nan_converged += iter_nan_converged;
             }
             if capped {
                 t.capped_sccs += 1;
             }
-            t.elapsed_ms += task_start.elapsed().as_millis();
+            t.elapsed_ms += task_elapsed.as_millis();
         }
+        self.last_recalc_telemetry.iterative_scc_evaluation_ns += task_elapsed.as_nanos();
+        self.last_recalc_telemetry.scc_tasks_evaluated += 1;
+        self.last_recalc_telemetry.scc_member_count += members.len();
+        self.last_recalc_telemetry.scc_member_evaluations += members.len().saturating_mul(passes);
 
         Ok(stamped)
     }

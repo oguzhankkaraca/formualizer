@@ -14,6 +14,7 @@ This directory records the branch-level solutions ported to Formualizer v0.8.4, 
 | `fix/criteria-implicit-intersection` | Merged | [`006`](006-criteria-implicit-intersection.md) |
 | `feat/calamine-native-tables` | Merged | [`007`](007-calamine-native-table-import.md) |
 | `feat/structured-table-defined-names` | Merged via PR #8 | [`008`](008-structured-table-backed-defined-names.md) |
+| `ui/formualizer-canvas` | Investigation in progress | [`009`](009-fossil-performance-investigation.md) |
 
 ## Remaining problems
 
@@ -23,7 +24,7 @@ See [`remaining-compatibility-issues.md`](remaining-compatibility-issues.md) for
 2. SUMIF error-range propagation — 399 Excel `#REF!` to Formualizer value transitions.
 3. `CELL("Filename")` workbook/host context — one Formualizer-only error.
 
-The same document also records that performance and UI tracks from the approved plan have not started.
+The UI track is now in progress on `ui/formualizer-canvas`; the Fossil performance investigation and diagnostic groundwork are recorded in [`009`](009-fossil-performance-investigation.md).
 
 ## Rules
 

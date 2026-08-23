@@ -1921,10 +1921,33 @@ pub struct SccDirtyRecord {
     pub dynamic_member_samples: Vec<String>,
     pub member_sheet_counts: Vec<(String, usize)>,
     pub static_member_samples: Vec<String>,
+    pub live_edge_fingerprint: u64,
     pub converged: bool,
     pub exactly_stable: bool,
     pub capped: bool,
     pub reason: &'static str,
+}
+
+fn fingerprint_live_edges(n: usize, out_edges: &[Vec<u32>], excluded: &[bool]) -> u64 {
+    let mut edges = Vec::new();
+    for (from, targets) in out_edges.iter().enumerate() {
+        if excluded.get(from).copied().unwrap_or(true) {
+            continue;
+        }
+        for &to in targets {
+            edges.push((from as u32, to));
+        }
+    }
+    edges.sort_unstable();
+    edges.dedup();
+    edges
+        .iter()
+        .fold(0xcbf29ce484222325_u64 ^ n as u64, |hash, &(from, to)| {
+            (hash ^ from as u64)
+                .wrapping_mul(0x100000001b3)
+                .wrapping_add(to as u64)
+                .wrapping_mul(0x100000001b3)
+        })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1947,6 +1970,7 @@ struct FormulaTimingAggregate {
 #[derive(Debug, Clone)]
 struct PendingIterativeSccRedirty {
     members: Vec<VertexId>,
+    live_edge_fingerprint: u64,
     converged: bool,
     exactly_stable: bool,
     capped: bool,
@@ -3922,6 +3946,7 @@ where
                 dynamic_member_samples,
                 member_sheet_counts: member_sheet_counts.into_iter().collect(),
                 static_member_samples,
+                live_edge_fingerprint: scc.live_edge_fingerprint,
                 converged: scc.converged,
                 exactly_stable: scc.exactly_stable,
                 capped: scc.capped,
@@ -25768,6 +25793,7 @@ where
                     self.pending_iterative_scc_redirty
                         .push(PendingIterativeSccRedirty {
                             members: members.iter().map(|member| member.vertex).collect(),
+                            live_edge_fingerprint: fingerprint_live_edges(n, &out_edges, &excluded),
                             converged,
                             exactly_stable,
                             capped,

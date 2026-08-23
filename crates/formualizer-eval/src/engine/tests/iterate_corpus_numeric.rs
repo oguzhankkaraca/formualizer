@@ -156,9 +156,13 @@ fn aggregate_overflow_sanitizes_to_num_error_and_scc_converges() {
     // (the old leak capped at 7 passes on every recalc, forever).
     engine.evaluate_all().unwrap();
     let t = engine.last_cycle_telemetry();
-    assert_eq!(t.converged_sccs, 1);
+    assert_eq!(
+        t.iterated_sccs, 0,
+        "reusable SCC should be skipped on no-edit recalc"
+    );
+    assert_eq!(t.converged_sccs, 0);
     assert_eq!(t.capped_sccs, 0);
-    assert!(t.settle_passes_total <= 6);
+    assert_eq!(t.settle_passes_total, 0);
 }
 
 #[test]

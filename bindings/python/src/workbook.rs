@@ -981,6 +981,7 @@ impl PyWorkbook {
             row.set_item("dynamic_member_samples", &record.dynamic_member_samples)?;
             row.set_item("member_sheet_counts", &record.member_sheet_counts)?;
             row.set_item("static_member_samples", &record.static_member_samples)?;
+            row.set_item("live_edge_fingerprint", record.live_edge_fingerprint)?;
             row.set_item(
                 "naturally_dirty_member_count",
                 record.naturally_dirty_member_count,

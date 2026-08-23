@@ -12,7 +12,7 @@
 Values are median end-to-end evaluation wall times. Percentages are B relative to A.
 
 | Template / scenario | A legacy | B indexed | B-A | Relative |
-|---|---:|---:|---:|---:|
+| --- | ---: | ---: | ---: | ---: |
 | Heavy / initial | 32,650 ms | 31,081 ms | -1,570 ms | -4.8% |
 | Heavy / capacity edit F7 | 14,033 ms | 12,067 ms | -1,967 ms | -14.0% |
 | Heavy / no-op | 12,668 ms | 11,309 ms | -1,359 ms | -10.7% |

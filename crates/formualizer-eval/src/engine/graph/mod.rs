@@ -2874,6 +2874,10 @@ impl DependencyGraph {
         self.volatile_vertices.len()
     }
 
+    pub(crate) fn volatile_vertex_ids(&self) -> Vec<VertexId> {
+        self.volatile_vertices.iter().copied().collect()
+    }
+
     /// Re-marks members of iterating SCCs (and, via propagation, their
     /// dependents) dirty for the next evaluation cycle — the volatile-like
     /// redirty that keeps `CyclePolicy::Iterate` cells re-evaluating every

@@ -1221,6 +1221,16 @@ impl PyWorkbook {
             "scc_cells_added_solely_by_iterative_policy",
             telemetry.scc_cells_added_solely_by_iterative_policy,
         )?;
+        out.set_item("dirty_root_sources", &telemetry.dirty_root_sources)?;
+        out.set_item("dirty_root_samples", &telemetry.dirty_root_samples)?;
+        out.set_item(
+            "iterative_state_value_count",
+            telemetry.iterative_state_value_count,
+        )?;
+        out.set_item("request_snapshot_id", telemetry.request_snapshot_id)?;
+        out.set_item("topology_epoch", telemetry.topology_epoch)?;
+        out.set_item("graph_topology_revision", telemetry.graph_topology_revision)?;
+        out.set_item("graph_symbol_revision", telemetry.graph_symbol_revision)?;
         let per_scc = PyList::empty(py);
         for record in &telemetry.per_scc {
             let row = PyDict::new(py);
@@ -1228,6 +1238,14 @@ impl PyWorkbook {
             row.set_item("member_count", record.member_count)?;
             row.set_item("volatile_member_count", record.volatile_member_count)?;
             row.set_item("dynamic_member_count", record.dynamic_member_count)?;
+            row.set_item(
+                "volatile_redirty_member_count",
+                record.volatile_redirty_member_count,
+            )?;
+            row.set_item(
+                "iterative_redirty_member_count",
+                record.iterative_redirty_member_count,
+            )?;
             row.set_item("volatile_member_samples", &record.volatile_member_samples)?;
             row.set_item("dynamic_member_samples", &record.dynamic_member_samples)?;
             row.set_item("member_sheet_counts", &record.member_sheet_counts)?;

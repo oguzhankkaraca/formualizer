@@ -1068,6 +1068,8 @@ pub struct Engine<R> {
     diagnostic_early_scc_states: FxHashMap<u64, DiagnosticEarlySccState>,
     last_scc_early_termination: Vec<SccEarlyTerminationRecord>,
     scc_dirty_attribution_baseline: Option<FxHashSet<VertexId>>,
+    next_dirty_root_seeds: Vec<(&'static str, Vec<VertexId>)>,
+    request_dirty_root_seeds: Vec<(&'static str, Vec<VertexId>)>,
     request_naturally_dirty: Option<FxHashSet<VertexId>>,
     request_dirty_count: usize,
     formula_timing_enabled: bool,
@@ -2031,6 +2033,13 @@ pub struct SccDirtyTelemetry {
     pub scc_cells_intersecting_naturally_dirty: usize,
     pub sccs_added_solely_by_iterative_policy: usize,
     pub scc_cells_added_solely_by_iterative_policy: usize,
+    pub dirty_root_sources: Vec<(String, usize)>,
+    pub dirty_root_samples: Vec<(String, Vec<String>)>,
+    pub iterative_state_value_count: usize,
+    pub request_snapshot_id: u64,
+    pub topology_epoch: u64,
+    pub graph_topology_revision: u64,
+    pub graph_symbol_revision: u64,
     pub per_scc: Vec<SccDirtyRecord>,
 }
 
@@ -2042,6 +2051,8 @@ pub struct SccDirtyRecord {
     pub naturally_dirty_member_count: usize,
     pub volatile_member_count: usize,
     pub dynamic_member_count: usize,
+    pub volatile_redirty_member_count: usize,
+    pub iterative_redirty_member_count: usize,
     pub volatile_member_samples: Vec<String>,
     pub dynamic_member_samples: Vec<String>,
     pub member_sheet_counts: Vec<(String, usize)>,
@@ -3256,6 +3267,8 @@ where
             diagnostic_early_scc_states: FxHashMap::default(),
             last_scc_early_termination: Vec::new(),
             scc_dirty_attribution_baseline: None,
+            next_dirty_root_seeds: Vec::new(),
+            request_dirty_root_seeds: Vec::new(),
             request_naturally_dirty: None,
             request_dirty_count: 0,
             formula_timing_enabled: false,
@@ -3433,6 +3446,8 @@ where
             diagnostic_early_scc_states: FxHashMap::default(),
             last_scc_early_termination: Vec::new(),
             scc_dirty_attribution_baseline: None,
+            next_dirty_root_seeds: Vec::new(),
+            request_dirty_root_seeds: Vec::new(),
             request_naturally_dirty: None,
             request_dirty_count: 0,
             formula_timing_enabled: false,
@@ -4221,6 +4236,7 @@ where
         self.last_cycle_telemetry = CycleTelemetry::default();
         self.last_recalc_telemetry = RecalcTelemetry::default();
         self.last_scc_coordinate_index_build_ns = 0;
+        self.request_dirty_root_seeds = std::mem::take(&mut self.next_dirty_root_seeds);
         if self.scc_iteration_trace_enabled {
             self.last_scc_iteration_trace.clear();
         }
@@ -4303,6 +4319,20 @@ where
         self.clock.refresh();
     }
 
+    fn diagnostic_vertex_address(&self, vertex: VertexId) -> String {
+        if let Some(cell) = self.graph.get_cell_ref(vertex) {
+            return format!(
+                "{}!{}{}",
+                self.graph.sheet_name(cell.sheet_id),
+                Self::col_to_letters(cell.coord.col() + 1),
+                cell.coord.row() + 1,
+            );
+        }
+        self.graph
+            .name_key_for_vertex(vertex)
+            .unwrap_or_else(|| format!("vertex:{}", vertex.0))
+    }
+
     /// End-of-recalc redirty: volatile vertices (as always) plus members of
     /// SCCs that iterated this recalc (`CyclePolicy::Iterate`), so circular
     /// cells re-evaluate on every recalc exactly like Excel's iterative
@@ -4329,6 +4359,15 @@ where
         let pending = std::mem::take(&mut self.pending_iterative_redirty);
         let state_refresh = std::mem::take(&mut self.pending_iterative_state_refresh);
         let pending_sccs = std::mem::take(&mut self.pending_iterative_scc_redirty);
+        let mut iterative_seed_ids = pending.clone();
+        iterative_seed_ids.sort_unstable_by_key(|vertex| vertex.0);
+        iterative_seed_ids.dedup();
+        let mut volatile_seed_ids = self.graph.volatile_vertex_ids();
+        volatile_seed_ids.sort_unstable_by_key(|vertex| vertex.0);
+        self.next_dirty_root_seeds = vec![
+            ("volatile_redirty", volatile_seed_ids),
+            ("iterative_scc_redirty", iterative_seed_ids),
+        ];
         self.last_recalc_telemetry.iterative_vertices_redirtied = pending.len();
         // Refresh the §4-persistence snapshot: these final values survive
         // structural edits that clear the computed overlay (the only value
@@ -4358,6 +4397,38 @@ where
         );
         self.iterative_state_values
             .retain(|vertex, _| active_iterative_members.contains(vertex));
+        let dirty_root_sources = self
+            .request_dirty_root_seeds
+            .iter()
+            .map(|(source, vertices)| ((*source).to_string(), vertices.len()))
+            .collect::<Vec<_>>();
+        let dirty_root_samples = self
+            .request_dirty_root_seeds
+            .iter()
+            .map(|(source, vertices)| {
+                (
+                    (*source).to_string(),
+                    vertices
+                        .iter()
+                        .take(32)
+                        .map(|vertex| self.diagnostic_vertex_address(*vertex))
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .collect::<Vec<_>>();
+        let iterative_state_value_count = self.iterative_state_values.len();
+        let volatile_root_set = self
+            .request_dirty_root_seeds
+            .iter()
+            .find(|(source, _)| *source == "volatile_redirty")
+            .map(|(_, vertices)| vertices.iter().copied().collect::<FxHashSet<_>>())
+            .unwrap_or_default();
+        let iterative_root_set = self
+            .request_dirty_root_seeds
+            .iter()
+            .find(|(source, _)| *source == "iterative_scc_redirty")
+            .map(|(_, vertices)| vertices.iter().copied().collect::<FxHashSet<_>>())
+            .unwrap_or_default();
         if !pending.is_empty() {
             self.graph.redirty_iterative_members(&pending);
         }
@@ -4401,7 +4472,20 @@ where
                 .fold(0xcbf29ce484222325_u64, |hash, vertex| {
                     (hash ^ vertex.0 as u64).wrapping_mul(0x100000001b3)
                 });
-            let reason = if request_naturally_dirty.is_none() {
+            let volatile_redirty_member_count = scc
+                .members
+                .iter()
+                .filter(|vertex| volatile_root_set.contains(vertex))
+                .count();
+            let iterative_redirty_member_count = scc
+                .members
+                .iter()
+                .filter(|vertex| iterative_root_set.contains(vertex))
+                .count();
+            let reason = if naturally_dirty_member_count == 0 && iterative_redirty_member_count > 0
+            {
+                "iterative_redirty"
+            } else if request_naturally_dirty.is_none() {
                 "unknown"
             } else if naturally_dirty_member_count == 0 {
                 "globally_forced_by_iterative_policy"
@@ -4454,6 +4538,8 @@ where
                 naturally_dirty_member_count,
                 volatile_member_count,
                 dynamic_member_count,
+                volatile_redirty_member_count,
+                iterative_redirty_member_count,
                 volatile_member_samples,
                 dynamic_member_samples,
                 member_sheet_counts: member_sheet_counts.into_iter().collect(),
@@ -4511,6 +4597,13 @@ where
                 .filter(|record| record.naturally_dirty_member_count == 0)
                 .map(|record| record.member_count)
                 .sum(),
+            dirty_root_sources,
+            dirty_root_samples,
+            iterative_state_value_count,
+            request_snapshot_id: self.data_snapshot_id(),
+            topology_epoch: self.topology_epoch,
+            graph_topology_revision: self.graph.topology_revision(),
+            graph_symbol_revision: self.graph.symbol_revision(),
             per_scc,
         };
     }

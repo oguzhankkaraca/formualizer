@@ -1,0 +1,208 @@
+{
+  "schema": "formualizer.fossil-excel-calculation-investigation/v1",
+  "branch": "investigation/fossil-excel-calculation",
+  "git_head_at_capture": "4bee14ca",
+  "configuration": {
+    "backend": "calamine",
+    "cycle_detection": "runtime",
+    "cycle_policy": "iterate",
+    "iterate_max_iterations": 100,
+    "iterate_max_change": 0.001,
+    "parallel": true,
+    "input_value": 300
+  },
+  "workbooks": {
+    "old": {
+      "file": "Fossil_EstimatingTemplate_2026-06-25_X_Fossil.xlsx",
+      "logical_input": "Inputs!F6",
+      "file_bytes": 5540524,
+      "sheets": 15,
+      "formula_cells": 74312,
+      "xml_cell_records": 517802,
+      "defined_names": 3906
+    },
+    "new": {
+      "file": "Fossil_EstimatingTemplate_2026-08_21_A.xlsx",
+      "logical_input": "Inputs!F7",
+      "file_bytes": 11038508,
+      "sheets": 23,
+      "formula_cells": 94966,
+      "xml_cell_records": 2558340,
+      "defined_names": 4127
+    }
+  },
+  "phase_timings_ms": {
+    "old": {
+      "load": 470.8,
+      "initial_evaluate_all": 3759.8,
+      "input_mutation": 9.2,
+      "heavy_recalculate": 461.0
+    },
+    "new": {
+      "load": 1659.8,
+      "initial_evaluate_all": 33368.6,
+      "input_mutation": 16.9,
+      "heavy_recalculate": 12743.5
+    }
+  },
+  "post_input_plan": {
+    "old": {
+      "target": "Outputs!D42",
+      "time_ms": 39.3,
+      "planned_vertices": 3964,
+      "dirty_count": 3896,
+      "layers": 38
+    },
+    "new": {
+      "target": "Outputs!D42",
+      "time_ms": 44.1,
+      "planned_vertices": 6402,
+      "dirty_count": 6333,
+      "layers": 38
+    }
+  },
+  "cycle_and_recalc_work": {
+    "old_after_logical_input": {
+      "wall_ms": 461.0,
+      "iterated_sccs": 72,
+      "converged_sccs": 72,
+      "capped_sccs": 0,
+      "settle_passes_total": 146,
+      "max_passes_single_scc": 4,
+      "cycle_elapsed_ms": 214,
+      "circ_cells_stamped": 0,
+      "scc_tasks_evaluated": 72,
+      "scc_member_count": 8629,
+      "scc_member_evaluations": 17508,
+      "scc_units_considered": 78,
+      "scc_units_reused": 6,
+      "scc_units_invalidated": 72,
+      "volatile_vertices_redirtied": 0,
+      "iterative_vertices_redirtied": 0
+    },
+    "new_after_logical_input": {
+      "wall_ms": 12743.5,
+      "iterated_sccs": 137,
+      "converged_sccs": 137,
+      "capped_sccs": 0,
+      "settle_passes_total": 276,
+      "max_passes_single_scc": 4,
+      "cycle_elapsed_ms": 11578,
+      "circ_cells_stamped": 1,
+      "scc_tasks_evaluated": 137,
+      "scc_member_count": 14344,
+      "scc_member_evaluations": 28952,
+      "scc_units_considered": 142,
+      "scc_units_reused": 6,
+      "scc_units_invalidated": 136,
+      "volatile_vertices_redirtied": 1212,
+      "iterative_vertices_redirtied": 4829
+    }
+  },
+  "new_noop_after_f7": {
+    "wall_ms": 12674.3,
+    "iterated_sccs": 84,
+    "scc_tasks_evaluated": 84,
+    "scc_member_evaluations": 14802,
+    "scc_units_considered": 142,
+    "scc_units_reused": 59,
+    "scc_units_invalidated": 83,
+    "cycle_elapsed_ms": 12216,
+    "dirty_at_request_start": 20710,
+    "dirty_after_volatile_redirty": 20710,
+    "iterative_only_cells": 4829
+  },
+  "mixed_scc": {
+    "member_count": 4829,
+    "frontier_member_count": 270,
+    "static_member_count": 4559,
+    "static_live_edge_count": 2037865,
+    "frontier_boundary_edge_count": 38265,
+    "static_cycle_count": 1,
+    "static_cycle_member_count": 3868,
+    "member_sheet_counts": {
+      "CashFlow Inputs": 4130,
+      "CashFlow Engine": 695
+    },
+    "live_edge_fingerprint": {
+      "initial": 1142813687581787051,
+      "after_f7": 1142813687581787051,
+      "noop": 1142813687581787051
+    }
+  },
+  "no_op_value_fingerprint": {
+    "formula_cells_compared": 9420,
+    "dynamic_formula_cells": 269,
+    "changed_formula_values": 0,
+    "changed_dynamic_values": 0,
+    "changed_static_values": 0
+  },
+  "diagnostic_controls": {
+    "new_static_error_no_iterate": {
+      "initial_ms": 11068.6,
+      "heavy_ms": 5595.4,
+      "iterated_sccs": 0,
+      "circ_cells_stamped": 0
+    },
+    "new_dynamic_cashflow_cached": {
+      "heavy_ms": 11400.0,
+      "noop_ms": 13745.2,
+      "iterated_sccs": 137,
+      "noop_scc_tasks": 84,
+      "noop_scc_member_evaluations": 13830
+    },
+    "new_parallel_true": {
+      "initial_ms": 33718.9,
+      "heavy_ms": 12788.4,
+      "cycle_elapsed_ms": 11907
+    },
+    "new_parallel_false": {
+      "initial_ms": 44546.9,
+      "heavy_ms": 19129.6,
+      "cycle_elapsed_ms": 17900
+    }
+  },
+  "native_memory_mb": {
+    "start_rss": 16.1,
+    "after_load_rss": 98.4,
+    "after_initial_rss": 492.6,
+    "after_f7_rss": 496.6,
+    "after_noop_rss": 496.8,
+    "peak_rss": 566.7
+  },
+  "browser_wasm_surface": {
+    "thread_atomic_imports": 0,
+    "thread_atomic_exports": 0,
+    "wasm_bindgen_rayon_present": false,
+    "shared_array_buffer_worker_pool_present": false,
+    "browser_recalculate_ms": 10496,
+    "browser_status": "Ready"
+  },
+  "source_urls": [
+    "https://learn.microsoft.com/en-us/office/client-developer/excel/excel-recalculation",
+    "https://learn.microsoft.com/en-us/office/vba/excel/concepts/excel-performance/excel-improving-calculation-performance",
+    "https://learn.microsoft.com/en-us/office/vba/excel/concepts/excel-performance/excel-tips-for-optimizing-performance-obstructions",
+    "https://learn.microsoft.com/en-us/office/open-xml/spreadsheet/working-with-the-calculation-chain",
+    "https://learn.microsoft.com/en-us/office/vba/api/excel.application.calculate",
+    "https://learn.microsoft.com/en-us/office/vba/api/excel.application.calculatefull",
+    "https://learn.microsoft.com/en-us/office/vba/api/excel.application.calculatefullrebuild",
+    "https://patents.google.com/patent/US8032821B2/en",
+    "https://www.decisionmodels.com/calcsecretsc.htm",
+    "https://www.decisionmodels.com/calcsecretsk.htm"
+  ],
+  "related_raw_results": [
+    "excel-fossil-2026-08-21-A-recalc-sweep.json",
+    "excel-fossil-mtc-on-corrected.json",
+    "excel-fossil-mtc-off-corrected.json",
+    "fossil-scc-iteration-trace.json",
+    "fossil-runtime-live-scc-topology.json",
+    "fossil-static-edge-origin-breakdown.json",
+    "fossil-dynamic-inventory.json"
+  ],
+  "limitations": [
+    "Excel COM does not expose direct per-cell iteration counts or internal calculation-chain counters.",
+    "Formualizer RecalcTelemetry phase nanosecond fields are not fully populated on every evaluation path; external phase timers are retained.",
+    "Conditional-branch and spill/array edge origins are not independently observable at the current RecordingContext seam.",
+    "Browser measurement is not a direct proof of Excel internal thread count."
+  ]
+}

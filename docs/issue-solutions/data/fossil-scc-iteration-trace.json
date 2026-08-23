@@ -1,0 +1,33 @@
+{
+  "schema": "formualizer.fossil-scc-iteration-trace/v1",
+  "workbook": "Fossil_EstimatingTemplate_2026-08_21_A.xlsx",
+  "logical_input": "Inputs!F7",
+  "input_value": 300,
+  "cycle_policy": "iterate",
+  "cycle_detection": "runtime",
+  "max_iterations": 100,
+  "max_change": 0.001,
+  "scc_stable_id": 1321560910633541638,
+  "live_edge_fingerprint": 1142813687581787051,
+  "phases": {
+    "initial": [
+      {"iteration": 1, "evaluated_members": 4828, "changed_members": 4829, "max_abs_delta": 0.0, "elapsed_ns": 157041000},
+      {"iteration": 2, "evaluated_members": 4828, "changed_members": 377, "max_abs_delta": 48245.0, "elapsed_ns": 5857458200},
+      {"iteration": 3, "evaluated_members": 4828, "changed_members": 160, "max_abs_delta": 793.0, "elapsed_ns": 5709000700},
+      {"iteration": 4, "evaluated_members": 4828, "changed_members": 0, "max_abs_delta": 0.0, "elapsed_ns": 5577336400}
+    ],
+    "after_f7": [
+      {"iteration": 1, "evaluated_members": 4828, "changed_members": 12, "max_abs_delta": 0.0, "elapsed_ns": 155989000},
+      {"iteration": 2, "evaluated_members": 4828, "changed_members": 0, "max_abs_delta": 0.0, "elapsed_ns": 5246463800}
+    ],
+    "noop": [
+      {"iteration": 1, "evaluated_members": 4828, "changed_members": 12, "max_abs_delta": 0.0, "elapsed_ns": 156080500},
+      {"iteration": 2, "evaluated_members": 4828, "changed_members": 0, "max_abs_delta": 0.0, "elapsed_ns": 5121928900}
+    ]
+  },
+  "notes": [
+    "Trace is opt-in via FZ_TRACE_SCC_ITERATIONS=1.",
+    "The main mixed SCC runs a full second pass even when pass-one changed members are already zero in the F7/no-op paths.",
+    "The stable live-edge fingerprint is recorded for every traced pass."
+  ]
+}

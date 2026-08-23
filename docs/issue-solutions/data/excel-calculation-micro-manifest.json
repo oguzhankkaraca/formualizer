@@ -1,0 +1,192 @@
+{
+  "schema": "formualizer.excel-calculation-micro-tests/v1",
+  "output_directory": "C:\\rust_engines\\formualizer-v0.8.4\\target\\excel-micro-tests",
+  "cases": [
+    {
+      "id": "unused-if-cycle",
+      "sheets": [
+        "Sheet1"
+      ],
+      "cells": {
+        "Sheet1": {
+          "A1": 0,
+          "B1": "=IF(A1=0,0,C1+1)",
+          "C1": "=B1/2"
+        }
+      },
+      "targets": [
+        "Sheet1!B1",
+        "Sheet1!C1"
+      ],
+      "mutations": [
+        {
+          "sheet": "Sheet1",
+          "address": "A1",
+          "value": 1
+        }
+      ]
+    },
+    {
+      "id": "active-if-cycle",
+      "sheets": [
+        "Sheet1"
+      ],
+      "cells": {
+        "Sheet1": {
+          "A1": 1,
+          "B1": "=IF(A1=1,C1+1,0)",
+          "C1": "=B1/2"
+        }
+      },
+      "targets": [
+        "Sheet1!B1",
+        "Sheet1!C1"
+      ],
+      "mutations": [
+        {
+          "sheet": "Sheet1",
+          "address": "A1",
+          "value": 0
+        }
+      ]
+    },
+    {
+      "id": "indirect-target-change",
+      "sheets": [
+        "Sheet1"
+      ],
+      "cells": {
+        "Sheet1": {
+          "A1": 10,
+          "B1": 20,
+          "D1": "A1",
+          "C1": "=INDIRECT(D1)"
+        }
+      },
+      "targets": [
+        "Sheet1!C1"
+      ],
+      "mutations": [
+        {
+          "sheet": "Sheet1",
+          "address": "D1",
+          "value": "B1"
+        }
+      ]
+    },
+    {
+      "id": "offset-target-change",
+      "sheets": [
+        "Sheet1"
+      ],
+      "cells": {
+        "Sheet1": {
+          "A1": 10,
+          "A2": 20,
+          "B1": 1,
+          "C1": "=OFFSET(A1,B1-1,0)"
+        }
+      },
+      "targets": [
+        "Sheet1!C1"
+      ],
+      "mutations": [
+        {
+          "sheet": "Sheet1",
+          "address": "B1",
+          "value": 2
+        }
+      ]
+    },
+    {
+      "id": "filter-shape-change",
+      "sheets": [
+        "Sheet1"
+      ],
+      "cells": {
+        "Sheet1": {
+          "A1": 10,
+          "A2": 20,
+          "A3": 30,
+          "B1": 1,
+          "B2": 1,
+          "B3": 0,
+          "C1": "=FILTER(A1:A3,B1:B3=1)"
+        }
+      },
+      "targets": [
+        "Sheet1!C1",
+        "Sheet1!C2",
+        "Sheet1!C3"
+      ],
+      "mutations": [
+        {
+          "sheet": "Sheet1",
+          "address": "B2",
+          "value": 0
+        }
+      ]
+    },
+    {
+      "id": "two-cell-cycle",
+      "sheets": [
+        "Sheet1"
+      ],
+      "cells": {
+        "Sheet1": {
+          "A1": "=B1+1",
+          "B1": "=A1/2"
+        }
+      },
+      "targets": [
+        "Sheet1!A1",
+        "Sheet1!B1"
+      ],
+      "mutations": []
+    },
+    {
+      "id": "same-sheet-cycle",
+      "sheets": [
+        "Sheet1"
+      ],
+      "cells": {
+        "Sheet1": {
+          "A1": 10,
+          "B1": "=A1+C1",
+          "C1": "=B1/2"
+        }
+      },
+      "targets": [
+        "Sheet1!B1",
+        "Sheet1!C1"
+      ],
+      "mutations": [
+        {
+          "sheet": "Sheet1",
+          "address": "A1",
+          "value": 20
+        }
+      ]
+    },
+    {
+      "id": "cross-sheet-cycle",
+      "sheets": [
+        "Sheet1",
+        "Sheet2"
+      ],
+      "cells": {
+        "Sheet1": {
+          "A1": "=Sheet2!A1+1"
+        },
+        "Sheet2": {
+          "A1": "=Sheet1!A1/2"
+        }
+      },
+      "targets": [
+        "Sheet1!A1",
+        "Sheet2!A1"
+      ],
+      "mutations": []
+    }
+  ]
+}

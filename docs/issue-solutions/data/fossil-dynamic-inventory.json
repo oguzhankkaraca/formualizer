@@ -1,0 +1,50 @@
+{
+  "schema": "formualizer.fossil-dynamic-inventory/v1",
+  "workbook": "Fossil_EstimatingTemplate_2026-08_21_A.xlsx",
+  "expanded_mixed_scc_dynamic_members": 270,
+  "formula_xml_token_counts": {
+    "FILTER": 133,
+    "INDIRECT": 112,
+    "OFFSET": 14,
+    "SEQUENCE": 58,
+    "VSTACK": 2,
+    "UNIQUE": 3,
+    "MAP": 1,
+    "LAMBDA": 1,
+    "CELL": 1,
+    "SUMIF": 5951
+  },
+  "expanded_formula_inventory_from_engine": {
+    "CashFlow Inputs": {
+      "FILTER": 130,
+      "INDIRECT": 8,
+      "OFFSET": 2,
+      "VSTACK": 2,
+      "UNIQUE": 2,
+      "MAP": 1,
+      "LAMBDA": 1
+    },
+    "CashFlow Engine": {
+      "SEQUENCE": 58,
+      "OFFSET": 26,
+      "INDIRECT": 12
+    }
+  },
+  "dirty_fanout": {
+    "volatile_vertices_redirtied": 1212,
+    "dirty_after_volatile_redirty": 20710,
+    "iterative_vertices_redirtied": 4829,
+    "mixed_scc_dynamic_members": 270
+  },
+  "cache_control": {
+    "normal_heavy_recalc_ms": 12743.5,
+    "dynamic_formula_cached_heavy_recalc_ms": 11400.0,
+    "dynamic_formula_cached_noop_ms": 13745.2,
+    "dynamic_cache_removed_main_scc_work": false
+  },
+  "notes": [
+    "Raw XML token counts are lower than expanded engine counts because shared formulas are expanded during ingest.",
+    "Dynamic cache control is diagnostic only and did not change production semantics.",
+    "Per-function downstream fanout is not yet individually attributed; aggregate volatile/dirty fanout is measured."
+  ]
+}

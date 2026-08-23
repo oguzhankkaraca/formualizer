@@ -1,0 +1,19 @@
+{
+  "schema": "formualizer.fossil-top-edge-formulas/v1",
+  "workbook": "Fossil_EstimatingTemplate_2026-08_21_A.xlsx",
+  "scc_stable_id": 1321560910633541638,
+  "top_sources": [
+    {"address":"CashFlow Engine!J11","internal_live_targets":4131,"formula":"=INDEX(Cash_Flow_Inputs,MATCH($C11,Cash_Flow_Inputs_R,0),MATCH($J$6,Cash_Flow_Inputs_C,0))"},
+    {"address":"CashFlow Engine!J13","internal_live_targets":4131,"formula":"=INDEX(Cash_Flow_Inputs,MATCH($C13,Cash_Flow_Inputs_R,0),MATCH($J$6,Cash_Flow_Inputs_C,0))"},
+    {"address":"CashFlow Engine!J14","internal_live_targets":4131,"formula":"=INDEX(Cash_Flow_Inputs,MATCH($C14,Cash_Flow_Inputs_R,0),MATCH($J$6,Cash_Flow_Inputs_C,0))"},
+    {"address":"CashFlow Engine!J15","internal_live_targets":4131,"formula":"=INDEX(Cash_Flow_Inputs,MATCH($C15,Cash_Flow_Inputs_R,0),MATCH($J$6,Cash_Flow_Inputs_C,0))"},
+    {"address":"CashFlow Engine!J16","internal_live_targets":4131,"formula":"=INDEX(Cash_Flow_Inputs,MATCH($C16,Cash_Flow_Inputs_R,0),MATCH($J$6,Cash_Flow_Inputs_C,0))"},
+    {"address":"CashFlow Engine!J21","internal_live_targets":4131,"formula":"=INDEX(Cash_Flow_Inputs,MATCH($C21,Cash_Flow_Inputs_R,0),MATCH($J$6,Cash_Flow_Inputs_C,0))"},
+    {"address":"CashFlow Engine!J8","internal_live_targets":4131,"formula":"=INDEX(Cash_Flow_Inputs,MATCH($C8,Cash_Flow_Inputs_R,0),MATCH($J$6,Cash_Flow_Inputs_C,0))"},
+    {"address":"CashFlow Engine!J9","internal_live_targets":4131,"formula":"=INDEX(Cash_Flow_Inputs,MATCH($C9,Cash_Flow_Inputs_R,0),MATCH($J$6,Cash_Flow_Inputs_C,0))"},
+    {"address":"named-vertex:VertexId(1256)","internal_live_targets":4130,"formula":null},
+    {"address_pattern":"CashFlow Engine!T33,T84-T86,T93-T97,T109-T110,T112","internal_live_targets":688,"formula":"=IF($S[row]=\"\",\"\",INDEX(Key_Project_Milestones,MATCH($S[row],Key_Project_Milestones_R,0),MATCH($O$27,Key_Project_Milestones_C,0)))"},
+    {"address_pattern":"CashFlow Inputs!AA106-AA109","internal_live_targets":688,"formula":"IF/SUMPRODUCT/INDEX over Key_Project_Milestones_* named ranges"}
+  ],
+  "interpretation": "The dominant sources are INDEX/MATCH formulas reading named ranges whose resolved range spans almost the entire mixed SCC. This is range/name expansion evidence, not evidence that each formula is evaluated only once."
+}

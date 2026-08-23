@@ -1,0 +1,59 @@
+{
+  "schema": "formualizer.fossil-runtime-live-scc-topology/v1",
+  "workbook": "Fossil_EstimatingTemplate_2026-08_21_A.xlsx",
+  "scc_stable_id": 1321560910633541638,
+  "static_scc_member_count": 4829,
+  "runtime_live_cycle_count": 1,
+  "runtime_live_cycle_member_count": 4139,
+  "static_minus_runtime_live_cycle_members": 690,
+  "edge_origin_counts": {
+    "direct_cell": 1350,
+    "dynamic_reference": 268,
+    "named_range": 2066776,
+    "range": 823898
+  },
+  "sheet_cycle_stats_columns": [
+    "sheet",
+    "members",
+    "internal_edges",
+    "cross_sheet_incoming",
+    "cross_sheet_outgoing"
+  ],
+  "sheet_cycle_stats": [
+    ["CashFlow Engine", 695, 8940, 2022729, 33032],
+    ["CashFlow Inputs", 4130, 3393, 33032, 2022729]
+  ],
+  "top_internal_live_edge_sources": [
+    ["CashFlow Engine!J11", 4131],
+    ["CashFlow Engine!J13", 4131],
+    ["CashFlow Engine!J14", 4131],
+    ["CashFlow Engine!J15", 4131],
+    ["CashFlow Engine!J16", 4131],
+    ["CashFlow Engine!J21", 4131],
+    ["CashFlow Engine!J8", 4131],
+    ["CashFlow Engine!J9", 4131],
+    ["vertex:VertexId(1256)", 4130],
+    ["CashFlow Engine!T109", 688],
+    ["CashFlow Engine!T110", 688],
+    ["CashFlow Engine!T112", 688],
+    ["CashFlow Engine!T33", 688],
+    ["CashFlow Engine!T84", 688],
+    ["CashFlow Engine!T85", 688],
+    ["CashFlow Engine!T86", 688],
+    ["CashFlow Engine!T93", 688],
+    ["CashFlow Engine!T94", 688],
+    ["CashFlow Engine!T95", 688],
+    ["CashFlow Engine!T96", 688],
+    ["CashFlow Engine!T97", 688],
+    ["CashFlow Inputs!AA106", 688],
+    ["CashFlow Inputs!AA107", 688],
+    ["CashFlow Inputs!AA108", 688],
+    ["CashFlow Inputs!AA109", 688]
+  ],
+  "notes": [
+    "Origin counts can overlap when one edge is observed through multiple resolver paths.",
+    "Conditional and spill/array origins are not independently observable at the current resolver seam.",
+    "Cross-sheet traffic is asymmetric and dense: Inputs sends approximately 2,022,729 live edges to Engine, and Engine sends approximately 2,022,729 back.",
+    "Top source counts represent unique internal live targets read by each source member, not formula evaluation count."
+  ]
+}

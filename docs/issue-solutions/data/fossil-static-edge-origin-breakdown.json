@@ -1,0 +1,30 @@
+{
+  "schema": "formualizer.fossil-static-edge-origin-breakdown/v1",
+  "workbook": "Fossil_EstimatingTemplate_2026-08_21_A.xlsx",
+  "scc_stable_id": 1321560910633541638,
+  "static_member_count": 4559,
+  "static_internal_live_edge_count": 2037865,
+  "origin_counts": {
+    "direct_cell": 1078,
+    "range": 812168,
+    "whole_row": 0,
+    "whole_column": 0,
+    "named_range": 2029240,
+    "table": 0,
+    "dynamic_reference": 0,
+    "other": 0
+  },
+  "live_graph_degree": {
+    "fanout_median": 688,
+    "fanout_p95": 688,
+    "fanout_max": 4130,
+    "fanin_median": 10,
+    "fanin_p95": 2958,
+    "fanin_max": 3086
+  },
+  "notes": [
+    "Origin counts are overlapping observations: a named-range edge can also be observed as a resolved range edge.",
+    "The primary structural signal is that named-range expansion accounts for approximately 2.03M of the static edge observations.",
+    "Conditional-branch, spill/array, and exact static-dependency provenance are not independently observable at the current runtime resolver seam."
+  ]
+}

@@ -75,6 +75,40 @@ struct CollectorState {
     /// Live edges as `(from_member_idx, to_member_idx)`. Self-edges `(i, i)`
     /// are recorded (e.g. a member whose range argument includes itself).
     edges: FxHashSet<(u32, u32)>,
+    /// Optional origin bitmask for each observed edge. This is populated only
+    /// for the opt-in edge-origin diagnostic path.
+    origins: FxHashMap<(u32, u32), u16>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LiveEdgeOrigin {
+    DirectCell,
+    Range,
+    WholeRow,
+    WholeColumn,
+    NamedRange,
+    Table,
+    DynamicReference,
+    Other,
+}
+
+impl LiveEdgeOrigin {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::DirectCell => "direct_cell",
+            Self::Range => "range",
+            Self::WholeRow => "whole_row",
+            Self::WholeColumn => "whole_column",
+            Self::NamedRange => "named_range",
+            Self::Table => "table",
+            Self::DynamicReference => "dynamic_reference",
+            Self::Other => "other",
+        }
+    }
+
+    pub fn bit(self) -> u16 {
+        1 << (self as u16)
+    }
 }
 
 /// Records which reads actually occurred targeting SCC members during a
@@ -102,6 +136,7 @@ pub struct LiveEdgeCollector {
     /// See module docs: uncontended Mutex forced by `Send + Sync` bounds on
     /// the resolver traits; SCC passes are single-threaded.
     state: Mutex<CollectorState>,
+    track_origins: bool,
 }
 
 impl LiveEdgeCollector {
@@ -116,6 +151,14 @@ impl LiveEdgeCollector {
     /// `cells.len() + j`. `names` must already be folded with the engine's
     /// name-folding rule (see [`Engine::fold_name_key`]).
     pub fn new_with_names(cells: &[CellRef], names: &[String]) -> Self {
+        Self::new_with_names_and_origins(cells, names, false)
+    }
+
+    pub fn new_with_names_and_origins(
+        cells: &[CellRef],
+        names: &[String],
+        track_origins: bool,
+    ) -> Self {
         let members: Vec<MemberCell> = cells
             .iter()
             .map(|c| MemberCell {
@@ -141,6 +184,7 @@ impl LiveEdgeCollector {
             name_index,
             total_members,
             state: Mutex::new(CollectorState::default()),
+            track_origins,
         }
     }
 
@@ -161,28 +205,62 @@ impl LiveEdgeCollector {
         self.state.lock().unwrap().current = None;
     }
 
+    fn record_edge(&self, to: u32, origin: LiveEdgeOrigin) {
+        let mut st = self.state.lock().unwrap();
+        let Some(from) = st.current else {
+            return;
+        };
+        st.edges.insert((from, to));
+        if self.track_origins {
+            *st.origins.entry((from, to)).or_default() |= origin.bit();
+        }
+    }
+
     /// Record a scalar read of `(sheet_id, row, col)` (0-based).
     pub fn record_scalar(&self, sheet_id: SheetId, row: u32, col: u32) {
+        self.record_scalar_with_origin(sheet_id, row, col, LiveEdgeOrigin::DirectCell);
+    }
+
+    pub fn record_scalar_with_origin(
+        &self,
+        sheet_id: SheetId,
+        row: u32,
+        col: u32,
+        origin: LiveEdgeOrigin,
+    ) {
         let Some(&to) = self.index.get(&(sheet_id, row, col)) else {
             return;
         };
-        let mut st = self.state.lock().unwrap();
-        if let Some(from) = st.current {
-            st.edges.insert((from, to));
-        }
+        self.record_edge(to, origin);
     }
 
     /// Record a rectangle read (0-based, inclusive corners). Intersection is
     /// O(|SCC|): each member is tested against the rect once; the rect is
     /// never enumerated per cell.
     pub fn record_rect(&self, sheet_id: SheetId, sr: u32, sc: u32, er: u32, ec: u32) {
+        self.record_rect_with_origin(sheet_id, sr, sc, er, ec, LiveEdgeOrigin::Range);
+    }
+
+    pub fn record_rect_with_origin(
+        &self,
+        sheet_id: SheetId,
+        sr: u32,
+        sc: u32,
+        er: u32,
+        ec: u32,
+        origin: LiveEdgeOrigin,
+    ) {
         let mut st = self.state.lock().unwrap();
         let Some(from) = st.current else {
             return;
         };
         for (i, m) in self.members.iter().enumerate() {
             if m.sheet_id == sheet_id && m.row >= sr && m.row <= er && m.col >= sc && m.col <= ec {
-                st.edges.insert((from, i as u32));
+                let to = i as u32;
+                st.edges.insert((from, to));
+                if self.track_origins {
+                    *st.origins.entry((from, to)).or_default() |= origin.bit();
+                }
             }
         }
     }
@@ -190,19 +268,24 @@ impl LiveEdgeCollector {
     /// Record a read of a named entity by folded name key (e.g. a formula
     /// referencing a named-formula SCC member).
     pub fn record_name(&self, folded_name: &str) {
+        self.record_name_with_origin(folded_name, LiveEdgeOrigin::NamedRange);
+    }
+
+    pub fn record_name_with_origin(&self, folded_name: &str, origin: LiveEdgeOrigin) {
         let Some(&to) = self.name_index.get(folded_name) else {
             return;
         };
-        let mut st = self.state.lock().unwrap();
-        if let Some(from) = st.current {
-            st.edges.insert((from, to));
-        }
+        self.record_edge(to, origin);
     }
 
     /// Drain the collected edges, leaving the collector empty (current member
     /// attribution is preserved).
     pub fn take_edges(&self) -> FxHashSet<(u32, u32)> {
         std::mem::take(&mut self.state.lock().unwrap().edges)
+    }
+
+    pub fn take_edge_origins(&self) -> FxHashMap<(u32, u32), u16> {
+        std::mem::take(&mut self.state.lock().unwrap().origins)
     }
 }
 
@@ -250,7 +333,30 @@ impl<'a, R: EvaluationContext> RecordingContext<'a, R> {
     /// the engine's name-folding rule so it matches collector name keys.
     fn record_name(&self, raw_name: &str) {
         let key = self.engine.graph.name_lookup_key(raw_name);
-        self.collector.record_name(&key);
+        self.collector
+            .record_name_with_origin(&key, LiveEdgeOrigin::NamedRange);
+    }
+
+    fn origin_for_reference(reference: &ReferenceType) -> LiveEdgeOrigin {
+        match reference {
+            ReferenceType::Cell { .. } | ReferenceType::Cell3D { .. } => LiveEdgeOrigin::DirectCell,
+            ReferenceType::Range {
+                start_row,
+                start_col,
+                end_row,
+                end_col,
+                ..
+            } => match (start_row, end_row, start_col, end_col) {
+                (None, None, Some(_), Some(_)) => LiveEdgeOrigin::WholeColumn,
+                (Some(_), Some(_), None, None) => LiveEdgeOrigin::WholeRow,
+                (Some(_), Some(_), Some(_), Some(_)) => LiveEdgeOrigin::Range,
+                _ => LiveEdgeOrigin::Other,
+            },
+            ReferenceType::Range3D { .. } => LiveEdgeOrigin::Range,
+            ReferenceType::NamedRange(_) => LiveEdgeOrigin::NamedRange,
+            ReferenceType::Table(_) => LiveEdgeOrigin::Table,
+            ReferenceType::External(_) => LiveEdgeOrigin::Other,
+        }
     }
 
     /// Record a scalar read given Excel 1-based coordinates.
@@ -259,24 +365,30 @@ impl<'a, R: EvaluationContext> RecordingContext<'a, R> {
             return;
         }
         if let Some(sid) = self.engine.sheet_id(sheet_name) {
-            self.collector.record_scalar(sid, row - 1, col - 1);
+            self.collector.record_scalar_with_origin(
+                sid,
+                row - 1,
+                col - 1,
+                LiveEdgeOrigin::DirectCell,
+            );
         }
     }
 
     /// Record the resolved rect of a `RangeView`. View bounds are absolute,
     /// 0-based and inclusive. Owned/temporary views (sheet `"__tmp"`) have no
     /// registered `SheetId` and are skipped.
-    fn record_view(&self, view: &RangeView<'_>) {
+    fn record_view(&self, view: &RangeView<'_>, origin: LiveEdgeOrigin) {
         if view.is_empty() {
             return;
         }
         if let Some(sid) = self.engine.sheet_id(view.sheet_name()) {
-            self.collector.record_rect(
+            self.collector.record_rect_with_origin(
                 sid,
                 view.start_row() as u32,
                 view.start_col() as u32,
                 view.end_row() as u32,
                 view.end_col() as u32,
+                origin,
             );
         }
     }
@@ -323,7 +435,7 @@ impl<'a, R: EvaluationContext> RangeResolver for RecordingContext<'a, R> {
                 end_col_abs: true,
             };
             if let Ok(view) = self.engine.resolve_range_view(&reference, sheet_name) {
-                self.record_view(&view);
+                self.record_view(&view, Self::origin_for_reference(&reference));
             }
         }
         self.engine.resolve_range_reference(sheet, sr, sc, er, ec)
@@ -406,7 +518,7 @@ impl<'a, R: EvaluationContext> EvaluationContext for RecordingContext<'a, R> {
             self.record_name(name);
         }
         let view = self.engine.resolve_range_view(reference, current_sheet)?;
-        self.record_view(&view);
+        self.record_view(&view, Self::origin_for_reference(reference));
         Ok(view)
     }
 

@@ -9,7 +9,7 @@ use crate::engine::graph::prepared_legacy_graph::{
 };
 use crate::engine::graph::{FormulaDirtyEventSnapshot, FormulaDirtyLease, WholeSpanDirtyReason};
 use crate::engine::ingest_pipeline::{DependencyPlanRow, FormulaAstInput};
-use crate::engine::live_edges::{LiveEdgeCollector, RecordingContext};
+use crate::engine::live_edges::{LiveEdgeCollector, LiveEdgeOrigin, RecordingContext};
 use crate::engine::live_graph::analyze_live_graph;
 use crate::engine::lookup_index_cache::{
     BuildOutcome, LookupAxis, LookupIndex, LookupIndexCache, LookupIndexCacheReport,
@@ -1052,6 +1052,9 @@ pub struct Engine<R> {
     scc_reuse_invalidated_before_request: usize,
     last_scc_dirty_telemetry: SccDirtyTelemetry,
     scc_dirty_telemetry_enabled: bool,
+    scc_iteration_trace_enabled: bool,
+    last_scc_iteration_trace: Vec<SccIterationRecord>,
+    edge_origin_trace_enabled: bool,
     scc_dirty_attribution_baseline: Option<FxHashSet<VertexId>>,
     request_naturally_dirty: Option<FxHashSet<VertexId>>,
     request_dirty_count: usize,
@@ -1893,6 +1896,18 @@ pub struct RecalcTelemetry {
     pub iterative_vertices_redirtied: usize,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub struct SccIterationRecord {
+    pub stable_id: u64,
+    pub iteration: usize,
+    pub evaluated_members: usize,
+    pub changed_members: usize,
+    pub max_abs_delta: f64,
+    pub live_edge_fingerprint: u64,
+    pub elapsed_ns: u128,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct SccDirtyTelemetry {
@@ -1927,11 +1942,112 @@ pub struct SccDirtyRecord {
     pub frontier_boundary_edge_count: usize,
     pub static_cycle_count: usize,
     pub static_cycle_member_count: usize,
+    pub live_cycle_count: usize,
+    pub live_cycle_member_count: usize,
+    pub edge_origin_counts: Vec<(String, usize)>,
+    pub static_edge_origin_counts: Vec<(String, usize)>,
+    pub top_edge_source_counts: Vec<(String, usize)>,
+    pub sheet_cycle_stats: Vec<(String, usize, usize, usize, usize)>,
+    pub live_edge_fanout_median: usize,
+    pub live_edge_fanout_p95: usize,
+    pub live_edge_fanout_max: usize,
+    pub live_edge_fanin_median: usize,
+    pub live_edge_fanin_p95: usize,
+    pub live_edge_fanin_max: usize,
     pub live_edge_fingerprint: u64,
     pub converged: bool,
     pub exactly_stable: bool,
     pub capped: bool,
     pub reason: &'static str,
+}
+
+fn summarize_live_cycles(n: usize, out_edges: &[Vec<u32>], excluded: &[bool]) -> (usize, usize) {
+    let mut edges = Vec::new();
+    for (from, targets) in out_edges.iter().enumerate() {
+        if excluded.get(from).copied().unwrap_or(true) {
+            continue;
+        }
+        for &to in targets {
+            edges.push((from as u32, to));
+        }
+    }
+    edges.sort_unstable();
+    edges.dedup();
+    let analysis = analyze_live_graph(n, &edges);
+    (
+        analysis.cycle_count,
+        analysis
+            .in_cycle
+            .iter()
+            .filter(|in_cycle| **in_cycle)
+            .count(),
+    )
+}
+
+fn live_edge_degree_stats(
+    n: usize,
+    out_edges: &[Vec<u32>],
+    excluded: &[bool],
+) -> ((usize, usize, usize), (usize, usize, usize)) {
+    let mut fanout = Vec::new();
+    let mut fanin = vec![0usize; n];
+    for (from, targets) in out_edges.iter().enumerate() {
+        if excluded.get(from).copied().unwrap_or(true) {
+            continue;
+        }
+        let mut unique_targets = targets.clone();
+        unique_targets.sort_unstable();
+        unique_targets.dedup();
+        unique_targets.retain(|target| {
+            let target = *target as usize;
+            target < n && !excluded[target]
+        });
+        fanout.push(unique_targets.len());
+        for target in unique_targets {
+            fanin[target as usize] += 1;
+        }
+    }
+    let mut fanin = fanin
+        .into_iter()
+        .enumerate()
+        .filter_map(|(index, count)| (!excluded[index]).then_some(count))
+        .collect::<Vec<_>>();
+    fanout.sort_unstable();
+    fanin.sort_unstable();
+    let stats = |values: &[usize]| -> (usize, usize, usize) {
+        if values.is_empty() {
+            return (0, 0, 0);
+        }
+        let p95_index = ((values.len() * 95).saturating_add(99) / 100).saturating_sub(1);
+        (
+            values[values.len() / 2],
+            values[p95_index],
+            *values.last().unwrap_or(&0),
+        )
+    };
+    (stats(&fanout), stats(&fanin))
+}
+
+fn edge_origin_trace_enabled() -> bool {
+    #[cfg(target_arch = "wasm32")]
+    {
+        false
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        std::env::var_os("FZ_TRACE_EDGE_ORIGINS").is_some()
+    }
+}
+
+fn scc_iteration_trace_enabled() -> bool {
+    #[cfg(target_arch = "wasm32")]
+    {
+        false
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        std::env::var_os("FZ_TRACE_SCC_ITERATIONS").is_some()
+    }
 }
 
 fn fingerprint_live_edges(n: usize, out_edges: &[Vec<u32>], excluded: &[bool]) -> u64 {
@@ -2027,6 +2143,63 @@ fn summarize_scc_partition(
     }
 }
 
+fn summarize_edge_origins(
+    origins: Option<&[FxHashMap<u32, u16>]>,
+    dynamic_members: &[bool],
+    volatile_members: &[bool],
+    excluded: &[bool],
+    static_only: bool,
+) -> Vec<(String, usize)> {
+    let Some(origins) = origins else {
+        return Vec::new();
+    };
+    let all_origins = [
+        LiveEdgeOrigin::DirectCell,
+        LiveEdgeOrigin::Range,
+        LiveEdgeOrigin::WholeRow,
+        LiveEdgeOrigin::WholeColumn,
+        LiveEdgeOrigin::NamedRange,
+        LiveEdgeOrigin::Table,
+        LiveEdgeOrigin::DynamicReference,
+        LiveEdgeOrigin::Other,
+    ];
+    let mut counts = FxHashMap::<&'static str, usize>::default();
+    for (from, row) in origins.iter().enumerate() {
+        if static_only
+            && (excluded.get(from).copied().unwrap_or(true)
+                || dynamic_members.get(from).copied().unwrap_or(false)
+                || volatile_members.get(from).copied().unwrap_or(false))
+        {
+            continue;
+        }
+        for (&to, &mask) in row {
+            let to = to as usize;
+            if static_only
+                && (excluded.get(to).copied().unwrap_or(true)
+                    || dynamic_members.get(to).copied().unwrap_or(false)
+                    || volatile_members.get(to).copied().unwrap_or(false))
+            {
+                continue;
+            }
+            let mut effective_mask = mask;
+            if dynamic_members.get(from).copied().unwrap_or(false) {
+                effective_mask |= LiveEdgeOrigin::DynamicReference.bit();
+            }
+            for origin in all_origins {
+                if effective_mask & origin.bit() != 0 {
+                    *counts.entry(origin.label()).or_default() += 1;
+                }
+            }
+        }
+    }
+    let mut result: Vec<_> = counts
+        .into_iter()
+        .map(|(origin, count)| (origin.to_string(), count))
+        .collect();
+    result.sort_unstable();
+    result
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct FormulaTimingRecord {
@@ -2054,6 +2227,18 @@ struct PendingIterativeSccRedirty {
     frontier_boundary_edge_count: usize,
     static_cycle_count: usize,
     static_cycle_member_count: usize,
+    live_cycle_count: usize,
+    live_cycle_member_count: usize,
+    edge_origin_counts: Vec<(String, usize)>,
+    static_edge_origin_counts: Vec<(String, usize)>,
+    top_edge_source_counts: Vec<(String, usize)>,
+    sheet_cycle_stats: Vec<(String, usize, usize, usize, usize)>,
+    live_edge_fanout_median: usize,
+    live_edge_fanout_p95: usize,
+    live_edge_fanout_max: usize,
+    live_edge_fanin_median: usize,
+    live_edge_fanin_p95: usize,
+    live_edge_fanin_max: usize,
     converged: bool,
     exactly_stable: bool,
     capped: bool,
@@ -2905,6 +3090,9 @@ where
             scc_reuse_invalidated_before_request: 0,
             last_scc_dirty_telemetry: SccDirtyTelemetry::default(),
             scc_dirty_telemetry_enabled: true,
+            scc_iteration_trace_enabled: scc_iteration_trace_enabled(),
+            last_scc_iteration_trace: Vec::new(),
+            edge_origin_trace_enabled: edge_origin_trace_enabled(),
             scc_dirty_attribution_baseline: None,
             request_naturally_dirty: None,
             request_dirty_count: 0,
@@ -3070,6 +3258,9 @@ where
             scc_reuse_invalidated_before_request: 0,
             last_scc_dirty_telemetry: SccDirtyTelemetry::default(),
             scc_dirty_telemetry_enabled: true,
+            scc_iteration_trace_enabled: scc_iteration_trace_enabled(),
+            last_scc_iteration_trace: Vec::new(),
+            edge_origin_trace_enabled: edge_origin_trace_enabled(),
             scc_dirty_attribution_baseline: None,
             request_naturally_dirty: None,
             request_dirty_count: 0,
@@ -3149,6 +3340,10 @@ where
 
     pub fn last_scc_dirty_telemetry(&self) -> &SccDirtyTelemetry {
         &self.last_scc_dirty_telemetry
+    }
+
+    pub fn last_scc_iteration_trace(&self) -> &[SccIterationRecord] {
+        &self.last_scc_iteration_trace
     }
 
     pub fn last_recalc_telemetry(&self) -> &RecalcTelemetry {
@@ -3805,6 +4000,9 @@ where
     fn begin_evaluation_request(&mut self) {
         self.last_cycle_telemetry = CycleTelemetry::default();
         self.last_recalc_telemetry = RecalcTelemetry::default();
+        if self.scc_iteration_trace_enabled {
+            self.last_scc_iteration_trace.clear();
+        }
         if self.formula_timing_enabled
             && let Ok(mut timings) = self.formula_timings.lock()
         {
@@ -4035,6 +4233,18 @@ where
                 frontier_boundary_edge_count: scc.frontier_boundary_edge_count,
                 static_cycle_count: scc.static_cycle_count,
                 static_cycle_member_count: scc.static_cycle_member_count,
+                live_cycle_count: scc.live_cycle_count,
+                live_cycle_member_count: scc.live_cycle_member_count,
+                edge_origin_counts: scc.edge_origin_counts,
+                static_edge_origin_counts: scc.static_edge_origin_counts,
+                top_edge_source_counts: scc.top_edge_source_counts,
+                sheet_cycle_stats: scc.sheet_cycle_stats,
+                live_edge_fanout_median: scc.live_edge_fanout_median,
+                live_edge_fanout_p95: scc.live_edge_fanout_p95,
+                live_edge_fanout_max: scc.live_edge_fanout_max,
+                live_edge_fanin_median: scc.live_edge_fanin_median,
+                live_edge_fanin_p95: scc.live_edge_fanin_p95,
+                live_edge_fanin_max: scc.live_edge_fanin_max,
                 live_edge_fingerprint: scc.live_edge_fingerprint,
                 converged: scc.converged,
                 exactly_stable: scc.exactly_stable,
@@ -25414,6 +25624,9 @@ where
             });
         }
         let n = members.len();
+        let scc_stable_id = members.iter().fold(0xcbf29ce484222325_u64, |hash, member| {
+            (hash ^ member.vertex.0 as u64).wrapping_mul(0x100000001b3)
+        });
         // Indices addressable by the collector (cells + names); `other`
         // members can be neither edge sources nor targets.
         let recordable = cell_refs.len() + name_keys.len();
@@ -25495,7 +25708,11 @@ where
             }
         }
 
-        let collector = LiveEdgeCollector::new_with_names(&cell_refs, &name_keys);
+        let collector = LiveEdgeCollector::new_with_names_and_origins(
+            &cell_refs,
+            &name_keys,
+            self.edge_origin_trace_enabled,
+        );
 
         // Per-member live out-edges, refreshed whenever a member re-runs.
         let mut out_edges: Vec<Vec<u32>> = vec![Vec::new(); n];
@@ -25503,6 +25720,11 @@ where
         let mut pos: Vec<i64> = vec![-1; n];
         // Whether each member's committed value changed in the most recent pass.
         let mut changed = vec![false; n];
+        let mut out_edge_origins = self.edge_origin_trace_enabled.then(|| {
+            (0..n)
+                .map(|_| FxHashMap::<u32, u16>::default())
+                .collect::<Vec<_>>()
+        });
 
         // Evaluate-and-commit one member; returns Ok(true) when the member was
         // stamped `#CIRC!` (array result — would-be spill anchor, spec §7.9).
@@ -25618,13 +25840,20 @@ where
         // Error flow `1 + settle_passes == passes`, preserving Stage-2
         // behavior exactly).
         let mut settle_passes = 0usize;
+        let mut pass_started = crate::instant::FzInstant::now();
         loop {
             // Drain this pass's recordings; members that ran replace their
             // out-edge set, members that didn't keep last-known edges.
             let drained = collector.take_edges();
+            let drained_origins = self
+                .edge_origin_trace_enabled
+                .then(|| collector.take_edge_origins());
             for i in 0..n {
                 if pos[i] >= 0 {
                     out_edges[i].clear();
+                    if let Some(origins) = out_edge_origins.as_mut() {
+                        origins[i].clear();
+                    }
                 }
             }
             for (from, to) in drained {
@@ -25633,6 +25862,13 @@ where
                     "edge from a member that did not run"
                 );
                 out_edges[from as usize].push(to);
+                if let Some(origins) = out_edge_origins.as_mut()
+                    && let Some(mask) = drained_origins
+                        .as_ref()
+                        .and_then(|map| map.get(&(from, to)))
+                {
+                    origins[from as usize].insert(to, *mask);
+                }
             }
             let mut edges: Vec<(u32, u32)> = Vec::new();
             for (i, outs) in out_edges.iter().enumerate() {
@@ -25647,7 +25883,6 @@ where
             edges.dedup();
 
             let analysis = analyze_live_graph(n, &edges);
-
             if analysis.cycle_count > 0 {
                 // Classification repeats every iteration pass under
                 // `Iterate`; record the widest single witness instead of
@@ -25695,6 +25930,22 @@ where
                         // `prev_pass` is `None` until an iteration pass has
                         // run — pass 1 has no predecessor, so no convergence
                         // test occurs before the second pass (spec §6).
+                        if self.scc_iteration_trace_enabled && prev_pass.is_none() {
+                            self.last_scc_iteration_trace.push(SccIterationRecord {
+                                stable_id: scc_stable_id,
+                                iteration: passes,
+                                evaluated_members: excluded
+                                    .iter()
+                                    .filter(|excluded| !**excluded)
+                                    .count(),
+                                changed_members: changed.iter().filter(|changed| **changed).count(),
+                                max_abs_delta: 0.0,
+                                live_edge_fingerprint: fingerprint_live_edges(
+                                    n, &out_edges, &excluded,
+                                ),
+                                elapsed_ns: pass_started.elapsed().as_nanos(),
+                            });
+                        }
                         if let Some(prev) = &prev_pass {
                             let mut round_max_delta = 0f64;
                             let mut round_nan = 0usize;
@@ -25728,6 +25979,25 @@ where
                             // round observed at stop.
                             iter_max_delta = round_max_delta;
                             iter_nan_converged = round_nan;
+                            if self.scc_iteration_trace_enabled {
+                                self.last_scc_iteration_trace.push(SccIterationRecord {
+                                    stable_id: scc_stable_id,
+                                    iteration: passes,
+                                    evaluated_members: excluded
+                                        .iter()
+                                        .filter(|excluded| !**excluded)
+                                        .count(),
+                                    changed_members: changed
+                                        .iter()
+                                        .filter(|changed| **changed)
+                                        .count(),
+                                    max_abs_delta: round_max_delta,
+                                    live_edge_fingerprint: fingerprint_live_edges(
+                                        n, &out_edges, &excluded,
+                                    ),
+                                    elapsed_ns: pass_started.elapsed().as_nanos(),
+                                });
+                            }
                             if all_converged {
                                 converged = true;
                                 exactly_stable = all_exactly_stable;
@@ -25764,6 +26034,7 @@ where
                             *x = -1;
                         }
                         changed.fill(false);
+                        pass_started = crate::instant::FzInstant::now();
                         passes += 1;
                         let mut p = 0i64;
                         for i in 0..n {
@@ -25889,6 +26160,81 @@ where
                         .collect::<Vec<_>>();
                     let partition =
                         summarize_scc_partition(n, &out_edges, &excluded, &volatile, &dynamic);
+                    let (live_cycle_count, live_cycle_member_count) =
+                        summarize_live_cycles(n, &out_edges, &excluded);
+                    let mut top_edge_source_counts = if self.edge_origin_trace_enabled {
+                        members
+                            .iter()
+                            .enumerate()
+                            .filter_map(|(index, member)| {
+                                let count = out_edges[index].len();
+                                (count > 0).then(|| {
+                                    let address = member.cell.map_or_else(
+                                        || format!("vertex:{:?}", member.vertex),
+                                        |cell| {
+                                            format!(
+                                                "{}!{}{}",
+                                                self.graph.sheet_name(cell.sheet_id),
+                                                Self::col_to_letters(cell.coord.col() + 1),
+                                                cell.coord.row() + 1,
+                                            )
+                                        },
+                                    );
+                                    (address, count)
+                                })
+                            })
+                            .collect::<Vec<_>>()
+                    } else {
+                        Vec::new()
+                    };
+                    top_edge_source_counts.sort_unstable_by(|left, right| {
+                        right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0))
+                    });
+                    top_edge_source_counts.truncate(25);
+                    let mut sheet_stats = BTreeMap::<String, (usize, usize, usize, usize)>::new();
+                    for member in &members {
+                        if let Some(cell) = member.cell {
+                            let sheet = self.graph.sheet_name(cell.sheet_id).to_string();
+                            sheet_stats.entry(sheet).or_default().0 += 1;
+                        }
+                    }
+                    for (from, targets) in out_edges.iter().enumerate() {
+                        if excluded[from] {
+                            continue;
+                        }
+                        let Some(from_cell) = members[from].cell else {
+                            continue;
+                        };
+                        let from_sheet = self.graph.sheet_name(from_cell.sheet_id).to_string();
+                        for &to in targets {
+                            let to = to as usize;
+                            if to >= n || excluded[to] {
+                                continue;
+                            }
+                            let Some(to_cell) = members[to].cell else {
+                                continue;
+                            };
+                            let to_sheet = self.graph.sheet_name(to_cell.sheet_id).to_string();
+                            if from_cell.sheet_id == to_cell.sheet_id {
+                                sheet_stats.entry(from_sheet.clone()).or_default().1 += 1;
+                            } else {
+                                sheet_stats.entry(from_sheet.clone()).or_default().3 += 1;
+                                sheet_stats.entry(to_sheet).or_default().2 += 1;
+                            }
+                        }
+                    }
+                    let sheet_cycle_stats = sheet_stats
+                        .into_iter()
+                        .map(
+                            |(sheet, (member_count, internal_edges, incoming, outgoing))| {
+                                (sheet, member_count, internal_edges, incoming, outgoing)
+                            },
+                        )
+                        .collect();
+                    let (
+                        (fanout_median, fanout_p95, fanout_max),
+                        (fanin_median, fanin_p95, fanin_max),
+                    ) = live_edge_degree_stats(n, &out_edges, &excluded);
                     self.pending_iterative_scc_redirty
                         .push(PendingIterativeSccRedirty {
                             members: members.iter().map(|member| member.vertex).collect(),
@@ -25899,6 +26245,30 @@ where
                             frontier_boundary_edge_count: partition.frontier_boundary_edge_count,
                             static_cycle_count: partition.static_cycle_count,
                             static_cycle_member_count: partition.static_cycle_member_count,
+                            live_cycle_count,
+                            live_cycle_member_count,
+                            edge_origin_counts: summarize_edge_origins(
+                                out_edge_origins.as_deref(),
+                                &dynamic,
+                                &volatile,
+                                &excluded,
+                                false,
+                            ),
+                            static_edge_origin_counts: summarize_edge_origins(
+                                out_edge_origins.as_deref(),
+                                &dynamic,
+                                &volatile,
+                                &excluded,
+                                true,
+                            ),
+                            top_edge_source_counts,
+                            sheet_cycle_stats,
+                            live_edge_fanout_median: fanout_median,
+                            live_edge_fanout_p95: fanout_p95,
+                            live_edge_fanout_max: fanout_max,
+                            live_edge_fanin_median: fanin_median,
+                            live_edge_fanin_p95: fanin_p95,
+                            live_edge_fanin_max: fanin_max,
                             converged,
                             exactly_stable,
                             capped,

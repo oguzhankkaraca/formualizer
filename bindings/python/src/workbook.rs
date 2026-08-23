@@ -929,6 +929,23 @@ impl PyWorkbook {
         ))
     }
 
+    pub fn last_scc_iteration_trace(&self, py: Python<'_>) -> PyResult<PyObject> {
+        let wb = self.read_inner()?;
+        let trace = PyList::empty(py);
+        for record in wb.engine().last_scc_iteration_trace() {
+            let row = PyDict::new(py);
+            row.set_item("stable_id", record.stable_id)?;
+            row.set_item("iteration", record.iteration)?;
+            row.set_item("evaluated_members", record.evaluated_members)?;
+            row.set_item("changed_members", record.changed_members)?;
+            row.set_item("max_abs_delta", record.max_abs_delta)?;
+            row.set_item("live_edge_fingerprint", record.live_edge_fingerprint)?;
+            row.set_item("elapsed_ns", record.elapsed_ns)?;
+            trace.append(row)?;
+        }
+        Ok(trace.into())
+    }
+
     pub fn last_scc_dirty_telemetry(&self, py: Python<'_>) -> PyResult<PyObject> {
         let wb = self.read_inner()?;
         let telemetry = wb.engine().last_scc_dirty_telemetry();
@@ -993,6 +1010,21 @@ impl PyWorkbook {
                 "static_cycle_member_count",
                 record.static_cycle_member_count,
             )?;
+            row.set_item("live_cycle_count", record.live_cycle_count)?;
+            row.set_item("live_cycle_member_count", record.live_cycle_member_count)?;
+            row.set_item("edge_origin_counts", &record.edge_origin_counts)?;
+            row.set_item(
+                "static_edge_origin_counts",
+                &record.static_edge_origin_counts,
+            )?;
+            row.set_item("top_edge_source_counts", &record.top_edge_source_counts)?;
+            row.set_item("sheet_cycle_stats", &record.sheet_cycle_stats)?;
+            row.set_item("live_edge_fanout_median", record.live_edge_fanout_median)?;
+            row.set_item("live_edge_fanout_p95", record.live_edge_fanout_p95)?;
+            row.set_item("live_edge_fanout_max", record.live_edge_fanout_max)?;
+            row.set_item("live_edge_fanin_median", record.live_edge_fanin_median)?;
+            row.set_item("live_edge_fanin_p95", record.live_edge_fanin_p95)?;
+            row.set_item("live_edge_fanin_max", record.live_edge_fanin_max)?;
             row.set_item("live_edge_fingerprint", record.live_edge_fingerprint)?;
             row.set_item(
                 "naturally_dirty_member_count",

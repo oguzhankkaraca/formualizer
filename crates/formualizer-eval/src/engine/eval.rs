@@ -10,7 +10,8 @@ use crate::engine::graph::prepared_legacy_graph::{
 use crate::engine::graph::{FormulaDirtyEventSnapshot, FormulaDirtyLease, WholeSpanDirtyReason};
 use crate::engine::ingest_pipeline::{DependencyPlanRow, FormulaAstInput};
 use crate::engine::live_edges::{
-    LiveEdgeCollector, LiveEdgeOrigin, LiveReadCounters, RecordingContext,
+    LiveEdgeCollector, LiveEdgeOrigin, LiveReadCounters, MemberCoordinateIndexMode,
+    RecordingContext, member_coordinate_index_mode,
 };
 use crate::engine::live_graph::analyze_live_graph;
 use crate::engine::lookup_index_cache::{
@@ -1059,6 +1060,8 @@ pub struct Engine<R> {
     scc_pass_profile_enabled: bool,
     last_scc_pass_profile: Vec<SccPassProfileRecord>,
     last_scc_member_profile: Vec<SccMemberPassProfileRecord>,
+    scc_member_index_mode: MemberCoordinateIndexMode,
+    last_scc_collector_parity: Vec<SccCollectorParityRecord>,
     edge_origin_trace_enabled: bool,
     diagnostic_early_termination_enabled: bool,
     diagnostic_early_scc_states: FxHashMap<u64, DiagnosticEarlySccState>,
@@ -1970,6 +1973,19 @@ pub struct SccMemberPassProfileRecord {
     pub dynamic_source: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct SccCollectorParityRecord {
+    pub stable_id: u64,
+    pub iteration: usize,
+    pub indexed_edge_count: usize,
+    pub legacy_edge_count: usize,
+    pub indexed_edge_fingerprint: u64,
+    pub legacy_edge_fingerprint: u64,
+    pub edge_set_equal: bool,
+    pub origin_map_equal: bool,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct SccEarlyTerminationRecord {
@@ -2170,6 +2186,20 @@ fn literal_shape(value: &LiteralValue) -> (usize, usize) {
         LiteralValue::Array(rows) => (rows.len(), rows.iter().map(Vec::len).max().unwrap_or(0)),
         _ => (1, 1),
     }
+}
+
+fn fingerprint_collected_edges(n: usize, edges: &FxHashSet<(u32, u32)>) -> u64 {
+    let mut edges = edges.iter().copied().collect::<Vec<_>>();
+    edges.sort_unstable();
+    edges.dedup();
+    edges
+        .iter()
+        .fold(0xcbf29ce484222325_u64 ^ n as u64, |hash, &(from, to)| {
+            (hash ^ from as u64)
+                .wrapping_mul(0x100000001b3)
+                .wrapping_add(to as u64)
+                .wrapping_mul(0x100000001b3)
+        })
 }
 
 fn fingerprint_live_edges(n: usize, out_edges: &[Vec<u32>], excluded: &[bool]) -> u64 {
@@ -3217,6 +3247,8 @@ where
             scc_pass_profile_enabled: scc_pass_profile_enabled(),
             last_scc_pass_profile: Vec::new(),
             last_scc_member_profile: Vec::new(),
+            scc_member_index_mode: member_coordinate_index_mode(),
+            last_scc_collector_parity: Vec::new(),
             edge_origin_trace_enabled: edge_origin_trace_enabled(),
             diagnostic_early_termination_enabled: diagnostic_early_termination_enabled(),
             diagnostic_early_scc_states: FxHashMap::default(),
@@ -3391,6 +3423,8 @@ where
             scc_pass_profile_enabled: scc_pass_profile_enabled(),
             last_scc_pass_profile: Vec::new(),
             last_scc_member_profile: Vec::new(),
+            scc_member_index_mode: member_coordinate_index_mode(),
+            last_scc_collector_parity: Vec::new(),
             edge_origin_trace_enabled: edge_origin_trace_enabled(),
             diagnostic_early_termination_enabled: diagnostic_early_termination_enabled(),
             diagnostic_early_scc_states: FxHashMap::default(),
@@ -3490,6 +3524,10 @@ where
 
     pub fn last_scc_member_profile(&self) -> &[SccMemberPassProfileRecord] {
         &self.last_scc_member_profile
+    }
+
+    pub fn last_scc_collector_parity(&self) -> &[SccCollectorParityRecord] {
+        &self.last_scc_collector_parity
     }
 
     pub fn formula_value_fingerprint(&self) -> (usize, u64) {
@@ -4178,9 +4216,12 @@ where
         if self.scc_iteration_trace_enabled {
             self.last_scc_iteration_trace.clear();
         }
-        if self.scc_pass_profile_enabled {
+        if self.scc_pass_profile_enabled
+            || self.scc_member_index_mode == MemberCoordinateIndexMode::Compare
+        {
             self.last_scc_pass_profile.clear();
             self.last_scc_member_profile.clear();
+            self.last_scc_collector_parity.clear();
         }
         if self.diagnostic_early_termination_enabled {
             self.last_scc_early_termination.clear();
@@ -25959,11 +26000,12 @@ where
             }
         }
 
-        let collector = LiveEdgeCollector::new_with_diagnostics(
+        let collector = LiveEdgeCollector::new_with_diagnostics_and_mode(
             &cell_refs,
             &name_keys,
             self.edge_origin_trace_enabled,
             self.scc_pass_profile_enabled,
+            self.scc_member_index_mode,
         );
 
         // Per-member live out-edges, refreshed whenever a member re-runs.
@@ -26155,6 +26197,23 @@ where
             let drained_origins = self
                 .edge_origin_trace_enabled
                 .then(|| collector.take_edge_origins());
+            let drained_legacy = collector.take_legacy_edges();
+            let drained_legacy_origins = collector.take_legacy_edge_origins();
+            if self.scc_member_index_mode == MemberCoordinateIndexMode::Compare {
+                self.last_scc_collector_parity
+                    .push(SccCollectorParityRecord {
+                        stable_id: scc_stable_id,
+                        iteration: passes,
+                        indexed_edge_count: drained.len(),
+                        legacy_edge_count: drained_legacy.len(),
+                        indexed_edge_fingerprint: fingerprint_collected_edges(n, &drained),
+                        legacy_edge_fingerprint: fingerprint_collected_edges(n, &drained_legacy),
+                        edge_set_equal: drained == drained_legacy,
+                        origin_map_equal: drained_origins
+                            .as_ref()
+                            .is_none_or(|origins| origins == &drained_legacy_origins),
+                    });
+            }
             for i in 0..n {
                 if pos[i] >= 0 {
                     out_edges[i].clear();

@@ -1016,6 +1016,24 @@ impl PyWorkbook {
         Ok(records.into())
     }
 
+    pub fn last_scc_collector_parity(&self, py: Python<'_>) -> PyResult<PyObject> {
+        let wb = self.read_inner()?;
+        let records = PyList::empty(py);
+        for record in wb.engine().last_scc_collector_parity() {
+            let row = PyDict::new(py);
+            row.set_item("stable_id", record.stable_id)?;
+            row.set_item("iteration", record.iteration)?;
+            row.set_item("indexed_edge_count", record.indexed_edge_count)?;
+            row.set_item("legacy_edge_count", record.legacy_edge_count)?;
+            row.set_item("indexed_edge_fingerprint", record.indexed_edge_fingerprint)?;
+            row.set_item("legacy_edge_fingerprint", record.legacy_edge_fingerprint)?;
+            row.set_item("edge_set_equal", record.edge_set_equal)?;
+            row.set_item("origin_map_equal", record.origin_map_equal)?;
+            records.append(row)?;
+        }
+        Ok(records.into())
+    }
+
     pub fn formula_value_fingerprint(&self) -> PyResult<(usize, u64)> {
         let wb = self.read_inner()?;
         Ok(wb.engine().formula_value_fingerprint())

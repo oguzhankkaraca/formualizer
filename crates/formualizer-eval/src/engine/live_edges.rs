@@ -67,6 +67,47 @@ struct MemberCell {
     col: u32,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct IndexedMember {
+    row: u32,
+    col: u32,
+    member_idx: u32,
+}
+
+#[derive(Default)]
+struct MemberCoordinateIndex {
+    by_sheet: FxHashMap<SheetId, Vec<IndexedMember>>,
+}
+
+impl MemberCoordinateIndex {
+    fn new(members: &[MemberCell]) -> Self {
+        let mut by_sheet: FxHashMap<SheetId, Vec<IndexedMember>> = FxHashMap::default();
+        for (member_idx, member) in members.iter().enumerate() {
+            by_sheet
+                .entry(member.sheet_id)
+                .or_default()
+                .push(IndexedMember {
+                    row: member.row,
+                    col: member.col,
+                    member_idx: member_idx as u32,
+                });
+        }
+        for members in by_sheet.values_mut() {
+            members.sort_unstable_by_key(|member| (member.row, member.col, member.member_idx));
+        }
+        Self { by_sheet }
+    }
+
+    fn candidates(&self, sheet_id: SheetId, sr: u32, er: u32) -> &[IndexedMember] {
+        let Some(members) = self.by_sheet.get(&sheet_id) else {
+            return &[];
+        };
+        let start = members.partition_point(|member| member.row < sr);
+        let end = members.partition_point(|member| member.row <= er);
+        &members[start..end]
+    }
+}
+
 #[derive(Default)]
 struct CollectorState {
     /// Index (into `members`) of the member currently being evaluated.
@@ -79,6 +120,8 @@ struct CollectorState {
     /// Optional origin bitmask for each observed edge. This is populated only
     /// for the opt-in edge-origin diagnostic path.
     origins: FxHashMap<(u32, u32), u16>,
+    legacy_edges: FxHashSet<(u32, u32)>,
+    legacy_origins: FxHashMap<(u32, u32), u16>,
     read_counters: FxHashMap<u32, LiveReadCounters>,
 }
 
@@ -104,6 +147,32 @@ pub struct LiveReadCounters {
     pub range_membership_checks: u64,
     pub collection_ns: u64,
     pub read_events: u64,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum MemberCoordinateIndexMode {
+    Legacy,
+    Compare,
+    #[default]
+    Indexed,
+}
+
+pub fn member_coordinate_index_mode() -> MemberCoordinateIndexMode {
+    #[cfg(target_arch = "wasm32")]
+    {
+        MemberCoordinateIndexMode::Indexed
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        match std::env::var("FZ_SCC_MEMBER_COORDINATE_INDEX_MODE")
+            .ok()
+            .as_deref()
+        {
+            Some("legacy") => MemberCoordinateIndexMode::Legacy,
+            Some("compare") => MemberCoordinateIndexMode::Compare,
+            _ => MemberCoordinateIndexMode::Indexed,
+        }
+    }
 }
 
 impl LiveEdgeOrigin {
@@ -140,6 +209,7 @@ impl LiveEdgeOrigin {
 pub struct LiveEdgeCollector {
     /// Iterable membership for rect intersection.
     members: Vec<MemberCell>,
+    member_coordinate_index: MemberCoordinateIndex,
     /// O(1) scalar lookup: (sheet_id, row0, col0) -> member index.
     index: FxHashMap<(SheetId, u32, u32), u32>,
     /// O(1) name lookup: engine-folded name key -> member index (indices
@@ -152,6 +222,7 @@ pub struct LiveEdgeCollector {
     state: Mutex<CollectorState>,
     track_origins: bool,
     track_reads: bool,
+    mode: MemberCoordinateIndexMode,
 }
 
 impl LiveEdgeCollector {
@@ -183,6 +254,22 @@ impl LiveEdgeCollector {
         track_origins: bool,
         track_reads: bool,
     ) -> Self {
+        Self::new_with_diagnostics_and_mode(
+            cells,
+            names,
+            track_origins,
+            track_reads,
+            MemberCoordinateIndexMode::Indexed,
+        )
+    }
+
+    pub fn new_with_diagnostics_and_mode(
+        cells: &[CellRef],
+        names: &[String],
+        track_origins: bool,
+        track_reads: bool,
+        mode: MemberCoordinateIndexMode,
+    ) -> Self {
         let members: Vec<MemberCell> = cells
             .iter()
             .map(|c| MemberCell {
@@ -202,14 +289,17 @@ impl LiveEdgeCollector {
             name_index.insert(name.clone(), (members.len() + j) as u32);
         }
         let total_members = members.len() + names.len();
+        let member_coordinate_index = MemberCoordinateIndex::new(&members);
         Self {
             members,
+            member_coordinate_index,
             index,
             name_index,
             total_members,
             state: Mutex::new(CollectorState::default()),
             track_origins,
             track_reads,
+            mode,
         }
     }
 
@@ -258,8 +348,14 @@ impl LiveEdgeCollector {
         }
         if let Some(to) = to {
             st.edges.insert((from, to));
+            if self.mode == MemberCoordinateIndexMode::Compare {
+                st.legacy_edges.insert((from, to));
+            }
             if self.track_origins {
                 *st.origins.entry((from, to)).or_default() |= origin.bit();
+                if self.mode == MemberCoordinateIndexMode::Compare {
+                    *st.legacy_origins.entry((from, to)).or_default() |= origin.bit();
+                }
             }
         }
         if let Some(started) = collection_started {
@@ -288,7 +384,13 @@ impl LiveEdgeCollector {
         origin: LiveEdgeOrigin,
     ) {
         let collection_started = self.track_reads.then(Instant::now);
-        let membership_count = self.members.len() as u64;
+        let indexed_candidates = self.member_coordinate_index.candidates(sheet_id, sr, er);
+        let membership_count = match self.mode {
+            MemberCoordinateIndexMode::Legacy | MemberCoordinateIndexMode::Compare => {
+                self.members.len() as u64
+            }
+            MemberCoordinateIndexMode::Indexed => indexed_candidates.len() as u64,
+        };
         let mut st = self.state.lock().unwrap();
         let Some(from) = st.current else {
             return;
@@ -305,18 +407,56 @@ impl LiveEdgeCollector {
             );
             counters.read_events += 1;
         }
-        for (i, m) in self.members.iter().enumerate() {
-            if m.sheet_id == sheet_id && m.row >= sr && m.row <= er && m.col >= sc && m.col <= ec {
-                let to = i as u32;
+        if self.mode == MemberCoordinateIndexMode::Legacy
+            || self.mode == MemberCoordinateIndexMode::Compare
+        {
+            for (i, m) in self.members.iter().enumerate() {
+                if m.sheet_id == sheet_id
+                    && m.row >= sr
+                    && m.row <= er
+                    && m.col >= sc
+                    && m.col <= ec
+                {
+                    let to = i as u32;
+                    if self.mode == MemberCoordinateIndexMode::Compare {
+                        st.legacy_edges.insert((from, to));
+                    } else {
+                        st.edges.insert((from, to));
+                    }
+                    if self.track_origins {
+                        let origins = if self.mode == MemberCoordinateIndexMode::Compare {
+                            &mut st.legacy_origins
+                        } else {
+                            &mut st.origins
+                        };
+                        *origins.entry((from, to)).or_default() |= origin.bit();
+                    }
+                    if self.track_reads {
+                        st.read_counters
+                            .get_mut(&from)
+                            .expect("read counters initialized above")
+                            .internal_target_events += 1;
+                    }
+                }
+            }
+        }
+        if self.mode == MemberCoordinateIndexMode::Indexed
+            || self.mode == MemberCoordinateIndexMode::Compare
+        {
+            for member in indexed_candidates {
+                if member.col < sc || member.col > ec {
+                    continue;
+                }
+                let to = member.member_idx;
+                st.edges.insert((from, to));
+                if self.track_origins {
+                    *st.origins.entry((from, to)).or_default() |= origin.bit();
+                }
                 if self.track_reads {
                     st.read_counters
                         .get_mut(&from)
                         .expect("read counters initialized above")
                         .internal_target_events += 1;
-                }
-                st.edges.insert((from, to));
-                if self.track_origins {
-                    *st.origins.entry((from, to)).or_default() |= origin.bit();
                 }
             }
         }
@@ -352,8 +492,14 @@ impl LiveEdgeCollector {
         }
         if let Some(to) = to {
             st.edges.insert((from, to));
+            if self.mode == MemberCoordinateIndexMode::Compare {
+                st.legacy_edges.insert((from, to));
+            }
             if self.track_origins {
                 *st.origins.entry((from, to)).or_default() |= origin.bit();
+                if self.mode == MemberCoordinateIndexMode::Compare {
+                    *st.legacy_origins.entry((from, to)).or_default() |= origin.bit();
+                }
             }
         }
         if let Some(started) = collection_started {
@@ -371,8 +517,16 @@ impl LiveEdgeCollector {
         std::mem::take(&mut self.state.lock().unwrap().edges)
     }
 
+    pub fn take_legacy_edges(&self) -> FxHashSet<(u32, u32)> {
+        std::mem::take(&mut self.state.lock().unwrap().legacy_edges)
+    }
+
     pub fn take_edge_origins(&self) -> FxHashMap<(u32, u32), u16> {
         std::mem::take(&mut self.state.lock().unwrap().origins)
+    }
+
+    pub fn take_legacy_edge_origins(&self) -> FxHashMap<(u32, u32), u16> {
+        std::mem::take(&mut self.state.lock().unwrap().legacy_origins)
     }
 
     pub fn take_member_read_counters(&self, member_idx: u32) -> LiveReadCounters {

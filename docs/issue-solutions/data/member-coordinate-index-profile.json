@@ -1,0 +1,28 @@
+{
+  "schema": "formualizer.scc-member-coordinate-index-profile/v1",
+  "branch": "investigation/fossil-excel-calculation",
+  "workbook": "Fossil_EstimatingTemplate_2026-08_21_A.xlsx",
+  "main_scc_id": 1321560910633541638,
+  "profile_mode_order": ["indexed", "legacy"],
+  "indexed": {
+    "initial": [
+      {"pass":1,"elapsed_ms":5293.789,"collector_ms":648.107,"membership_checks":95731828,"range_reads":238751,"target_events":60327133},
+      {"pass":2,"elapsed_ms":5251.316,"collector_ms":660.308,"membership_checks":95682406,"range_reads":238839,"target_events":60326139},
+      {"pass":3,"elapsed_ms":5287.557,"collector_ms":656.534,"membership_checks":95682406,"range_reads":238839,"target_events":60326139},
+      {"pass":4,"elapsed_ms":5819.845,"collector_ms":718.247,"membership_checks":95682406,"range_reads":238839,"target_events":60326139}
+    ]
+  },
+  "legacy": {
+    "initial": [
+      {"pass":1,"elapsed_ms":7334.948,"collector_ms":1213.101,"membership_checks":1151973575,"range_reads":238751,"target_events":60327133},
+      {"pass":2,"elapsed_ms":7487.635,"collector_ms":1200.979,"membership_checks":1152398175,"range_reads":238839,"target_events":60326139},
+      {"pass":3,"elapsed_ms":7251.949,"collector_ms":1192.222,"membership_checks":1152398175,"range_reads":238839,"target_events":60326139},
+      {"pass":4,"elapsed_ms":7339.889,"collector_ms":1215.646,"membership_checks":1152398175,"range_reads":238839,"target_events":60326139}
+    ]
+  },
+  "interpretation": {
+    "membership_check_reduction": "~12.0x",
+    "collector_time_reduction": "~0.5 s/pass",
+    "measurement_note": "Per-call Instant timing is diagnostic-only; exact membership counters are not timing-instrumentation dependent."
+  }
+}

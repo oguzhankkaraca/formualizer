@@ -1,0 +1,50 @@
+{
+  "schema": "formualizer.early-scc-termination-experiment/v1",
+  "branch": "investigation/fossil-excel-calculation",
+  "workbook": "Fossil_EstimatingTemplate_2026-08_21_A.xlsx",
+  "settings": {
+    "cycle_detection": "runtime",
+    "cycle_policy": "iterate",
+    "max_iterations": 100,
+    "max_change": 0.001,
+    "early_env": "FZ_DIAGNOSTIC_EARLY_SCC_TERMINATION=1"
+  },
+  "main_scc_stable_id": 1321560910633541638,
+  "formula_value_fingerprint": {
+    "formula_count": 20710,
+    "normal": 7185579490432752015,
+    "early": 7185579490432752015
+  },
+  "fossil_sequence": {
+    "normal": [
+      {"phase":"initial","wall_ms":30062.308,"scc_tasks":143,"scc_member_evaluations":58700,"early_accepted":0,"avoided_member_evaluations":0,"fingerprint":7185579490432752015},
+      {"phase":"f7_300","wall_ms":11912.465,"scc_tasks":137,"scc_member_evaluations":28952,"early_accepted":0,"avoided_member_evaluations":0,"fingerprint":1026544198047018979},
+      {"phase":"noop","wall_ms":11227.277,"scc_tasks":84,"scc_member_evaluations":14802,"early_accepted":0,"avoided_member_evaluations":0,"fingerprint":1026544198047018979},
+      {"phase":"same_value_write","wall_ms":12051.232,"scc_tasks":137,"scc_member_evaluations":28688,"early_accepted":0,"avoided_member_evaluations":0,"fingerprint":1026544198047018979},
+      {"phase":"f7_301","wall_ms":10977.802,"scc_tasks":137,"scc_member_evaluations":28688,"early_accepted":0,"avoided_member_evaluations":0,"fingerprint":1026544198047018979},
+      {"phase":"f7_back_300","wall_ms":10872.401,"scc_tasks":137,"scc_member_evaluations":28688,"early_accepted":0,"avoided_member_evaluations":0,"fingerprint":1026544198047018979}
+    ],
+    "early": [
+      {"phase":"initial","wall_ms":34156.035,"scc_tasks":143,"scc_member_evaluations":58700,"early_accepted":0,"avoided_member_evaluations":0,"main_reason":"no_prior_state","fingerprint":7185579490432752015},
+      {"phase":"f7_300","wall_ms":15437.062,"scc_tasks":137,"scc_member_evaluations":28952,"early_accepted":0,"avoided_member_evaluations":0,"main_reason":"boundary_revision_changed","fingerprint":1026544198047018979},
+      {"phase":"noop","wall_ms":7637.758,"scc_tasks":84,"scc_member_evaluations":7401,"early_accepted":84,"avoided_member_evaluations":7400,"main_reason":"all_invariants_hold","main_avoided_member_evaluations":4828,"fingerprint":1026544198047018979},
+      {"phase":"same_value_write","wall_ms":14774.162,"scc_tasks":137,"scc_member_evaluations":28688,"early_accepted":0,"avoided_member_evaluations":0,"main_reason":"boundary_revision_changed","fingerprint":1026544198047018979},
+      {"phase":"f7_301","wall_ms":14829.742,"scc_tasks":137,"scc_member_evaluations":28688,"early_accepted":0,"avoided_member_evaluations":0,"main_reason":"boundary_revision_changed","fingerprint":1026544198047018979},
+      {"phase":"f7_back_300","wall_ms":13968.909,"scc_tasks":137,"scc_member_evaluations":28688,"early_accepted":0,"avoided_member_evaluations":0,"main_reason":"boundary_revision_changed","fingerprint":1026544198047018979}
+    ]
+  },
+  "fossil_noop_wall_saving_ms": 3589.519,
+  "fossil_noop_wall_saving_fraction": 0.3197,
+  "tolerance_only_divergence_controls": [
+    {"case":"active-if-cycle","normal_noop":[1.999755859375,0.9998779296875],"early_noop":[1.99951171875,0.999755859375],"candidate_max_delta":0.00048828125},
+    {"case":"two-cell-cycle","normal_noop":[1.999755859375,0.9998779296875],"early_noop":[1.99951171875,0.999755859375],"candidate_max_delta":0.00048828125},
+    {"case":"same-sheet-cycle","normal_noop":[19.999847412109375,9.999923706054688],"early_noop":[19.99969482421875,9.999847412109375],"candidate_max_delta":0.00030517578125},
+    {"case":"cross-sheet-cycle","normal_noop":[1.999755859375,0.9998779296875],"early_noop":[1.99951171875,0.999755859375],"candidate_max_delta":0.00048828125}
+  ],
+  "named_range_definition_change": {
+    "status": "passed",
+    "test": "diagnostic_early_termination_rejects_named_definition_change",
+    "reason": "boundary_revision_changed"
+  },
+  "verdict": "Tolerance-only early termination is not safe or general. It is retained only as an opt-in falsification diagnostic; no production semantic path uses it."
+}

@@ -28,6 +28,28 @@ pub(crate) enum StructuralEdit {
     DeleteColumns { start: u32, end: u32 },
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CompactDependencyPrototypeStats {
+    pub expanded_graph_edges: usize,
+    pub formula_vertices: usize,
+    pub range_dependent_formula_count: usize,
+    pub symbolic_range_record_count: usize,
+    pub stripe_membership_record_count: usize,
+    pub named_dependency_record_count: usize,
+    pub dynamic_dependency_descriptor_count: usize,
+    pub compact_record_count: usize,
+    pub estimated_compact_bytes: usize,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CompactDependencyPrototypeValidation {
+    pub expanded_formula_edges: usize,
+    pub direct_cell_edges: usize,
+    pub symbolic_range_edges: usize,
+    pub named_edges: usize,
+    pub unclassified_edges: usize,
+}
+
 #[derive(Clone, Debug, Default)]
 pub(crate) struct StructuralOccupancy {
     occupied_rows: Vec<u32>,
@@ -98,6 +120,93 @@ impl StructuralOccupancy {
 }
 
 impl DependencyGraph {
+    pub fn compact_dependency_prototype_stats(&self) -> CompactDependencyPrototypeStats {
+        let symbolic_range_record_count: usize =
+            self.formula_to_range_deps.values().map(Vec::len).sum();
+        let range_dependent_formula_count = self.formula_to_range_deps.len();
+        let stripe_membership_record_count: usize =
+            self.stripe_to_dependents.values().map(FxHashSet::len).sum();
+        let named_dependency_record_count: usize =
+            self.vertex_to_names.values().map(Vec::len).sum();
+        let dynamic_dependency_descriptor_count = self
+            .store
+            .all_vertices()
+            .filter(|vertex| self.store.is_dynamic(*vertex))
+            .count();
+        let compact_record_count = symbolic_range_record_count
+            .saturating_add(stripe_membership_record_count)
+            .saturating_add(named_dependency_record_count)
+            .saturating_add(dynamic_dependency_descriptor_count);
+        let estimated_compact_bytes = range_dependent_formula_count
+            .saturating_mul(std::mem::size_of::<(VertexId, Vec<SharedRangeRef<'static>>)>())
+            .saturating_add(
+                symbolic_range_record_count
+                    .saturating_mul(std::mem::size_of::<SharedRangeRef<'static>>()),
+            )
+            .saturating_add(
+                stripe_membership_record_count.saturating_mul(std::mem::size_of::<VertexId>()),
+            )
+            .saturating_add(
+                named_dependency_record_count.saturating_mul(std::mem::size_of::<VertexId>()),
+            );
+        CompactDependencyPrototypeStats {
+            expanded_graph_edges: self.edges.num_edges_exact(),
+            formula_vertices: self.vertex_formulas.len(),
+            range_dependent_formula_count,
+            symbolic_range_record_count,
+            stripe_membership_record_count,
+            named_dependency_record_count,
+            dynamic_dependency_descriptor_count,
+            compact_record_count,
+            estimated_compact_bytes,
+        }
+    }
+
+    pub fn validate_compact_dependency_prototype(&self) -> CompactDependencyPrototypeValidation {
+        let mut validation = CompactDependencyPrototypeValidation::default();
+        for &dependent in self.vertex_formulas.keys() {
+            let ranges = self.formula_to_range_deps.get(&dependent);
+            let names = self.vertex_to_names.get(&dependent);
+            for prerequisite in self.get_dependencies(dependent) {
+                validation.expanded_formula_edges += 1;
+                let range_match = ranges.is_some_and(|ranges| {
+                    let Some(cell) = self.get_cell_ref(prerequisite) else {
+                        return false;
+                    };
+                    ranges.iter().any(|range| {
+                        let range_sheet = self
+                            .sheet_reg
+                            .resolve_locator(&range.sheet, self.get_vertex_sheet_id(dependent))
+                            .ok();
+                        range_sheet == Some(cell.sheet_id)
+                            && range
+                                .start_row
+                                .is_none_or(|bound| cell.coord.row() >= bound.index)
+                            && range
+                                .end_row
+                                .is_none_or(|bound| cell.coord.row() <= bound.index)
+                            && range
+                                .start_col
+                                .is_none_or(|bound| cell.coord.col() >= bound.index)
+                            && range
+                                .end_col
+                                .is_none_or(|bound| cell.coord.col() <= bound.index)
+                    })
+                });
+                if range_match {
+                    validation.symbolic_range_edges += 1;
+                } else if names.is_some_and(|names| names.contains(&prerequisite)) {
+                    validation.named_edges += 1;
+                } else if self.get_cell_ref(prerequisite).is_some() {
+                    validation.direct_cell_edges += 1;
+                } else {
+                    validation.unclassified_edges += 1;
+                }
+            }
+        }
+        validation
+    }
+
     pub(crate) fn has_compressed_range_dependencies(&self) -> bool {
         !self.formula_to_range_deps.is_empty()
     }

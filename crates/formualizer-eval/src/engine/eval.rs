@@ -1055,6 +1055,9 @@ pub struct Engine<R> {
     scc_iteration_trace_enabled: bool,
     last_scc_iteration_trace: Vec<SccIterationRecord>,
     edge_origin_trace_enabled: bool,
+    diagnostic_early_termination_enabled: bool,
+    diagnostic_early_scc_states: FxHashMap<u64, DiagnosticEarlySccState>,
+    last_scc_early_termination: Vec<SccEarlyTerminationRecord>,
     scc_dirty_attribution_baseline: Option<FxHashSet<VertexId>>,
     request_naturally_dirty: Option<FxHashSet<VertexId>>,
     request_dirty_count: usize,
@@ -1894,6 +1897,9 @@ pub struct RecalcTelemetry {
     pub scc_member_evaluations: usize,
     pub volatile_vertices_redirtied: usize,
     pub iterative_vertices_redirtied: usize,
+    pub diagnostic_early_termination_attempted: usize,
+    pub diagnostic_early_termination_accepted: usize,
+    pub diagnostic_early_termination_avoided_member_evaluations: usize,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1906,6 +1912,26 @@ pub struct SccIterationRecord {
     pub max_abs_delta: f64,
     pub live_edge_fingerprint: u64,
     pub elapsed_ns: u128,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub struct SccEarlyTerminationRecord {
+    pub stable_id: u64,
+    pub accepted: bool,
+    pub reason: &'static str,
+    pub max_abs_delta: f64,
+    pub avoided_member_evaluations: usize,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct DiagnosticEarlySccState {
+    members: Box<[VertexId]>,
+    values: Vec<LiteralValue>,
+    live_edge_fingerprint: u64,
+    dynamic_shapes: Vec<(usize, usize, usize)>,
+    boundary_revision: u64,
+    cycle_config: CycleConfig,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -2028,6 +2054,17 @@ fn live_edge_degree_stats(
     (stats(&fanout), stats(&fanin))
 }
 
+fn diagnostic_early_termination_enabled() -> bool {
+    #[cfg(target_arch = "wasm32")]
+    {
+        false
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        std::env::var_os("FZ_DIAGNOSTIC_EARLY_SCC_TERMINATION").is_some()
+    }
+}
+
 fn edge_origin_trace_enabled() -> bool {
     #[cfg(target_arch = "wasm32")]
     {
@@ -2047,6 +2084,13 @@ fn scc_iteration_trace_enabled() -> bool {
     #[cfg(not(target_arch = "wasm32"))]
     {
         std::env::var_os("FZ_TRACE_SCC_ITERATIONS").is_some()
+    }
+}
+
+fn literal_shape(value: &LiteralValue) -> (usize, usize) {
+    match value {
+        LiteralValue::Array(rows) => (rows.len(), rows.iter().map(Vec::len).max().unwrap_or(0)),
+        _ => (1, 1),
     }
 }
 
@@ -3093,6 +3137,9 @@ where
             scc_iteration_trace_enabled: scc_iteration_trace_enabled(),
             last_scc_iteration_trace: Vec::new(),
             edge_origin_trace_enabled: edge_origin_trace_enabled(),
+            diagnostic_early_termination_enabled: diagnostic_early_termination_enabled(),
+            diagnostic_early_scc_states: FxHashMap::default(),
+            last_scc_early_termination: Vec::new(),
             scc_dirty_attribution_baseline: None,
             request_naturally_dirty: None,
             request_dirty_count: 0,
@@ -3261,6 +3308,9 @@ where
             scc_iteration_trace_enabled: scc_iteration_trace_enabled(),
             last_scc_iteration_trace: Vec::new(),
             edge_origin_trace_enabled: edge_origin_trace_enabled(),
+            diagnostic_early_termination_enabled: diagnostic_early_termination_enabled(),
+            diagnostic_early_scc_states: FxHashMap::default(),
+            last_scc_early_termination: Vec::new(),
             scc_dirty_attribution_baseline: None,
             request_naturally_dirty: None,
             request_dirty_count: 0,
@@ -3344,6 +3394,39 @@ where
 
     pub fn last_scc_iteration_trace(&self) -> &[SccIterationRecord] {
         &self.last_scc_iteration_trace
+    }
+
+    pub fn last_scc_early_termination(&self) -> &[SccEarlyTerminationRecord] {
+        &self.last_scc_early_termination
+    }
+
+    pub fn formula_value_fingerprint(&self) -> (usize, u64) {
+        use std::hash::{Hash, Hasher};
+        let mut vertices = self.graph.get_evaluation_vertices();
+        vertices.sort_unstable_by_key(|vertex| vertex.0);
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        let mut count = 0;
+        for vertex in vertices {
+            vertex.0.hash(&mut hasher);
+            let value = self
+                .graph
+                .get_cell_ref(vertex)
+                .and_then(|cell| {
+                    self.get_cell_value(
+                        self.graph.sheet_name(cell.sheet_id),
+                        cell.coord.row() + 1,
+                        cell.coord.col() + 1,
+                    )
+                })
+                .or_else(|| self.graph.get_value(vertex));
+            if let Some(value) = value {
+                count += 1;
+                format!("{value:?}").hash(&mut hasher);
+            } else {
+                0_u8.hash(&mut hasher);
+            }
+        }
+        (count, hasher.finish())
     }
 
     pub fn last_recalc_telemetry(&self) -> &RecalcTelemetry {
@@ -4002,6 +4085,9 @@ where
         self.last_recalc_telemetry = RecalcTelemetry::default();
         if self.scc_iteration_trace_enabled {
             self.last_scc_iteration_trace.clear();
+        }
+        if self.diagnostic_early_termination_enabled {
+            self.last_scc_early_termination.clear();
         }
         if self.formula_timing_enabled
             && let Ok(mut timings) = self.formula_timings.lock()
@@ -5246,6 +5332,18 @@ where
             formula_plane_cycle_member_span_demotions: self
                 .formula_plane_cycle_member_span_demotions,
         }
+    }
+
+    pub fn compact_dependency_prototype_stats(
+        &self,
+    ) -> crate::engine::graph::CompactDependencyPrototypeStats {
+        self.graph.compact_dependency_prototype_stats()
+    }
+
+    pub fn validate_compact_dependency_prototype(
+        &self,
+    ) -> crate::engine::graph::CompactDependencyPrototypeValidation {
+        self.graph.validate_compact_dependency_prototype()
     }
 
     /// Mutation revision captured by read-only engine reports.
@@ -25884,6 +25982,95 @@ where
 
             let analysis = analyze_live_graph(n, &edges);
             if analysis.cycle_count > 0 {
+                if self.diagnostic_early_termination_enabled
+                    && passes == 1
+                    && prev_pass.is_none()
+                    && let CyclePolicy::Iterate { max_change, .. } = policy
+                {
+                    let member_ids = members
+                        .iter()
+                        .map(|member| member.vertex)
+                        .collect::<Vec<_>>();
+                    let dynamic_shapes = members
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, member)| self.graph.is_dynamic(member.vertex))
+                        .map(|(index, _)| {
+                            let (rows, cols) = literal_shape(&last_value[index]);
+                            (index, rows, cols)
+                        })
+                        .collect::<Vec<_>>();
+                    let current_live_edge_fingerprint =
+                        fingerprint_live_edges(n, &out_edges, &excluded);
+                    let mut accepted = false;
+                    let mut reason = "no_prior_state";
+                    let mut max_abs_delta = 0.0_f64;
+                    let mut all_exactly_stable = true;
+                    if let Some(previous) = self.diagnostic_early_scc_states.get(&scc_stable_id) {
+                        if previous.members.as_ref() != member_ids.as_slice() {
+                            reason = "members_changed";
+                        } else if previous.boundary_revision != self.data_snapshot_id() {
+                            reason = "boundary_revision_changed";
+                        } else if previous.cycle_config != self.config.cycle {
+                            reason = "cycle_config_changed";
+                        } else if previous.live_edge_fingerprint != current_live_edge_fingerprint {
+                            reason = "live_edge_topology_changed";
+                        } else if previous.dynamic_shapes != dynamic_shapes {
+                            reason = "dynamic_shape_changed";
+                        } else if previous.values.len() != last_value.len() {
+                            reason = "value_state_length_changed";
+                        } else {
+                            let mut values_converged = true;
+                            for (previous_value, current_value) in
+                                previous.values.iter().zip(last_value.iter())
+                            {
+                                let comparison = crate::engine::convergence::values_converged(
+                                    previous_value,
+                                    current_value,
+                                    max_change,
+                                    self.config.date_system,
+                                );
+                                max_abs_delta =
+                                    max_abs_delta.max(comparison.abs_delta.unwrap_or_default());
+                                values_converged &= comparison.converged;
+                                all_exactly_stable &= comparison.exactly_stable;
+                            }
+                            if values_converged {
+                                accepted = true;
+                                reason = "all_invariants_hold";
+                            } else {
+                                reason = "value_delta_exceeds_max_change";
+                            }
+                        }
+                    }
+                    let evaluated_members = excluded.iter().filter(|excluded| !**excluded).count();
+                    self.last_recalc_telemetry
+                        .diagnostic_early_termination_attempted += 1;
+                    if accepted {
+                        self.last_recalc_telemetry
+                            .diagnostic_early_termination_accepted += 1;
+                        self.last_recalc_telemetry
+                            .diagnostic_early_termination_avoided_member_evaluations +=
+                            evaluated_members;
+                    }
+                    self.last_scc_early_termination
+                        .push(SccEarlyTerminationRecord {
+                            stable_id: scc_stable_id,
+                            accepted,
+                            reason,
+                            max_abs_delta,
+                            avoided_member_evaluations: accepted
+                                .then_some(evaluated_members)
+                                .unwrap_or(0),
+                        });
+                    if accepted {
+                        iterating = true;
+                        converged = true;
+                        exactly_stable = all_exactly_stable;
+                        iter_max_delta = max_abs_delta;
+                        break;
+                    }
+                }
                 // Classification repeats every iteration pass under
                 // `Iterate`; record the widest single witness instead of
                 // accumulating so the count stays "distinct live cycles".
@@ -26111,6 +26298,33 @@ where
         if iterating && !converged && !capped {
             converged = true;
             exactly_stable = true;
+        }
+
+        if self.diagnostic_early_termination_enabled && iterating {
+            let dynamic_shapes = members
+                .iter()
+                .enumerate()
+                .filter(|(_, member)| self.graph.is_dynamic(member.vertex))
+                .map(|(index, _)| {
+                    let (rows, cols) = literal_shape(&last_value[index]);
+                    (index, rows, cols)
+                })
+                .collect();
+            self.diagnostic_early_scc_states.insert(
+                scc_stable_id,
+                DiagnosticEarlySccState {
+                    members: members
+                        .iter()
+                        .map(|member| member.vertex)
+                        .collect::<Vec<_>>()
+                        .into_boxed_slice(),
+                    values: last_value.clone(),
+                    live_edge_fingerprint: fingerprint_live_edges(n, &out_edges, &excluded),
+                    dynamic_shapes,
+                    boundary_revision: self.data_snapshot_id(),
+                    cycle_config: self.config.cycle,
+                },
+            );
         }
 
         // ── 5. End of task: one delta per member whose final value differs

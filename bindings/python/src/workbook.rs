@@ -946,6 +946,72 @@ impl PyWorkbook {
         Ok(trace.into())
     }
 
+    pub fn formula_value_fingerprint(&self) -> PyResult<(usize, u64)> {
+        let wb = self.read_inner()?;
+        Ok(wb.engine().formula_value_fingerprint())
+    }
+
+    pub fn compact_dependency_prototype_stats(&self, py: Python<'_>) -> PyResult<PyObject> {
+        let wb = self.read_inner()?;
+        let stats = wb.engine().compact_dependency_prototype_stats();
+        let out = PyDict::new(py);
+        out.set_item("expanded_graph_edges", stats.expanded_graph_edges)?;
+        out.set_item("formula_vertices", stats.formula_vertices)?;
+        out.set_item(
+            "range_dependent_formula_count",
+            stats.range_dependent_formula_count,
+        )?;
+        out.set_item(
+            "symbolic_range_record_count",
+            stats.symbolic_range_record_count,
+        )?;
+        out.set_item(
+            "stripe_membership_record_count",
+            stats.stripe_membership_record_count,
+        )?;
+        out.set_item(
+            "named_dependency_record_count",
+            stats.named_dependency_record_count,
+        )?;
+        out.set_item(
+            "dynamic_dependency_descriptor_count",
+            stats.dynamic_dependency_descriptor_count,
+        )?;
+        out.set_item("compact_record_count", stats.compact_record_count)?;
+        out.set_item("estimated_compact_bytes", stats.estimated_compact_bytes)?;
+        Ok(out.into())
+    }
+
+    pub fn validate_compact_dependency_prototype(&self, py: Python<'_>) -> PyResult<PyObject> {
+        let wb = self.read_inner()?;
+        let validation = wb.engine().validate_compact_dependency_prototype();
+        let out = PyDict::new(py);
+        out.set_item("expanded_formula_edges", validation.expanded_formula_edges)?;
+        out.set_item("direct_cell_edges", validation.direct_cell_edges)?;
+        out.set_item("symbolic_range_edges", validation.symbolic_range_edges)?;
+        out.set_item("named_edges", validation.named_edges)?;
+        out.set_item("unclassified_edges", validation.unclassified_edges)?;
+        Ok(out.into())
+    }
+
+    pub fn last_scc_early_termination(&self, py: Python<'_>) -> PyResult<PyObject> {
+        let wb = self.read_inner()?;
+        let records = PyList::empty(py);
+        for record in wb.engine().last_scc_early_termination() {
+            let row = PyDict::new(py);
+            row.set_item("stable_id", record.stable_id)?;
+            row.set_item("accepted", record.accepted)?;
+            row.set_item("reason", record.reason)?;
+            row.set_item("max_abs_delta", record.max_abs_delta)?;
+            row.set_item(
+                "avoided_member_evaluations",
+                record.avoided_member_evaluations,
+            )?;
+            records.append(row)?;
+        }
+        Ok(records.into())
+    }
+
     pub fn last_scc_dirty_telemetry(&self, py: Python<'_>) -> PyResult<PyObject> {
         let wb = self.read_inner()?;
         let telemetry = wb.engine().last_scc_dirty_telemetry();
@@ -1436,6 +1502,12 @@ pub struct PyRecalcTelemetry {
     pub volatile_vertices_redirtied: usize,
     #[pyo3(get)]
     pub iterative_vertices_redirtied: usize,
+    #[pyo3(get)]
+    pub diagnostic_early_termination_attempted: usize,
+    #[pyo3(get)]
+    pub diagnostic_early_termination_accepted: usize,
+    #[pyo3(get)]
+    pub diagnostic_early_termination_avoided_member_evaluations: usize,
 }
 
 impl PyRecalcTelemetry {
@@ -1470,6 +1542,10 @@ impl PyRecalcTelemetry {
             scc_member_evaluations: t.scc_member_evaluations,
             volatile_vertices_redirtied: t.volatile_vertices_redirtied,
             iterative_vertices_redirtied: t.iterative_vertices_redirtied,
+            diagnostic_early_termination_attempted: t.diagnostic_early_termination_attempted,
+            diagnostic_early_termination_accepted: t.diagnostic_early_termination_accepted,
+            diagnostic_early_termination_avoided_member_evaluations: t
+                .diagnostic_early_termination_avoided_member_evaluations,
         }
     }
 }

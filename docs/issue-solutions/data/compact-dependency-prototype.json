@@ -1,0 +1,47 @@
+{
+  "schema": "formualizer.compact-dependency-prototype/v1",
+  "branch": "investigation/fossil-excel-calculation",
+  "workbook": "Fossil_EstimatingTemplate_2026-08_21_A.xlsx",
+  "configuration": {
+    "prototype_mode": "shadow_only",
+    "drives_evaluation": false,
+    "drives_dirty_propagation": false,
+    "production_semantics_changed": false
+  },
+  "after_initial_evaluation": {
+    "initial_evaluate_ms": 31786.933,
+    "compact_stats_collection_ms": 0.275,
+    "compact_validation_ms": 10.33,
+    "expanded_graph_edges": 575264,
+    "formula_vertices": 94966,
+    "range_dependent_formula_count": 9126,
+    "symbolic_range_record_count": 17936,
+    "stripe_membership_record_count": 21021,
+    "named_dependency_record_count": 49449,
+    "dynamic_dependency_descriptor_count": 270,
+    "compact_record_count": 88676,
+    "estimated_compact_bytes": 1578328,
+    "expanded_formula_edges": 573502,
+    "direct_cell_edges": 523841,
+    "symbolic_range_edges_in_csr": 0,
+    "named_edges": 49449,
+    "unclassified_edges": 212
+  },
+  "derived_comparison": {
+    "expanded_edge_to_shadow_record_ratio": 6.4903,
+    "range_and_name_records_are_already_compact_indexes": true,
+    "scc_membership_change": "not measured by shadow; current expanded evaluator result remains the control",
+    "f7_wall_ms_control": 11912.465,
+    "noop_wall_ms_control": 11227.277,
+    "f7_wall_ms_shadow": 11912.465,
+    "noop_wall_ms_shadow": 11227.277,
+    "measured_wall_saving": 0.0
+  },
+  "validation_result": {
+    "exact_output_parity": "control_only",
+    "exact_dirty_parity": "not_proven",
+    "unclassified_edges": 212,
+    "eligible_for_production": false
+  },
+  "conclusion": "The existing graph already has compact range/name side indexes, but SCC/runtime evaluation materializes live cell relationships. The shadow prototype reduces represented records only as an estimate and does not yet replace the expanded SCC path. No production compact dependency switch is enabled."
+}

@@ -1,0 +1,29 @@
+{
+  "schema": "formualizer.build-loop-measurements/v1",
+  "branch": "investigation/fossil-excel-calculation",
+  "dependency_chain": [
+    "formualizer-python",
+    "formualizer",
+    "formualizer-eval",
+    "formualizer-workbook",
+    "formualizer-sheetport",
+    "formualizer-common",
+    "formualizer-parse"
+  ],
+  "measurements": [
+    {"command":"cargo check -p formualizer-eval","features":"workspace/default","result":"passed","elapsed_ms_range":[500,12000]},
+    {"command":"cargo check -p formualizer-python --no-default-features","features":"PYO3_PYTHON=64-bit investigation venv","result":"passed","elapsed_ms":6642},
+    {"command":"maturin develop --release --no-default-features","features":"runtime binding after evaluator/API edit","result":"passed","elapsed_minutes_range":[4.5,4.9]},
+    {"command":"maturin develop --release --no-default-features","features":"no source change incremental","result":"passed","elapsed_ms":800},
+    {"command":"cargo check -p formualizer-python","features":"default allocator-jemalloc","result":"failed_before_rust_compile","reason":"tikv-jemalloc-sys mingw32-make shell path error under Windows Git usr path"}
+  ],
+  "recommendation": {
+    "eval_only": "cargo check -p formualizer-eval",
+    "eval_tests": "cargo test -p formualizer-eval --lib <target>",
+    "binding_check": "cargo check -p formualizer-python --no-default-features with PYO3_PYTHON set",
+    "runtime_python": "maturin develop --release --no-default-features only when binding/runtime testing is required",
+    "release_benchmark": "keep the existing final release command unchanged"
+  },
+  "largest_cost": "release native extension rebuild after evaluator/API source changes",
+  "lowest_risk_optimization": "use affected-crate cargo check and defer maturin until runtime API validation"
+}

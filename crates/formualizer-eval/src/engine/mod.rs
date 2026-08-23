@@ -61,8 +61,8 @@ pub use arena::AstNodeId;
 pub use cancel::CancelToken;
 pub use eval::{
     CycleTelemetry, Engine, EngineAction, EngineBaselineStats, EvalResult, RecalcPlan,
-    RecalcTelemetry, SccDirtyRecord, SccDirtyTelemetry, SccIterationRecord, SourceFormulaIngress,
-    TableMetadata, VirtualDepTelemetry,
+    RecalcTelemetry, SccDirtyRecord, SccDirtyTelemetry, SccEarlyTerminationRecord,
+    SccIterationRecord, SourceFormulaIngress, TableMetadata, VirtualDepTelemetry,
 };
 pub use eval_delta::{
     DeltaMode, EvalDelta, EvalDeltaCompatibilityPolicy, EvalDeltaRecord, TARGET_EVAL_DELTA_VERSION,
@@ -80,6 +80,7 @@ pub use formula_source::{
     PartitionedSourceFormulaFamily, PlacementDomainTransport, SourceCoord, SourceFamilyId,
     SourceFamilyMembers, SourceFormulaFamily, SourceFormulaOrder, SourceRect,
 };
+pub use graph::{CompactDependencyPrototypeStats, CompactDependencyPrototypeValidation};
 pub use journal::{ActionJournal, ArrowOp, ArrowUndoBatch, GraphUndoBatch};
 #[allow(deprecated)]
 pub use target_preparation::PrepareTargetsOptions;

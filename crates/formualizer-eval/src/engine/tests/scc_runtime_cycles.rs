@@ -1121,3 +1121,49 @@ fn evaluate_all_logged_handles_runtime_cycles_directly() {
     assert!(is_circ(&engine, "Sheet1", 2, 2));
     assert_eq!(res.cycle_errors, 1);
 }
+
+#[test]
+fn diagnostic_early_termination_rejects_named_definition_change() {
+    if std::env::var_os("FZ_DIAGNOSTIC_EARLY_SCC_TERMINATION").is_none() {
+        return;
+    }
+    let cfg = EvalConfig::default().with_cycle(CycleConfig {
+        detection: CycleDetection::Runtime,
+        policy: CyclePolicy::Iterate {
+            max_iterations: 10,
+            max_change: 0.001,
+        },
+    });
+    let mut engine = Engine::new(TestWorkbook::new(), cfg);
+    engine
+        .define_name(
+            "N",
+            NamedDefinition::Literal(LiteralValue::Number(1.0)),
+            NameScope::Workbook,
+        )
+        .unwrap();
+    set_formula(&mut engine, "Sheet1", 1, 2, "=N+C1");
+    set_formula(&mut engine, "Sheet1", 1, 3, "=B1/2");
+    engine.evaluate_all().unwrap();
+    engine.evaluate_all().unwrap();
+    assert!(
+        engine
+            .last_scc_early_termination()
+            .iter()
+            .any(|record| record.accepted)
+    );
+    engine
+        .update_name(
+            "N",
+            NamedDefinition::Literal(LiteralValue::Number(2.0)),
+            NameScope::Workbook,
+        )
+        .unwrap();
+    engine.evaluate_all().unwrap();
+    assert!(
+        engine
+            .last_scc_early_termination()
+            .iter()
+            .any(|record| record.reason == "boundary_revision_changed")
+    );
+}

@@ -9,7 +9,9 @@ use crate::engine::graph::prepared_legacy_graph::{
 };
 use crate::engine::graph::{FormulaDirtyEventSnapshot, FormulaDirtyLease, WholeSpanDirtyReason};
 use crate::engine::ingest_pipeline::{DependencyPlanRow, FormulaAstInput};
-use crate::engine::live_edges::{LiveEdgeCollector, LiveEdgeOrigin, RecordingContext};
+use crate::engine::live_edges::{
+    LiveEdgeCollector, LiveEdgeOrigin, LiveReadCounters, RecordingContext,
+};
 use crate::engine::live_graph::analyze_live_graph;
 use crate::engine::lookup_index_cache::{
     BuildOutcome, LookupAxis, LookupIndex, LookupIndexCache, LookupIndexCacheReport,
@@ -1054,6 +1056,9 @@ pub struct Engine<R> {
     scc_dirty_telemetry_enabled: bool,
     scc_iteration_trace_enabled: bool,
     last_scc_iteration_trace: Vec<SccIterationRecord>,
+    scc_pass_profile_enabled: bool,
+    last_scc_pass_profile: Vec<SccPassProfileRecord>,
+    last_scc_member_profile: Vec<SccMemberPassProfileRecord>,
     edge_origin_trace_enabled: bool,
     diagnostic_early_termination_enabled: bool,
     diagnostic_early_scc_states: FxHashMap<u64, DiagnosticEarlySccState>,
@@ -1916,6 +1921,57 @@ pub struct SccIterationRecord {
 
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
+pub struct SccPassProfileRecord {
+    pub stable_id: u64,
+    pub iteration: usize,
+    pub evaluated_members: usize,
+    pub elapsed_ns: u128,
+    pub formula_eval_ns: u128,
+    pub post_eval_bookkeeping_ns: u128,
+    pub live_edge_analysis_ns: u128,
+    pub convergence_check_ns: u128,
+    pub scalar_reads: u64,
+    pub range_reads: u64,
+    pub range_cells: u64,
+    pub range_membership_checks: u64,
+    pub collection_ns: u64,
+    pub named_reads: u64,
+    pub internal_target_events: u64,
+    pub read_events: u64,
+    pub live_edge_events: u64,
+    pub lookup_builds: usize,
+    pub lookup_hits: usize,
+    pub lookup_misses: usize,
+    pub dynamic_source_member_count: usize,
+    pub dynamic_source_read_events: u64,
+    pub dirty_propagation_visits: u64,
+    pub parallel_enabled: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct SccMemberPassProfileRecord {
+    pub stable_id: u64,
+    pub iteration: usize,
+    pub vertex_id: u32,
+    pub address: String,
+    pub elapsed_ns: u128,
+    pub scalar_reads: u64,
+    pub range_reads: u64,
+    pub range_cells: u64,
+    pub range_membership_checks: u64,
+    pub collection_ns: u64,
+    pub named_reads: u64,
+    pub internal_target_events: u64,
+    pub read_events: u64,
+    pub lookup_builds: usize,
+    pub lookup_hits: usize,
+    pub lookup_misses: usize,
+    pub dynamic_source: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct SccEarlyTerminationRecord {
     pub stable_id: u64,
     pub accepted: bool,
@@ -2095,6 +2151,17 @@ fn scc_iteration_trace_enabled() -> bool {
     #[cfg(not(target_arch = "wasm32"))]
     {
         std::env::var_os("FZ_TRACE_SCC_ITERATIONS").is_some()
+    }
+}
+
+fn scc_pass_profile_enabled() -> bool {
+    #[cfg(target_arch = "wasm32")]
+    {
+        false
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        std::env::var_os("FZ_TRACE_SCC_PASS_PROFILE").is_some()
     }
 }
 
@@ -3147,6 +3214,9 @@ where
             scc_dirty_telemetry_enabled: true,
             scc_iteration_trace_enabled: scc_iteration_trace_enabled(),
             last_scc_iteration_trace: Vec::new(),
+            scc_pass_profile_enabled: scc_pass_profile_enabled(),
+            last_scc_pass_profile: Vec::new(),
+            last_scc_member_profile: Vec::new(),
             edge_origin_trace_enabled: edge_origin_trace_enabled(),
             diagnostic_early_termination_enabled: diagnostic_early_termination_enabled(),
             diagnostic_early_scc_states: FxHashMap::default(),
@@ -3318,6 +3388,9 @@ where
             scc_dirty_telemetry_enabled: true,
             scc_iteration_trace_enabled: scc_iteration_trace_enabled(),
             last_scc_iteration_trace: Vec::new(),
+            scc_pass_profile_enabled: scc_pass_profile_enabled(),
+            last_scc_pass_profile: Vec::new(),
+            last_scc_member_profile: Vec::new(),
             edge_origin_trace_enabled: edge_origin_trace_enabled(),
             diagnostic_early_termination_enabled: diagnostic_early_termination_enabled(),
             diagnostic_early_scc_states: FxHashMap::default(),
@@ -3409,6 +3482,14 @@ where
 
     pub fn last_scc_early_termination(&self) -> &[SccEarlyTerminationRecord] {
         &self.last_scc_early_termination
+    }
+
+    pub fn last_scc_pass_profile(&self) -> &[SccPassProfileRecord] {
+        &self.last_scc_pass_profile
+    }
+
+    pub fn last_scc_member_profile(&self) -> &[SccMemberPassProfileRecord] {
+        &self.last_scc_member_profile
     }
 
     pub fn formula_value_fingerprint(&self) -> (usize, u64) {
@@ -4096,6 +4177,10 @@ where
         self.last_recalc_telemetry = RecalcTelemetry::default();
         if self.scc_iteration_trace_enabled {
             self.last_scc_iteration_trace.clear();
+        }
+        if self.scc_pass_profile_enabled {
+            self.last_scc_pass_profile.clear();
+            self.last_scc_member_profile.clear();
         }
         if self.diagnostic_early_termination_enabled {
             self.last_scc_early_termination.clear();
@@ -25874,10 +25959,11 @@ where
             }
         }
 
-        let collector = LiveEdgeCollector::new_with_names_and_origins(
+        let collector = LiveEdgeCollector::new_with_diagnostics(
             &cell_refs,
             &name_keys,
             self.edge_origin_trace_enabled,
+            self.scc_pass_profile_enabled,
         );
 
         // Per-member live out-edges, refreshed whenever a member re-runs.
@@ -25891,6 +25977,8 @@ where
                 .map(|_| FxHashMap::<u32, u16>::default())
                 .collect::<Vec<_>>()
         });
+        let mut passes = 1usize;
+        let mut pass_member_profiles = Vec::<SccMemberPassProfileRecord>::new();
 
         // Evaluate-and-commit one member; returns Ok(true) when the member was
         // stamped `#CIRC!` (array result — would-be spill anchor, spec §7.9).
@@ -25901,12 +25989,27 @@ where
                 if i < recordable {
                     collector.set_current(i as u32);
                 }
+                let member_eval_started = crate::instant::FzInstant::now();
+                if self.scc_pass_profile_enabled {
+                    self.lookup_index_cache.reset_counters();
+                }
                 let value = {
                     let ctx = RecordingContext::new(&*self, &collector);
                     match self.evaluate_vertex_recorded(m.vertex, &ctx, &collector) {
                         Ok(v) => v,
                         Err(e) => LiteralValue::Error(e),
                     }
+                };
+                let member_eval_ns = member_eval_started.elapsed().as_nanos();
+                let read_counters = if self.scc_pass_profile_enabled {
+                    collector.take_member_read_counters(i as u32)
+                } else {
+                    LiveReadCounters::default()
+                };
+                let lookup_report = if self.scc_pass_profile_enabled {
+                    self.lookup_index_cache.report()
+                } else {
+                    Default::default()
                 };
                 let is_cell_formula = m.cell.is_some();
                 if is_cell_formula && matches!(value, LiteralValue::Array(_)) {
@@ -25943,6 +26046,43 @@ where
                     changed[i] = last_value[i] != value;
                     last_value[i] = value;
                 }
+                if self.scc_pass_profile_enabled {
+                    let address = m
+                        .cell
+                        .map(|cell| {
+                            format!(
+                                "{}!{}",
+                                self.graph.sheet_name(cell.sheet_id),
+                                Coord::from_excel(
+                                    cell.coord.row() + 1,
+                                    cell.coord.col() + 1,
+                                    true,
+                                    true,
+                                )
+                            )
+                        })
+                        .or_else(|| self.graph.name_key_for_vertex(m.vertex))
+                        .unwrap_or_else(|| format!("vertex:{}", m.vertex.0));
+                    pass_member_profiles.push(SccMemberPassProfileRecord {
+                        stable_id: scc_stable_id,
+                        iteration: passes,
+                        vertex_id: m.vertex.0,
+                        address,
+                        elapsed_ns: member_eval_ns,
+                        scalar_reads: read_counters.scalar_reads,
+                        range_reads: read_counters.range_reads,
+                        range_cells: read_counters.range_cells,
+                        range_membership_checks: read_counters.range_membership_checks,
+                        collection_ns: read_counters.collection_ns,
+                        named_reads: read_counters.named_reads,
+                        internal_target_events: read_counters.internal_target_events,
+                        read_events: read_counters.read_events,
+                        lookup_builds: lookup_report.builds,
+                        lookup_hits: lookup_report.hits,
+                        lookup_misses: lookup_report.misses,
+                        dynamic_source: self.graph.is_dynamic(m.vertex),
+                    });
+                }
             }};
         }
 
@@ -25957,8 +26097,9 @@ where
         };
 
         // ── 3. Pass 1: all evaluable members in member order.
+        let mut pass_started = crate::instant::FzInstant::now();
+        let mut pass_dirty_visits_start = self.graph.dirty_propagation_visits();
         check_cancel(cancel_flag)?;
-        let mut passes = 1usize;
         {
             let mut p = 0i64;
             for i in 0..n {
@@ -26006,7 +26147,7 @@ where
         // Error flow `1 + settle_passes == passes`, preserving Stage-2
         // behavior exactly).
         let mut settle_passes = 0usize;
-        let mut pass_started = crate::instant::FzInstant::now();
+        let mut pass_bookkeeping_started = crate::instant::FzInstant::now();
         loop {
             // Drain this pass's recordings; members that ran replace their
             // out-edge set, members that didn't keep last-known edges.
@@ -26048,7 +26189,76 @@ where
             edges.sort_unstable();
             edges.dedup();
 
+            let live_edge_analysis_started = crate::instant::FzInstant::now();
             let analysis = analyze_live_graph(n, &edges);
+            let live_edge_analysis_ns = live_edge_analysis_started.elapsed().as_nanos();
+            if self.scc_pass_profile_enabled {
+                let post_eval_bookkeeping_ns = pass_bookkeeping_started.elapsed().as_nanos();
+                let mut profile = SccPassProfileRecord {
+                    stable_id: scc_stable_id,
+                    iteration: passes,
+                    evaluated_members: pass_member_profiles.len(),
+                    elapsed_ns: pass_started.elapsed().as_nanos(),
+                    formula_eval_ns: 0,
+                    post_eval_bookkeeping_ns,
+                    live_edge_analysis_ns: 0,
+                    convergence_check_ns: 0,
+                    scalar_reads: 0,
+                    range_reads: 0,
+                    range_cells: 0,
+                    range_membership_checks: 0,
+                    collection_ns: 0,
+                    named_reads: 0,
+                    internal_target_events: 0,
+                    read_events: 0,
+                    live_edge_events: 0,
+                    lookup_builds: 0,
+                    lookup_hits: 0,
+                    lookup_misses: 0,
+                    dynamic_source_member_count: 0,
+                    dynamic_source_read_events: 0,
+                    dirty_propagation_visits: self
+                        .graph
+                        .dirty_propagation_visits()
+                        .saturating_sub(pass_dirty_visits_start),
+                    parallel_enabled: self.config.enable_parallel,
+                };
+                profile.live_edge_analysis_ns = live_edge_analysis_ns;
+                for member in &pass_member_profiles {
+                    profile.formula_eval_ns =
+                        profile.formula_eval_ns.saturating_add(member.elapsed_ns);
+                    profile.scalar_reads = profile.scalar_reads.saturating_add(member.scalar_reads);
+                    profile.range_reads = profile.range_reads.saturating_add(member.range_reads);
+                    profile.range_cells = profile.range_cells.saturating_add(member.range_cells);
+                    profile.range_membership_checks = profile
+                        .range_membership_checks
+                        .saturating_add(member.range_membership_checks);
+                    profile.collection_ns =
+                        profile.collection_ns.saturating_add(member.collection_ns);
+                    profile.named_reads = profile.named_reads.saturating_add(member.named_reads);
+                    profile.internal_target_events = profile
+                        .internal_target_events
+                        .saturating_add(member.internal_target_events);
+                    profile.read_events = profile.read_events.saturating_add(member.read_events);
+                    profile.live_edge_events = profile
+                        .live_edge_events
+                        .saturating_add(member.internal_target_events);
+                    profile.lookup_builds =
+                        profile.lookup_builds.saturating_add(member.lookup_builds);
+                    profile.lookup_hits = profile.lookup_hits.saturating_add(member.lookup_hits);
+                    profile.lookup_misses =
+                        profile.lookup_misses.saturating_add(member.lookup_misses);
+                    if member.dynamic_source {
+                        profile.dynamic_source_member_count += 1;
+                        profile.dynamic_source_read_events = profile
+                            .dynamic_source_read_events
+                            .saturating_add(member.read_events);
+                    }
+                }
+                self.last_scc_pass_profile.push(profile);
+                self.last_scc_member_profile
+                    .extend(pass_member_profiles.drain(..));
+            }
             if analysis.cycle_count > 0 {
                 if self.diagnostic_early_termination_enabled
                     && passes == 1
@@ -26202,6 +26412,7 @@ where
                             });
                         }
                         if let Some(prev) = &prev_pass {
+                            let convergence_started = crate::instant::FzInstant::now();
                             let mut round_max_delta = 0f64;
                             let mut round_nan = 0usize;
                             let mut all_converged = true;
@@ -26229,6 +26440,12 @@ where
                                     all_converged = false;
                                 }
                                 all_exactly_stable &= out.exactly_stable;
+                            }
+                            if self.scc_pass_profile_enabled
+                                && let Some(profile) = self.last_scc_pass_profile.last_mut()
+                            {
+                                profile.convergence_check_ns =
+                                    convergence_started.elapsed().as_nanos();
                             }
                             // Overwrite (not max): telemetry reports the
                             // round observed at stop.
@@ -26290,6 +26507,7 @@ where
                         }
                         changed.fill(false);
                         pass_started = crate::instant::FzInstant::now();
+                        pass_dirty_visits_start = self.graph.dirty_propagation_visits();
                         passes += 1;
                         let mut p = 0i64;
                         for i in 0..n {
@@ -26300,6 +26518,7 @@ where
                             pos[i] = p;
                             p += 1;
                         }
+                        pass_bookkeeping_started = crate::instant::FzInstant::now();
                         continue;
                     }
                 }
@@ -26351,12 +26570,15 @@ where
                 *x = -1;
             }
             changed.fill(false);
+            pass_started = crate::instant::FzInstant::now();
+            pass_dirty_visits_start = self.graph.dirty_propagation_visits();
             passes += 1;
             settle_passes += 1;
             for (p, i) in stale.into_iter().enumerate() {
                 run_member!(i);
                 pos[i] = p as i64;
             }
+            pass_bookkeeping_started = crate::instant::FzInstant::now();
         }
 
         // Iteration that ended because the live cycle dissolved and the

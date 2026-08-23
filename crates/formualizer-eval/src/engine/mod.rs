@@ -62,7 +62,8 @@ pub use cancel::CancelToken;
 pub use eval::{
     CycleTelemetry, Engine, EngineAction, EngineBaselineStats, EvalResult, RecalcPlan,
     RecalcTelemetry, SccDirtyRecord, SccDirtyTelemetry, SccEarlyTerminationRecord,
-    SccIterationRecord, SourceFormulaIngress, StaticSccStats, TableMetadata, VirtualDepTelemetry,
+    SccIterationRecord, SccMemberPassProfileRecord, SccPassProfileRecord, SourceFormulaIngress,
+    StaticSccStats, TableMetadata, VirtualDepTelemetry,
 };
 pub use eval_delta::{
     DeltaMode, EvalDelta, EvalDeltaCompatibilityPolicy, EvalDeltaRecord, TARGET_EVAL_DELTA_VERSION,

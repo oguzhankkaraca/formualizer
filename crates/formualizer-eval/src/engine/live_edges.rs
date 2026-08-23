@@ -43,6 +43,7 @@
 //! recording.
 
 use std::sync::Mutex;
+use std::time::Instant;
 
 use formualizer_common::{ExcelError, LiteralValue};
 use formualizer_parse::parser::{ReferenceType, TableReference};
@@ -78,6 +79,7 @@ struct CollectorState {
     /// Optional origin bitmask for each observed edge. This is populated only
     /// for the opt-in edge-origin diagnostic path.
     origins: FxHashMap<(u32, u32), u16>,
+    read_counters: FxHashMap<u32, LiveReadCounters>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -90,6 +92,18 @@ pub enum LiveEdgeOrigin {
     Table,
     DynamicReference,
     Other,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct LiveReadCounters {
+    pub scalar_reads: u64,
+    pub range_reads: u64,
+    pub range_cells: u64,
+    pub named_reads: u64,
+    pub internal_target_events: u64,
+    pub range_membership_checks: u64,
+    pub collection_ns: u64,
+    pub read_events: u64,
 }
 
 impl LiveEdgeOrigin {
@@ -137,6 +151,7 @@ pub struct LiveEdgeCollector {
     /// the resolver traits; SCC passes are single-threaded.
     state: Mutex<CollectorState>,
     track_origins: bool,
+    track_reads: bool,
 }
 
 impl LiveEdgeCollector {
@@ -158,6 +173,15 @@ impl LiveEdgeCollector {
         cells: &[CellRef],
         names: &[String],
         track_origins: bool,
+    ) -> Self {
+        Self::new_with_diagnostics(cells, names, track_origins, false)
+    }
+
+    pub fn new_with_diagnostics(
+        cells: &[CellRef],
+        names: &[String],
+        track_origins: bool,
+        track_reads: bool,
     ) -> Self {
         let members: Vec<MemberCell> = cells
             .iter()
@@ -185,6 +209,7 @@ impl LiveEdgeCollector {
             total_members,
             state: Mutex::new(CollectorState::default()),
             track_origins,
+            track_reads,
         }
     }
 
@@ -205,17 +230,6 @@ impl LiveEdgeCollector {
         self.state.lock().unwrap().current = None;
     }
 
-    fn record_edge(&self, to: u32, origin: LiveEdgeOrigin) {
-        let mut st = self.state.lock().unwrap();
-        let Some(from) = st.current else {
-            return;
-        };
-        st.edges.insert((from, to));
-        if self.track_origins {
-            *st.origins.entry((from, to)).or_default() |= origin.bit();
-        }
-    }
-
     /// Record a scalar read of `(sheet_id, row, col)` (0-based).
     pub fn record_scalar(&self, sheet_id: SheetId, row: u32, col: u32) {
         self.record_scalar_with_origin(sheet_id, row, col, LiveEdgeOrigin::DirectCell);
@@ -228,10 +242,33 @@ impl LiveEdgeCollector {
         col: u32,
         origin: LiveEdgeOrigin,
     ) {
-        let Some(&to) = self.index.get(&(sheet_id, row, col)) else {
+        let collection_started = self.track_reads.then(Instant::now);
+        let to = self.index.get(&(sheet_id, row, col)).copied();
+        let mut st = self.state.lock().unwrap();
+        let Some(from) = st.current else {
             return;
         };
-        self.record_edge(to, origin);
+        if self.track_reads {
+            let counters = st.read_counters.entry(from).or_default();
+            counters.scalar_reads += 1;
+            counters.read_events += 1;
+            if to.is_some() {
+                counters.internal_target_events += 1;
+            }
+        }
+        if let Some(to) = to {
+            st.edges.insert((from, to));
+            if self.track_origins {
+                *st.origins.entry((from, to)).or_default() |= origin.bit();
+            }
+        }
+        if let Some(started) = collection_started {
+            if let Some(counters) = st.read_counters.get_mut(&from) {
+                counters.collection_ns = counters
+                    .collection_ns
+                    .saturating_add(started.elapsed().as_nanos() as u64);
+            }
+        }
     }
 
     /// Record a rectangle read (0-based, inclusive corners). Intersection is
@@ -250,17 +287,44 @@ impl LiveEdgeCollector {
         ec: u32,
         origin: LiveEdgeOrigin,
     ) {
+        let collection_started = self.track_reads.then(Instant::now);
+        let membership_count = self.members.len() as u64;
         let mut st = self.state.lock().unwrap();
         let Some(from) = st.current else {
             return;
         };
+        if self.track_reads {
+            let counters = st.read_counters.entry(from).or_default();
+            counters.range_reads += 1;
+            counters.range_membership_checks = counters
+                .range_membership_checks
+                .saturating_add(membership_count);
+            counters.range_cells = counters.range_cells.saturating_add(
+                u64::from(er.saturating_sub(sr).saturating_add(1))
+                    .saturating_mul(u64::from(ec.saturating_sub(sc).saturating_add(1))),
+            );
+            counters.read_events += 1;
+        }
         for (i, m) in self.members.iter().enumerate() {
             if m.sheet_id == sheet_id && m.row >= sr && m.row <= er && m.col >= sc && m.col <= ec {
                 let to = i as u32;
+                if self.track_reads {
+                    st.read_counters
+                        .get_mut(&from)
+                        .expect("read counters initialized above")
+                        .internal_target_events += 1;
+                }
                 st.edges.insert((from, to));
                 if self.track_origins {
                     *st.origins.entry((from, to)).or_default() |= origin.bit();
                 }
+            }
+        }
+        if let Some(started) = collection_started {
+            if let Some(counters) = st.read_counters.get_mut(&from) {
+                counters.collection_ns = counters
+                    .collection_ns
+                    .saturating_add(started.elapsed().as_nanos() as u64);
             }
         }
     }
@@ -272,10 +336,33 @@ impl LiveEdgeCollector {
     }
 
     pub fn record_name_with_origin(&self, folded_name: &str, origin: LiveEdgeOrigin) {
-        let Some(&to) = self.name_index.get(folded_name) else {
+        let collection_started = self.track_reads.then(Instant::now);
+        let to = self.name_index.get(folded_name).copied();
+        let mut st = self.state.lock().unwrap();
+        let Some(from) = st.current else {
             return;
         };
-        self.record_edge(to, origin);
+        if self.track_reads {
+            let counters = st.read_counters.entry(from).or_default();
+            counters.named_reads += 1;
+            counters.read_events += 1;
+            if to.is_some() {
+                counters.internal_target_events += 1;
+            }
+        }
+        if let Some(to) = to {
+            st.edges.insert((from, to));
+            if self.track_origins {
+                *st.origins.entry((from, to)).or_default() |= origin.bit();
+            }
+        }
+        if let Some(started) = collection_started {
+            if let Some(counters) = st.read_counters.get_mut(&from) {
+                counters.collection_ns = counters
+                    .collection_ns
+                    .saturating_add(started.elapsed().as_nanos() as u64);
+            }
+        }
     }
 
     /// Drain the collected edges, leaving the collector empty (current member
@@ -286,6 +373,17 @@ impl LiveEdgeCollector {
 
     pub fn take_edge_origins(&self) -> FxHashMap<(u32, u32), u16> {
         std::mem::take(&mut self.state.lock().unwrap().origins)
+    }
+
+    pub fn take_member_read_counters(&self, member_idx: u32) -> LiveReadCounters {
+        std::mem::take(
+            self.state
+                .lock()
+                .unwrap()
+                .read_counters
+                .entry(member_idx)
+                .or_default(),
+        )
     }
 }
 

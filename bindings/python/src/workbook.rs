@@ -946,6 +946,76 @@ impl PyWorkbook {
         Ok(trace.into())
     }
 
+    pub fn last_scc_pass_profile(&self, py: Python<'_>) -> PyResult<PyObject> {
+        let wb = self.read_inner()?;
+        let records = PyList::empty(py);
+        for record in wb.engine().last_scc_pass_profile() {
+            let row = PyDict::new(py);
+            row.set_item("stable_id", record.stable_id)?;
+            row.set_item("iteration", record.iteration)?;
+            row.set_item("evaluated_members", record.evaluated_members)?;
+            row.set_item("elapsed_ns", record.elapsed_ns)?;
+            row.set_item("formula_eval_ns", record.formula_eval_ns)?;
+            row.set_item("post_eval_bookkeeping_ns", record.post_eval_bookkeeping_ns)?;
+            row.set_item("live_edge_analysis_ns", record.live_edge_analysis_ns)?;
+            row.set_item("convergence_check_ns", record.convergence_check_ns)?;
+            row.set_item("scalar_reads", record.scalar_reads)?;
+            row.set_item("range_reads", record.range_reads)?;
+            row.set_item("range_cells", record.range_cells)?;
+            row.set_item("range_membership_checks", record.range_membership_checks)?;
+            row.set_item("collection_ns", record.collection_ns)?;
+            row.set_item("named_reads", record.named_reads)?;
+            row.set_item("internal_target_events", record.internal_target_events)?;
+            row.set_item("read_events", record.read_events)?;
+            row.set_item("live_edge_events", record.live_edge_events)?;
+            row.set_item("lookup_builds", record.lookup_builds)?;
+            row.set_item("lookup_hits", record.lookup_hits)?;
+            row.set_item("lookup_misses", record.lookup_misses)?;
+            row.set_item(
+                "dynamic_source_member_count",
+                record.dynamic_source_member_count,
+            )?;
+            row.set_item(
+                "dynamic_source_read_events",
+                record.dynamic_source_read_events,
+            )?;
+            row.set_item("dirty_propagation_visits", record.dirty_propagation_visits)?;
+            row.set_item("parallel_enabled", record.parallel_enabled)?;
+            records.append(row)?;
+        }
+        Ok(records.into())
+    }
+
+    #[pyo3(signature = (limit = 25))]
+    pub fn last_scc_slowest_members(&self, py: Python<'_>, limit: usize) -> PyResult<PyObject> {
+        let wb = self.read_inner()?;
+        let mut profiles = wb.engine().last_scc_member_profile().to_vec();
+        profiles.sort_unstable_by(|left, right| right.elapsed_ns.cmp(&left.elapsed_ns));
+        let records = PyList::empty(py);
+        for record in profiles.into_iter().take(limit) {
+            let row = PyDict::new(py);
+            row.set_item("stable_id", record.stable_id)?;
+            row.set_item("iteration", record.iteration)?;
+            row.set_item("vertex_id", record.vertex_id)?;
+            row.set_item("address", record.address)?;
+            row.set_item("elapsed_ns", record.elapsed_ns)?;
+            row.set_item("scalar_reads", record.scalar_reads)?;
+            row.set_item("range_reads", record.range_reads)?;
+            row.set_item("range_cells", record.range_cells)?;
+            row.set_item("range_membership_checks", record.range_membership_checks)?;
+            row.set_item("collection_ns", record.collection_ns)?;
+            row.set_item("named_reads", record.named_reads)?;
+            row.set_item("internal_target_events", record.internal_target_events)?;
+            row.set_item("read_events", record.read_events)?;
+            row.set_item("lookup_builds", record.lookup_builds)?;
+            row.set_item("lookup_hits", record.lookup_hits)?;
+            row.set_item("lookup_misses", record.lookup_misses)?;
+            row.set_item("dynamic_source", record.dynamic_source)?;
+            records.append(row)?;
+        }
+        Ok(records.into())
+    }
+
     pub fn formula_value_fingerprint(&self) -> PyResult<(usize, u64)> {
         let wb = self.read_inner()?;
         Ok(wb.engine().formula_value_fingerprint())

@@ -1,0 +1,6 @@
+{
+  "schema": "formualizer.final-scc-member-coordinate-index/v1",
+  "status": "superseded",
+  "superseded_by": "final-member-coordinate-index-benchmark-v2.json",
+  "reason": "v2 adds explicit SCC task/member counts and corrects Light no-runtime-SCC parity handling."
+}

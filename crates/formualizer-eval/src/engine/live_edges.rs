@@ -223,6 +223,7 @@ pub struct LiveEdgeCollector {
     track_origins: bool,
     track_reads: bool,
     mode: MemberCoordinateIndexMode,
+    index_build_ns: u128,
 }
 
 impl LiveEdgeCollector {
@@ -289,7 +290,14 @@ impl LiveEdgeCollector {
             name_index.insert(name.clone(), (members.len() + j) as u32);
         }
         let total_members = members.len() + names.len();
-        let member_coordinate_index = MemberCoordinateIndex::new(&members);
+        let (member_coordinate_index, index_build_ns) = match mode {
+            MemberCoordinateIndexMode::Legacy => (MemberCoordinateIndex::default(), 0),
+            MemberCoordinateIndexMode::Compare | MemberCoordinateIndexMode::Indexed => {
+                let index_started = Instant::now();
+                let index = MemberCoordinateIndex::new(&members);
+                (index, index_started.elapsed().as_nanos())
+            }
+        };
         Self {
             members,
             member_coordinate_index,
@@ -300,11 +308,16 @@ impl LiveEdgeCollector {
             track_origins,
             track_reads,
             mode,
+            index_build_ns,
         }
     }
 
     pub fn member_count(&self) -> usize {
         self.total_members
+    }
+
+    pub fn index_build_ns(&self) -> u128 {
+        self.index_build_ns
     }
 
     /// Set the member whose formula is about to be evaluated; subsequent

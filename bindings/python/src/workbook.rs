@@ -1016,6 +1016,11 @@ impl PyWorkbook {
         Ok(records.into())
     }
 
+    pub fn last_scc_coordinate_index_build_ns(&self) -> PyResult<u64> {
+        let wb = self.read_inner()?;
+        Ok(u64::try_from(wb.engine().last_scc_coordinate_index_build_ns()).unwrap_or(u64::MAX))
+    }
+
     pub fn last_scc_collector_parity(&self, py: Python<'_>) -> PyResult<PyObject> {
         let wb = self.read_inner()?;
         let records = PyList::empty(py);

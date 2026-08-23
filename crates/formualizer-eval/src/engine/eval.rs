@@ -1061,6 +1061,7 @@ pub struct Engine<R> {
     last_scc_pass_profile: Vec<SccPassProfileRecord>,
     last_scc_member_profile: Vec<SccMemberPassProfileRecord>,
     scc_member_index_mode: MemberCoordinateIndexMode,
+    last_scc_coordinate_index_build_ns: u128,
     last_scc_collector_parity: Vec<SccCollectorParityRecord>,
     edge_origin_trace_enabled: bool,
     diagnostic_early_termination_enabled: bool,
@@ -3248,6 +3249,7 @@ where
             last_scc_pass_profile: Vec::new(),
             last_scc_member_profile: Vec::new(),
             scc_member_index_mode: member_coordinate_index_mode(),
+            last_scc_coordinate_index_build_ns: 0,
             last_scc_collector_parity: Vec::new(),
             edge_origin_trace_enabled: edge_origin_trace_enabled(),
             diagnostic_early_termination_enabled: diagnostic_early_termination_enabled(),
@@ -3424,6 +3426,7 @@ where
             last_scc_pass_profile: Vec::new(),
             last_scc_member_profile: Vec::new(),
             scc_member_index_mode: member_coordinate_index_mode(),
+            last_scc_coordinate_index_build_ns: 0,
             last_scc_collector_parity: Vec::new(),
             edge_origin_trace_enabled: edge_origin_trace_enabled(),
             diagnostic_early_termination_enabled: diagnostic_early_termination_enabled(),
@@ -3528,6 +3531,10 @@ where
 
     pub fn last_scc_collector_parity(&self) -> &[SccCollectorParityRecord] {
         &self.last_scc_collector_parity
+    }
+
+    pub fn last_scc_coordinate_index_build_ns(&self) -> u128 {
+        self.last_scc_coordinate_index_build_ns
     }
 
     pub fn formula_value_fingerprint(&self) -> (usize, u64) {
@@ -4213,6 +4220,7 @@ where
     fn begin_evaluation_request(&mut self) {
         self.last_cycle_telemetry = CycleTelemetry::default();
         self.last_recalc_telemetry = RecalcTelemetry::default();
+        self.last_scc_coordinate_index_build_ns = 0;
         if self.scc_iteration_trace_enabled {
             self.last_scc_iteration_trace.clear();
         }
@@ -26007,6 +26015,9 @@ where
             self.scc_pass_profile_enabled,
             self.scc_member_index_mode,
         );
+        self.last_scc_coordinate_index_build_ns = self
+            .last_scc_coordinate_index_build_ns
+            .saturating_add(collector.index_build_ns());
 
         // Per-member live out-edges, refreshed whenever a member re-runs.
         let mut out_edges: Vec<Vec<u32>> = vec![Vec::new(); n];

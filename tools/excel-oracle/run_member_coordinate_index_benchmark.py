@@ -74,6 +74,7 @@ def run_fossil(path: str, mode: str, compare_origins: bool) -> list[dict[str, An
             {
                 "label": label,
                 "wall_ms": round((time.perf_counter() - started) * 1000, 3),
+                "coordinate_index_build_ns": workbook.last_scc_coordinate_index_build_ns(),
                 "formula_value_fingerprint": workbook.formula_value_fingerprint(),
                 "scc_passes": trace,
                 "runtime": main_runtime(workbook),
@@ -101,6 +102,7 @@ def run_synthetic(mode: str, compare_origins: bool) -> list[dict[str, Any]]:
             {
                 "label": label,
                 "wall_ms": round((time.perf_counter() - started) * 1000, 3),
+                "coordinate_index_build_ns": workbook.last_scc_coordinate_index_build_ns(),
                 "formula_value_fingerprint": workbook.formula_value_fingerprint(),
                 "collector_parity": workbook.last_scc_collector_parity(),
             }

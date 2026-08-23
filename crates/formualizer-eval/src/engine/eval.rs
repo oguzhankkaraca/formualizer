@@ -1924,6 +1924,17 @@ pub struct SccEarlyTerminationRecord {
     pub avoided_member_evaluations: usize,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct StaticSccStats {
+    pub vertex_count: usize,
+    pub scc_count: usize,
+    pub cyclic_scc_count: usize,
+    pub largest_scc_size: usize,
+    pub largest_cyclic_scc_size: usize,
+    pub scc_partition_fingerprint: u64,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 struct DiagnosticEarlySccState {
     members: Box<[VertexId]>,
@@ -5344,6 +5355,63 @@ where
         &self,
     ) -> crate::engine::graph::CompactDependencyPrototypeValidation {
         self.graph.validate_compact_dependency_prototype()
+    }
+
+    pub fn symbolic_scc_probe(&self) -> crate::engine::graph::CompactSymbolicSccStats {
+        let vertices = self.graph.iter_vertex_ids().collect::<Vec<_>>();
+        let (virtual_dependencies, _) = VirtualDepBuilder::new(self).build(&vertices);
+        self.graph
+            .symbolic_scc_probe_with_virtual(&virtual_dependencies)
+    }
+
+    pub fn static_scc_probe(&self) -> Result<StaticSccStats, ExcelError> {
+        let vertices = self.graph.iter_vertex_ids().collect::<Vec<_>>();
+        let (virtual_dependencies, augmented) = VirtualDepBuilder::new(self).build(&vertices);
+        let mut scheduled = vertices;
+        scheduled.extend(augmented);
+        scheduled.sort_unstable();
+        scheduled.dedup();
+        let schedule = Scheduler::new(&self.graph)
+            .create_schedule_with_virtual(&scheduled, &virtual_dependencies)?;
+        let mut components = schedule.cycles.clone();
+        let cyclic_members = components
+            .iter()
+            .flatten()
+            .copied()
+            .collect::<FxHashSet<_>>();
+        components.extend(
+            scheduled
+                .iter()
+                .filter(|vertex| !cyclic_members.contains(vertex))
+                .map(|vertex| vec![*vertex]),
+        );
+        let largest_scc_size = components.iter().map(Vec::len).max().unwrap_or(0);
+        let largest_cyclic_scc_size = schedule.cycles.iter().map(Vec::len).max().unwrap_or(0);
+        Ok(StaticSccStats {
+            vertex_count: scheduled.len(),
+            scc_count: components.len(),
+            cyclic_scc_count: schedule.cycles.len(),
+            largest_scc_size,
+            largest_cyclic_scc_size,
+            scc_partition_fingerprint: crate::engine::graph::scc_partition_fingerprint(&components),
+        })
+    }
+
+    pub fn compact_dirty_set_parity(
+        &self,
+        sheet: &str,
+        row: u32,
+        col: u32,
+    ) -> Result<crate::engine::graph::CompactDirtySetParity, ExcelError> {
+        let sheet_id = self.graph.sheet_id(sheet).ok_or_else(|| {
+            ExcelError::new(ExcelErrorKind::Ref).with_message(format!("Sheet not found: {sheet}"))
+        })?;
+        if row == 0 || col == 0 {
+            return Err(ExcelError::new(ExcelErrorKind::Ref));
+        }
+        Ok(self
+            .graph
+            .compact_dirty_set_parity(sheet_id, row - 1, col - 1))
     }
 
     /// Mutation revision captured by read-only engine reports.

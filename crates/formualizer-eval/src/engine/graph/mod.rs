@@ -31,7 +31,11 @@ mod formula_dirty;
 mod names;
 pub(crate) mod prepared_legacy_graph;
 mod range_deps;
-pub use range_deps::{CompactDependencyPrototypeStats, CompactDependencyPrototypeValidation};
+pub(crate) use range_deps::scc_partition_fingerprint;
+pub use range_deps::{
+    CompactDependencyPrototypeStats, CompactDependencyPrototypeValidation, CompactDirtySetParity,
+    CompactSymbolicSccStats,
+};
 pub(crate) use range_deps::{StructuralEdit, StructuralOccupancy};
 
 mod sheets;

@@ -974,6 +974,16 @@ impl PyWorkbook {
             stats.named_dependency_record_count,
         )?;
         out.set_item(
+            "table_dependency_record_count",
+            stats.table_dependency_record_count,
+        )?;
+        out.set_item("conditional_formula_count", stats.conditional_formula_count)?;
+        out.set_item("spill_anchor_count", stats.spill_anchor_count)?;
+        out.set_item(
+            "cross_sheet_dependency_record_count",
+            stats.cross_sheet_dependency_record_count,
+        )?;
+        out.set_item(
             "dynamic_dependency_descriptor_count",
             stats.dynamic_dependency_descriptor_count,
         )?;
@@ -990,7 +1000,72 @@ impl PyWorkbook {
         out.set_item("direct_cell_edges", validation.direct_cell_edges)?;
         out.set_item("symbolic_range_edges", validation.symbolic_range_edges)?;
         out.set_item("named_edges", validation.named_edges)?;
+        out.set_item("table_edges", validation.table_edges)?;
         out.set_item("unclassified_edges", validation.unclassified_edges)?;
+        out.set_item(
+            "unclassified_kind_counts",
+            &validation.unclassified_kind_counts,
+        )?;
+        out.set_item("unclassified_samples", &validation.unclassified_samples)?;
+        Ok(out.into())
+    }
+
+    pub fn static_scc_probe(&self, py: Python<'_>) -> PyResult<PyObject> {
+        let wb = self.read_inner()?;
+        let stats = wb
+            .engine()
+            .static_scc_probe()
+            .map_err(|error| PyErr::new::<pyo3::exceptions::PyValueError, _>(error.to_string()))?;
+        let out = PyDict::new(py);
+        out.set_item("vertex_count", stats.vertex_count)?;
+        out.set_item("scc_count", stats.scc_count)?;
+        out.set_item("cyclic_scc_count", stats.cyclic_scc_count)?;
+        out.set_item("largest_scc_size", stats.largest_scc_size)?;
+        out.set_item("largest_cyclic_scc_size", stats.largest_cyclic_scc_size)?;
+        out.set_item("scc_partition_fingerprint", stats.scc_partition_fingerprint)?;
+        Ok(out.into())
+    }
+
+    pub fn symbolic_scc_probe(&self, py: Python<'_>) -> PyResult<PyObject> {
+        let wb = self.read_inner()?;
+        let stats = wb.engine().symbolic_scc_probe();
+        let out = PyDict::new(py);
+        out.set_item("vertex_count", stats.vertex_count)?;
+        out.set_item("direct_edge_count", stats.direct_edge_count)?;
+        out.set_item("range_descriptor_count", stats.range_descriptor_count)?;
+        out.set_item("range_neighbor_visits", stats.range_neighbor_visits)?;
+        out.set_item(
+            "transient_expanded_edge_count",
+            stats.transient_expanded_edge_count,
+        )?;
+        out.set_item("max_logical_out_degree", stats.max_logical_out_degree)?;
+        out.set_item("scc_count", stats.scc_count)?;
+        out.set_item("cyclic_scc_count", stats.cyclic_scc_count)?;
+        out.set_item("largest_scc_size", stats.largest_scc_size)?;
+        out.set_item("largest_cyclic_scc_size", stats.largest_cyclic_scc_size)?;
+        out.set_item("scc_partition_fingerprint", stats.scc_partition_fingerprint)?;
+        out.set_item("transient_bytes_estimate", stats.transient_bytes_estimate)?;
+        Ok(out.into())
+    }
+
+    pub fn compact_dirty_set_parity(
+        &self,
+        py: Python<'_>,
+        sheet: &str,
+        row: u32,
+        col: u32,
+    ) -> PyResult<PyObject> {
+        let wb = self.read_inner()?;
+        let parity = wb
+            .engine()
+            .compact_dirty_set_parity(sheet, row, col)
+            .map_err(|error| PyErr::new::<pyo3::exceptions::PyValueError, _>(error.to_string()))?;
+        let out = PyDict::new(py);
+        out.set_item("compact_count", parity.compact_count)?;
+        out.set_item("oracle_count", parity.oracle_count)?;
+        out.set_item("missing_from_compact", parity.missing_from_compact)?;
+        out.set_item("extra_in_compact", parity.extra_in_compact)?;
+        out.set_item("exact", parity.exact)?;
         Ok(out.into())
     }
 

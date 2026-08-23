@@ -11,24 +11,56 @@
   "after_initial_evaluation": {
     "initial_evaluate_ms": 31786.933,
     "compact_stats_collection_ms": 0.275,
-    "compact_validation_ms": 10.33,
+    "compact_validation_ms": 9.404,
+    "symbolic_scc_probe_ms": 22140.645,
+    "static_scc_probe_ms": 329.673,
     "expanded_graph_edges": 575264,
     "formula_vertices": 94966,
     "range_dependent_formula_count": 9126,
     "symbolic_range_record_count": 17936,
     "stripe_membership_record_count": 21021,
     "named_dependency_record_count": 49449,
+    "table_dependency_record_count": 2,
+    "conditional_formula_count": 13341,
+    "spill_anchor_count": 0,
+    "cross_sheet_dependency_record_count": 32928,
     "dynamic_dependency_descriptor_count": 270,
-    "compact_record_count": 88676,
-    "estimated_compact_bytes": 1578328,
+    "compact_record_count": 88678,
+    "estimated_compact_bytes": 1578336,
     "expanded_formula_edges": 573502,
     "direct_cell_edges": 523841,
     "symbolic_range_edges_in_csr": 0,
     "named_edges": 49449,
-    "unclassified_edges": 212
+    "table_edges": 212,
+    "unclassified_edges": 0
+  },
+  "dirty_set_parity": {
+    "f7_compact_count": 28565,
+    "f7_oracle_count": 28565,
+    "same_value_compact_count": 28565,
+    "same_value_oracle_count": 28565,
+    "f7_301_compact_count": 28565,
+    "f7_301_oracle_count": 28565,
+    "unrelated_compact_count": 0,
+    "unrelated_oracle_count": 0,
+    "all_existing_controls_exact": true
+  },
+  "scc_probe": {
+    "current_static_scc_count": 159844,
+    "current_static_cyclic_scc_count": 84,
+    "current_static_largest_scc": 4829,
+    "current_static_partition_fingerprint": 13618816257583485369,
+    "symbolic_scc_count": 152168,
+    "symbolic_cyclic_scc_count": 175,
+    "symbolic_largest_scc": 4829,
+    "symbolic_partition_fingerprint": 16460086251032592181,
+    "partition_equal": false,
+    "logical_neighbor_traversal": 3116386,
+    "transient_expanded_edges": 3692174,
+    "transient_bytes_estimate": 67098512
   },
   "derived_comparison": {
-    "expanded_edge_to_shadow_record_ratio": 6.4903,
+    "expanded_edge_to_shadow_record_ratio": 6.4871,
     "range_and_name_records_are_already_compact_indexes": true,
     "scc_membership_change": "not measured by shadow; current expanded evaluator result remains the control",
     "f7_wall_ms_control": 11912.465,
@@ -40,8 +72,8 @@
   "validation_result": {
     "exact_output_parity": "control_only",
     "exact_dirty_parity": "not_proven",
-    "unclassified_edges": 212,
+    "unclassified_edges": 0,
     "eligible_for_production": false
   },
-  "conclusion": "The existing graph already has compact range/name side indexes, but SCC/runtime evaluation materializes live cell relationships. The shadow prototype reduces represented records only as an estimate and does not yet replace the expanded SCC path. No production compact dependency switch is enabled."
+  "conclusion": "All previously unclassified CSR edges are now classified as table edges (212), and compact dirty closure parity is exact for the existing Fossil/micro controls. The symbolic SCC probe preserves the largest SCC but changes the logical partition (84 versus 175 cyclic SCCs) because it adds all range descriptors to current static Tarjan. It also traverses 3,116,386 logical range neighbors and builds 3,691,650 transient relations. No production compact dependency switch is enabled."
 }

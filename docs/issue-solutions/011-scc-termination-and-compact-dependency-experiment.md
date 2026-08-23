@@ -167,9 +167,10 @@ range-bearing formulas:           9,126
 symbolic range records:          17,936
 stripe membership records:       21,021
 named dependency records:        49,449
+table dependency records:             2
 dynamic descriptors:                270
-compact shadow records:          88,676
-estimated compact bytes:      1,578,328
+compact shadow records:          88,678
+estimated compact bytes:      1,578,336
 ```
 
 The symbolic shadow record count is approximately 6.49x smaller than the expanded CSR edge count. The byte estimate covers the prototype descriptors/index entries only; it is not a replacement for the full engine RSS measurement.
@@ -182,16 +183,18 @@ The prototype validator classified the current CSR formula dependency edges as:
 expanded formula edges: 573,502
 direct cell edges:      523,841
 named edges:             49,449
+table edges:                212
 symbolic range edges in CSR: 0
-unclassified edges:         212
+unclassified edges:           0
 ```
 
-The zero symbolic-range count is informative rather than a success: range dependencies are held in the separate compressed index and are not represented by the ordinary `get_dependencies` CSR list. The 212 unclassified edges mean the shadow model is not yet an exact replacement dependency model.
+The 212 edges are now explicitly classified as table-vertex dependencies. The zero symbolic-range count is informative rather than a success: range dependencies are held in the separate compressed index and are not represented by the ordinary `get_dependencies` CSR list. Provenance classification is now exact for the inspected CSR edge set, but the shadow model is not yet an exact replacement dirty/SCC driver.
 
 The prototype is therefore:
 
 ```text
 useful for representation design: yes
+exact provenance for inspected CSR edges: yes
 complete exact invalidation driver: no
 connected to evaluation: no
 connected to dirty propagation: no
@@ -335,7 +338,7 @@ same iterative state/convergence contract
 Complete the compact dependency shadow parity validator.
 ```
 
-Specifically, eliminate the 212 unclassified dependency edges and add explicit conditional/spill/dynamic provenance. Then compare compact predicted dirty sets and SCC candidates with the expanded control on the existing Fossil edit controls. Do not enable an evaluator fast path and do not add fixed-point caching until that validator is exact.
+Specifically, preserve the now-exact direct/name/table classification, then add exact range-query dirty-set validation, conditional/live-read provenance, spill/array provenance, and cross-sheet symbolic edge mapping. Compare compact predicted dirty sets and SCC candidates with the expanded control on the existing Fossil edit controls. Do not enable an evaluator fast path and do not add fixed-point caching until that validator is exact.
 
 ## Raw experiment data
 
@@ -351,7 +354,7 @@ This branch is intentionally stopped before production optimization:
 
 ```text
 early termination under tolerance: disproven
-compact dependency representation: promising but parity incomplete
+compact dependency representation: provenance classified; exact dirty/SCC parity incomplete
 mixed-SCC caching: not implemented
 production cycle semantics: unchanged
 main merge: not performed

@@ -1,0 +1,91 @@
+{
+  "schema": "formualizer.compact-dirty-parity-experiment/v1",
+  "fossil": {
+    "after_initial": {
+      "compact_count": 28565,
+      "oracle_count": 28565,
+      "missing_from_compact": 0,
+      "extra_in_compact": 0,
+      "exact": true
+    },
+    "after_f7_300_write": {
+      "compact_count": 28565,
+      "oracle_count": 28565,
+      "missing_from_compact": 0,
+      "extra_in_compact": 0,
+      "exact": true
+    },
+    "after_same_value_write": {
+      "compact_count": 28565,
+      "oracle_count": 28565,
+      "missing_from_compact": 0,
+      "extra_in_compact": 0,
+      "exact": true
+    },
+    "after_f7_301_write": {
+      "compact_count": 28565,
+      "oracle_count": 28565,
+      "missing_from_compact": 0,
+      "extra_in_compact": 0,
+      "exact": true
+    },
+    "unrelated_cell": {
+      "compact_count": 0,
+      "oracle_count": 0,
+      "missing_from_compact": 0,
+      "extra_in_compact": 0,
+      "exact": true
+    }
+  },
+  "micro": {
+    "indirect_target": {
+      "before_write": {
+        "compact_count": 2,
+        "oracle_count": 2,
+        "missing_from_compact": 0,
+        "extra_in_compact": 0,
+        "exact": true
+      }
+    },
+    "offset_target": {
+      "before_write": {
+        "compact_count": 2,
+        "oracle_count": 2,
+        "missing_from_compact": 0,
+        "extra_in_compact": 0,
+        "exact": true
+      }
+    },
+    "filter_shape": {
+      "before_write": {
+        "compact_count": 2,
+        "oracle_count": 2,
+        "missing_from_compact": 0,
+        "extra_in_compact": 0,
+        "exact": true
+      }
+    },
+    "same_sheet_cycle": {
+      "before_write": {
+        "compact_count": 3,
+        "oracle_count": 3,
+        "missing_from_compact": 0,
+        "extra_in_compact": 0,
+        "exact": true
+      }
+    },
+    "cross_sheet_cycle": {
+      "before_write": {
+        "compact_count": 2,
+        "oracle_count": 2,
+        "missing_from_compact": 0,
+        "extra_in_compact": 0,
+        "exact": true
+      }
+    }
+  },
+  "named_range_definition_change": {
+    "control": "diagnostic_early_termination_rejects_named_definition_change",
+    "status": "separate native graph mutation control"
+  }
+}

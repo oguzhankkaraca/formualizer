@@ -1,0 +1,44 @@
+{
+  "schema": "formualizer.symbolic-scc-probe/v1",
+  "branch": "investigation/fossil-excel-calculation",
+  "workbook": "Fossil_EstimatingTemplate_2026-08_21_A.xlsx",
+  "control": {
+    "vertex_count": 167161,
+    "scc_count": 159844,
+    "cyclic_scc_count": 84,
+    "largest_scc_size": 4829,
+    "largest_cyclic_scc_size": 4829,
+    "partition_fingerprint": 13618816257583485369,
+    "mode": "current static scheduler with virtual dynamic dependencies"
+  },
+  "symbolic": {
+    "vertex_count": 167161,
+    "direct_edge_count": 575264,
+    "range_descriptor_count": 17936,
+    "range_neighbor_visits": 3116386,
+    "transient_expanded_edge_count": 3692174,
+    "max_logical_out_degree": 27619,
+    "scc_count": 152168,
+    "cyclic_scc_count": 175,
+    "largest_scc_size": 4829,
+    "largest_cyclic_scc_size": 4829,
+    "partition_fingerprint": 16460086251032592181,
+    "transient_bytes_estimate": 67098512,
+    "probe_ms": 24577.51,
+    "mode": "current direct/virtual dependencies plus symbolic range interval neighbors"
+  },
+  "comparison": {
+    "partition_equal": false,
+    "largest_scc_equal": true,
+    "cyclic_scc_delta": 91,
+    "transient_expansion_avoided_in_persistent_storage": true,
+    "logical_neighbor_traversal_avoided": false,
+    "exact_logical_scc_parity": false
+  },
+  "interpretation": [
+    "A symbolic range node can avoid persistent cell-edge storage, but the probe still visited 3,116,386 range neighbors and built 3,691,650 transient unique relations.",
+    "Adding all symbolic range descriptors to current static Tarjan changes the SCC partition: 175 cyclic components instead of 84.",
+    "The difference is a semantic mapping issue, not a hash/storage issue. Current static scheduling treats compressed range dependencies differently from direct/virtual graph edges and relies on runtime live-edge analysis later.",
+    "A symbolic SCC implementation is not production-eligible until this mapping is specified and parity-tested."
+  ]
+}

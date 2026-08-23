@@ -36,18 +36,50 @@ pub struct CompactDependencyPrototypeStats {
     pub symbolic_range_record_count: usize,
     pub stripe_membership_record_count: usize,
     pub named_dependency_record_count: usize,
+    pub table_dependency_record_count: usize,
+    pub conditional_formula_count: usize,
+    pub spill_anchor_count: usize,
+    pub cross_sheet_dependency_record_count: usize,
     pub dynamic_dependency_descriptor_count: usize,
     pub compact_record_count: usize,
     pub estimated_compact_bytes: usize,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CompactSymbolicSccStats {
+    pub vertex_count: usize,
+    pub direct_edge_count: usize,
+    pub range_descriptor_count: usize,
+    pub range_neighbor_visits: usize,
+    pub transient_expanded_edge_count: usize,
+    pub max_logical_out_degree: usize,
+    pub scc_count: usize,
+    pub cyclic_scc_count: usize,
+    pub largest_scc_size: usize,
+    pub largest_cyclic_scc_size: usize,
+    pub scc_partition_fingerprint: u64,
+    pub transient_bytes_estimate: usize,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CompactDependencyPrototypeValidation {
     pub expanded_formula_edges: usize,
     pub direct_cell_edges: usize,
     pub symbolic_range_edges: usize,
     pub named_edges: usize,
+    pub table_edges: usize,
     pub unclassified_edges: usize,
+    pub unclassified_kind_counts: Vec<(String, usize)>,
+    pub unclassified_samples: Vec<(u32, u32, String)>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CompactDirtySetParity {
+    pub compact_count: usize,
+    pub oracle_count: usize,
+    pub missing_from_compact: usize,
+    pub extra_in_compact: usize,
+    pub exact: bool,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -119,6 +151,46 @@ impl StructuralOccupancy {
     }
 }
 
+fn ast_contains_conditional(node: &ASTNode) -> bool {
+    match &node.node_type {
+        ASTNodeType::Function { name, args } => {
+            let name = name.rsplit('.').next().unwrap_or(name).to_ascii_uppercase();
+            matches!(
+                name.as_str(),
+                "IF" | "IFS" | "CHOOSE" | "SWITCH" | "IFERROR" | "IFNA"
+            ) || args.iter().any(ast_contains_conditional)
+        }
+        ASTNodeType::Call { callee, args } => {
+            ast_contains_conditional(callee) || args.iter().any(ast_contains_conditional)
+        }
+        ASTNodeType::UnaryOp { expr, .. } => ast_contains_conditional(expr),
+        ASTNodeType::BinaryOp { left, right, .. } => {
+            ast_contains_conditional(left) || ast_contains_conditional(right)
+        }
+        ASTNodeType::Array(rows) => rows.iter().flatten().any(ast_contains_conditional),
+        ASTNodeType::Reference { .. } | ASTNodeType::Literal(_) | ASTNodeType::Omitted => false,
+    }
+}
+
+pub(crate) fn scc_partition_fingerprint(components: &[Vec<VertexId>]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut normalized = components
+        .iter()
+        .map(|component| {
+            let mut members = component.iter().map(|vertex| vertex.0).collect::<Vec<_>>();
+            members.sort_unstable();
+            members
+        })
+        .collect::<Vec<_>>();
+    normalized.sort_unstable();
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    for component in normalized {
+        component.len().hash(&mut hasher);
+        component.hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
 impl DependencyGraph {
     pub fn compact_dependency_prototype_stats(&self) -> CompactDependencyPrototypeStats {
         let symbolic_range_record_count: usize =
@@ -128,6 +200,30 @@ impl DependencyGraph {
             self.stripe_to_dependents.values().map(FxHashSet::len).sum();
         let named_dependency_record_count: usize =
             self.vertex_to_names.values().map(Vec::len).sum();
+        let table_dependency_record_count = self.table_vertex_lookup.len();
+        let conditional_formula_count = self
+            .vertex_formulas
+            .keys()
+            .filter(|vertex| {
+                self.get_formula(**vertex)
+                    .is_some_and(|ast| ast_contains_conditional(&ast))
+            })
+            .count();
+        let spill_anchor_count = self.spill_anchor_to_cells.len();
+        let cross_sheet_dependency_record_count = self
+            .vertex_formulas
+            .keys()
+            .map(|&dependent| {
+                let dependent_sheet = self.get_vertex_sheet_id(dependent);
+                self.get_dependencies(dependent)
+                    .into_iter()
+                    .filter(|dependency| {
+                        self.get_cell_ref(*dependency)
+                            .is_some_and(|cell| cell.sheet_id != dependent_sheet)
+                    })
+                    .count()
+            })
+            .sum();
         let dynamic_dependency_descriptor_count = self
             .store
             .all_vertices()
@@ -136,6 +232,7 @@ impl DependencyGraph {
         let compact_record_count = symbolic_range_record_count
             .saturating_add(stripe_membership_record_count)
             .saturating_add(named_dependency_record_count)
+            .saturating_add(table_dependency_record_count)
             .saturating_add(dynamic_dependency_descriptor_count);
         let estimated_compact_bytes = range_dependent_formula_count
             .saturating_mul(std::mem::size_of::<(VertexId, Vec<SharedRangeRef<'static>>)>())
@@ -148,6 +245,9 @@ impl DependencyGraph {
             )
             .saturating_add(
                 named_dependency_record_count.saturating_mul(std::mem::size_of::<VertexId>()),
+            )
+            .saturating_add(
+                table_dependency_record_count.saturating_mul(std::mem::size_of::<VertexId>()),
             );
         CompactDependencyPrototypeStats {
             expanded_graph_edges: self.edges.num_edges_exact(),
@@ -156,10 +256,176 @@ impl DependencyGraph {
             symbolic_range_record_count,
             stripe_membership_record_count,
             named_dependency_record_count,
+            table_dependency_record_count,
+            conditional_formula_count,
+            spill_anchor_count,
+            cross_sheet_dependency_record_count,
             dynamic_dependency_descriptor_count,
             compact_record_count,
             estimated_compact_bytes,
         }
+    }
+
+    fn symbolic_scc_probe_impl(
+        &self,
+        virtual_dependencies: Option<&FxHashMap<VertexId, Vec<VertexId>>>,
+    ) -> CompactSymbolicSccStats {
+        let mut vertices = self.store.all_vertices().collect::<Vec<_>>();
+        vertices.sort_unstable_by_key(|vertex| vertex.0);
+        let mut positions = FxHashMap::default();
+        for (position, vertex) in vertices.iter().copied().enumerate() {
+            positions.insert(vertex, position);
+        }
+        let mut adjacency = vec![Vec::<usize>::new(); vertices.len()];
+        let mut direct_edge_count = 0usize;
+        let mut range_descriptor_count = 0usize;
+        let mut range_neighbor_visits = 0usize;
+        for (position, vertex) in vertices.iter().copied().enumerate() {
+            let neighbors = &mut adjacency[position];
+            let direct = self.get_dependencies(vertex);
+            direct_edge_count = direct_edge_count.saturating_add(direct.len());
+            neighbors.extend(
+                direct
+                    .into_iter()
+                    .filter_map(|dependency| positions.get(&dependency).copied()),
+            );
+            if let Some(extra) = virtual_dependencies.and_then(|deps| deps.get(&vertex)) {
+                neighbors.extend(
+                    extra
+                        .iter()
+                        .filter_map(|dependency| positions.get(dependency).copied()),
+                );
+            }
+            if let Some(ranges) = self.formula_to_range_deps.get(&vertex) {
+                range_descriptor_count = range_descriptor_count.saturating_add(ranges.len());
+                for range in ranges {
+                    let sheet = self
+                        .sheet_reg
+                        .resolve_locator(&range.sheet, self.get_vertex_sheet_id(vertex))
+                        .unwrap_or(self.get_vertex_sheet_id(vertex));
+                    let bounds = self.compressed_range_resolved_bounds(
+                        sheet,
+                        (
+                            range.start_row.map(|bound| bound.index),
+                            range.end_row.map(|bound| bound.index),
+                            range.start_col.map(|bound| bound.index),
+                            range.end_col.map(|bound| bound.index),
+                        ),
+                    );
+                    let Some((start_row, end_row, start_col, end_col)) = bounds else {
+                        continue;
+                    };
+                    let range_vertices =
+                        self.vertices_in_region(sheet, start_row, end_row, start_col, end_col);
+                    range_neighbor_visits =
+                        range_neighbor_visits.saturating_add(range_vertices.len());
+                    neighbors.extend(
+                        range_vertices
+                            .into_iter()
+                            .filter_map(|dependency| positions.get(&dependency).copied()),
+                    );
+                }
+            }
+            neighbors.sort_unstable();
+            neighbors.dedup();
+        }
+        let transient_expanded_edge_count: usize = adjacency.iter().map(Vec::len).sum();
+        let max_logical_out_degree = adjacency.iter().map(Vec::len).max().unwrap_or(0);
+        let mut reverse = vec![Vec::<usize>::new(); vertices.len()];
+        for (from, neighbors) in adjacency.iter().enumerate() {
+            for &to in neighbors {
+                reverse[to].push(from);
+            }
+        }
+        let mut visited = vec![false; vertices.len()];
+        let mut order = Vec::with_capacity(vertices.len());
+        for root in 0..vertices.len() {
+            if visited[root] {
+                continue;
+            }
+            visited[root] = true;
+            let mut stack = vec![(root, 0usize)];
+            while let Some((node, next)) = stack.last_mut() {
+                if *next < adjacency[*node].len() {
+                    let child = adjacency[*node][*next];
+                    *next += 1;
+                    if !visited[child] {
+                        visited[child] = true;
+                        stack.push((child, 0));
+                    }
+                } else {
+                    order.push(*node);
+                    stack.pop();
+                }
+            }
+        }
+        let mut assigned = vec![false; vertices.len()];
+        let mut scc_count = 0;
+        let mut cyclic_scc_count = 0;
+        let mut largest_scc_size = 0;
+        let mut largest_cyclic_scc_size = 0;
+        let mut component_signatures = Vec::with_capacity(vertices.len());
+        for &root in order.iter().rev() {
+            if assigned[root] {
+                continue;
+            }
+            assigned[root] = true;
+            let mut stack = vec![root];
+            let mut component = Vec::new();
+            while let Some(node) = stack.pop() {
+                component.push(node);
+                for &child in &reverse[node] {
+                    if !assigned[child] {
+                        assigned[child] = true;
+                        stack.push(child);
+                    }
+                }
+            }
+            let cyclic = component.len() > 1 || adjacency[component[0]].contains(&component[0]);
+            component_signatures.push(
+                component
+                    .iter()
+                    .map(|&index| vertices[index])
+                    .collect::<Vec<_>>(),
+            );
+            scc_count += 1;
+            largest_scc_size = largest_scc_size.max(component.len());
+            if cyclic {
+                cyclic_scc_count += 1;
+                largest_cyclic_scc_size = largest_cyclic_scc_size.max(component.len());
+            }
+        }
+        let transient_bytes_estimate = adjacency
+            .len()
+            .saturating_mul(std::mem::size_of::<Vec<usize>>() * 2)
+            .saturating_add(
+                transient_expanded_edge_count.saturating_mul(std::mem::size_of::<usize>() * 2),
+            );
+        CompactSymbolicSccStats {
+            vertex_count: vertices.len(),
+            direct_edge_count,
+            range_descriptor_count,
+            range_neighbor_visits,
+            transient_expanded_edge_count,
+            max_logical_out_degree,
+            scc_count,
+            cyclic_scc_count,
+            largest_scc_size,
+            largest_cyclic_scc_size,
+            scc_partition_fingerprint: scc_partition_fingerprint(&component_signatures),
+            transient_bytes_estimate,
+        }
+    }
+
+    pub fn symbolic_scc_probe(&self) -> CompactSymbolicSccStats {
+        self.symbolic_scc_probe_impl(None)
+    }
+
+    pub(crate) fn symbolic_scc_probe_with_virtual(
+        &self,
+        virtual_dependencies: &FxHashMap<VertexId, Vec<VertexId>>,
+    ) -> CompactSymbolicSccStats {
+        self.symbolic_scc_probe_impl(Some(virtual_dependencies))
     }
 
     pub fn validate_compact_dependency_prototype(&self) -> CompactDependencyPrototypeValidation {
@@ -197,14 +463,129 @@ impl DependencyGraph {
                     validation.symbolic_range_edges += 1;
                 } else if names.is_some_and(|names| names.contains(&prerequisite)) {
                     validation.named_edges += 1;
+                } else if self.table_vertex_lookup.contains_key(&prerequisite) {
+                    validation.table_edges += 1;
                 } else if self.get_cell_ref(prerequisite).is_some() {
                     validation.direct_cell_edges += 1;
                 } else {
                     validation.unclassified_edges += 1;
+                    let kind = format!("{:?}", self.store.kind(prerequisite));
+                    if let Some((_, count)) = validation
+                        .unclassified_kind_counts
+                        .iter_mut()
+                        .find(|(known, _)| known == &kind)
+                    {
+                        *count += 1;
+                    } else {
+                        validation.unclassified_kind_counts.push((kind.clone(), 1));
+                    }
+                    if validation.unclassified_samples.len() < 64 {
+                        validation
+                            .unclassified_samples
+                            .push((dependent.0, prerequisite.0, kind));
+                    }
                 }
             }
         }
         validation
+    }
+
+    fn range_contains_cell(
+        &self,
+        dependent: VertexId,
+        range: &SharedRangeRef<'static>,
+        sheet_id: SheetId,
+        row0: u32,
+        col0: u32,
+    ) -> bool {
+        let range_sheet = self
+            .sheet_reg
+            .resolve_locator(&range.sheet, self.get_vertex_sheet_id(dependent))
+            .unwrap_or(sheet_id);
+        range_sheet == sheet_id
+            && range.start_row.is_none_or(|bound| row0 >= bound.index)
+            && range.end_row.is_none_or(|bound| row0 <= bound.index)
+            && range.start_col.is_none_or(|bound| col0 >= bound.index)
+            && range.end_col.is_none_or(|bound| col0 <= bound.index)
+    }
+
+    fn expanded_range_dependents_for_cell(
+        &self,
+        sheet_id: SheetId,
+        row0: u32,
+        col0: u32,
+    ) -> FxHashSet<VertexId> {
+        self.formula_to_range_deps
+            .iter()
+            .filter_map(|(&dependent, ranges)| {
+                ranges
+                    .iter()
+                    .any(|range| self.range_contains_cell(dependent, range, sheet_id, row0, col0))
+                    .then_some(dependent)
+            })
+            .collect()
+    }
+
+    fn dirty_closure_for_cell(
+        &self,
+        start: VertexId,
+        use_compact_ranges: bool,
+    ) -> FxHashSet<VertexId> {
+        let mut visited = FxHashSet::default();
+        let mut pending = vec![start];
+        while let Some(vertex) = pending.pop() {
+            if !visited.insert(vertex) {
+                continue;
+            }
+            pending.extend(self.get_dependents(vertex));
+            if let Some(names) = self.cell_to_name_dependents.get(&vertex) {
+                pending.extend(names.iter().copied());
+            }
+            if self.get_cell_ref(vertex).is_some() {
+                let range_dependents = if use_compact_ranges {
+                    self.collect_range_dependents_for_vertex(vertex)
+                } else {
+                    let position = self.store.grid_addr(vertex).unwrap();
+                    self.expanded_range_dependents_for_cell(
+                        self.store.sheet_id(vertex),
+                        position.row(),
+                        position.col(),
+                    )
+                    .into_iter()
+                    .collect()
+                };
+                pending.extend(range_dependents);
+            }
+        }
+        visited
+    }
+
+    pub fn compact_dirty_set_parity(
+        &self,
+        sheet_id: SheetId,
+        row0: u32,
+        col0: u32,
+    ) -> CompactDirtySetParity {
+        let Some(start) = self.cell_to_vertex.iter().find_map(|(cell, &vertex)| {
+            (cell.sheet_id == sheet_id && cell.coord.row() == row0 && cell.coord.col() == col0)
+                .then_some(vertex)
+        }) else {
+            return CompactDirtySetParity {
+                exact: true,
+                ..CompactDirtySetParity::default()
+            };
+        };
+        let compact = self.dirty_closure_for_cell(start, true);
+        let oracle = self.dirty_closure_for_cell(start, false);
+        let missing_from_compact = oracle.difference(&compact).count();
+        let extra_in_compact = compact.difference(&oracle).count();
+        CompactDirtySetParity {
+            compact_count: compact.len(),
+            oracle_count: oracle.len(),
+            missing_from_compact,
+            extra_in_compact,
+            exact: missing_from_compact == 0 && extra_in_compact == 0,
+        }
     }
 
     pub(crate) fn has_compressed_range_dependencies(&self) -> bool {

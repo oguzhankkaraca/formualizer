@@ -226,6 +226,19 @@ no-op recalc: 1142813687581787051
 
 The current result is strong evidence for stable topology in this workbook, but the fingerprint is diagnostic-only and is not yet a production cache key. It includes the final sorted live-edge pairs and SCC member count; semantic configuration and boundary value revisions still need to be part of a production cache contract.
 
+The first mixed-SCC partition diagnostic produced:
+
+```text
+frontier members:             270
+static members:             4,559
+static live edges:       2,037,865
+frontier boundary edges:   38,265
+static cycle count:             1
+static cycle members:       3,868
+```
+
+This rejects the simpler design of treating the static side as an acyclic closure. The static side contains a large cycle of its own, so any reuse design must cache or partition topology-aware components rather than merely evaluating dynamic anchors and then walking a DAG.
+
 ### H7 — More memory or a constant buffer pool is the primary fix
 
 **Rejected as the native CPU/recalc root cause.**
@@ -337,9 +350,9 @@ The current diagnostic fingerprint includes the SCC member count and sorted live
 - named/table resolution changes;
 - relevant semantic/topology revisions.
 
-### 2. Next: partition the mixed SCC diagnostically
+### 2. Completed: partition the mixed SCC diagnostically
 
-The live-edge fingerprint is stable across initial, F7, and no-op recalculation. Without changing evaluation, classify the 4,829 members into:
+The live-edge fingerprint is stable across initial, F7, and no-op recalculation. The 4,829 members were classified into:
 
 ```text
 dynamic/volatile frontier
@@ -347,9 +360,9 @@ static members directly adjacent to the frontier
 static components outside the frontier
 ```
 
-Measure whether removing the frontier leaves acyclic components or smaller SCCs.
+The static side contains one large cyclic component with 3,868 members, so removing the frontier does not leave an acyclic graph.
 
-### 3. Run a semantic comparison experiment
+### 3. Next: run a semantic comparison experiment
 
 For a diagnostic-only mixed reuse mode:
 

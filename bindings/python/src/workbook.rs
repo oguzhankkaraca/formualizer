@@ -981,6 +981,18 @@ impl PyWorkbook {
             row.set_item("dynamic_member_samples", &record.dynamic_member_samples)?;
             row.set_item("member_sheet_counts", &record.member_sheet_counts)?;
             row.set_item("static_member_samples", &record.static_member_samples)?;
+            row.set_item("frontier_member_count", record.frontier_member_count)?;
+            row.set_item("static_member_count", record.static_member_count)?;
+            row.set_item("static_live_edge_count", record.static_live_edge_count)?;
+            row.set_item(
+                "frontier_boundary_edge_count",
+                record.frontier_boundary_edge_count,
+            )?;
+            row.set_item("static_cycle_count", record.static_cycle_count)?;
+            row.set_item(
+                "static_cycle_member_count",
+                record.static_cycle_member_count,
+            )?;
             row.set_item("live_edge_fingerprint", record.live_edge_fingerprint)?;
             row.set_item(
                 "naturally_dirty_member_count",

@@ -1921,6 +1921,12 @@ pub struct SccDirtyRecord {
     pub dynamic_member_samples: Vec<String>,
     pub member_sheet_counts: Vec<(String, usize)>,
     pub static_member_samples: Vec<String>,
+    pub frontier_member_count: usize,
+    pub static_member_count: usize,
+    pub static_live_edge_count: usize,
+    pub frontier_boundary_edge_count: usize,
+    pub static_cycle_count: usize,
+    pub static_cycle_member_count: usize,
     pub live_edge_fingerprint: u64,
     pub converged: bool,
     pub exactly_stable: bool,
@@ -1950,6 +1956,77 @@ fn fingerprint_live_edges(n: usize, out_edges: &[Vec<u32>], excluded: &[bool]) -
         })
 }
 
+#[derive(Debug, Clone, Copy)]
+struct SccPartitionSummary {
+    frontier_member_count: usize,
+    static_member_count: usize,
+    static_live_edge_count: usize,
+    frontier_boundary_edge_count: usize,
+    static_cycle_count: usize,
+    static_cycle_member_count: usize,
+}
+
+fn summarize_scc_partition(
+    n: usize,
+    out_edges: &[Vec<u32>],
+    excluded: &[bool],
+    volatile: &[bool],
+    dynamic: &[bool],
+) -> SccPartitionSummary {
+    let mut static_indices = vec![usize::MAX; n];
+    let mut static_member_count = 0;
+    for index in 0..n {
+        if !excluded[index] && !volatile[index] && !dynamic[index] {
+            static_indices[index] = static_member_count;
+            static_member_count += 1;
+        }
+    }
+    let frontier_member_count = n.saturating_sub(static_member_count);
+    let mut static_edges = Vec::new();
+    let mut frontier_boundary_edge_count = 0;
+    for (from, targets) in out_edges.iter().enumerate() {
+        if excluded.get(from).copied().unwrap_or(true) {
+            continue;
+        }
+        for &to in targets {
+            let to = to as usize;
+            if to >= n || excluded[to] {
+                continue;
+            }
+            match (static_indices[from], static_indices[to]) {
+                (from_static, to_static)
+                    if from_static != usize::MAX && to_static != usize::MAX =>
+                {
+                    static_edges.push((from_static as u32, to_static as u32));
+                }
+                _ => frontier_boundary_edge_count += 1,
+            }
+        }
+    }
+    static_edges.sort_unstable();
+    static_edges.dedup();
+    let static_analysis =
+        (static_member_count > 0).then(|| analyze_live_graph(static_member_count, &static_edges));
+    let static_cycle_count = static_analysis
+        .as_ref()
+        .map_or(0, |analysis| analysis.cycle_count);
+    let static_cycle_member_count = static_analysis.as_ref().map_or(0, |analysis| {
+        analysis
+            .in_cycle
+            .iter()
+            .filter(|in_cycle| **in_cycle)
+            .count()
+    });
+    SccPartitionSummary {
+        frontier_member_count,
+        static_member_count,
+        static_live_edge_count: static_edges.len(),
+        frontier_boundary_edge_count,
+        static_cycle_count,
+        static_cycle_member_count,
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct FormulaTimingRecord {
@@ -1971,6 +2048,12 @@ struct FormulaTimingAggregate {
 struct PendingIterativeSccRedirty {
     members: Vec<VertexId>,
     live_edge_fingerprint: u64,
+    frontier_member_count: usize,
+    static_member_count: usize,
+    static_live_edge_count: usize,
+    frontier_boundary_edge_count: usize,
+    static_cycle_count: usize,
+    static_cycle_member_count: usize,
     converged: bool,
     exactly_stable: bool,
     capped: bool,
@@ -3946,6 +4029,12 @@ where
                 dynamic_member_samples,
                 member_sheet_counts: member_sheet_counts.into_iter().collect(),
                 static_member_samples,
+                frontier_member_count: scc.frontier_member_count,
+                static_member_count: scc.static_member_count,
+                static_live_edge_count: scc.static_live_edge_count,
+                frontier_boundary_edge_count: scc.frontier_boundary_edge_count,
+                static_cycle_count: scc.static_cycle_count,
+                static_cycle_member_count: scc.static_cycle_member_count,
                 live_edge_fingerprint: scc.live_edge_fingerprint,
                 converged: scc.converged,
                 exactly_stable: scc.exactly_stable,
@@ -25790,10 +25879,26 @@ where
                 self.pending_iterative_redirty
                     .extend(members.iter().map(|member| member.vertex));
                 if self.scc_dirty_telemetry_enabled {
+                    let volatile = members
+                        .iter()
+                        .map(|member| self.graph.is_volatile(member.vertex))
+                        .collect::<Vec<_>>();
+                    let dynamic = members
+                        .iter()
+                        .map(|member| self.graph.is_dynamic(member.vertex))
+                        .collect::<Vec<_>>();
+                    let partition =
+                        summarize_scc_partition(n, &out_edges, &excluded, &volatile, &dynamic);
                     self.pending_iterative_scc_redirty
                         .push(PendingIterativeSccRedirty {
                             members: members.iter().map(|member| member.vertex).collect(),
                             live_edge_fingerprint: fingerprint_live_edges(n, &out_edges, &excluded),
+                            frontier_member_count: partition.frontier_member_count,
+                            static_member_count: partition.static_member_count,
+                            static_live_edge_count: partition.static_live_edge_count,
+                            frontier_boundary_edge_count: partition.frontier_boundary_edge_count,
+                            static_cycle_count: partition.static_cycle_count,
+                            static_cycle_member_count: partition.static_cycle_member_count,
                             converged,
                             exactly_stable,
                             capped,

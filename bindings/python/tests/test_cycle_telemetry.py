@@ -113,4 +113,8 @@ def test_recalc_telemetry_reports_scc_work():
     assert dirty["per_scc"][0]["volatile_member_count"] == 0
     assert dirty["per_scc"][0]["dynamic_member_count"] == 0
     assert dirty["per_scc"][0]["live_edge_fingerprint"] != 0
+    assert dirty["per_scc"][0]["frontier_member_count"] == 0
+    assert dirty["per_scc"][0]["static_member_count"] == 2
+    assert dirty["per_scc"][0]["static_cycle_count"] == 1
+    assert dirty["per_scc"][0]["static_cycle_member_count"] == 2
     assert len(dirty["per_scc"]) == 1

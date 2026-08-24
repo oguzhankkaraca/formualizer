@@ -946,6 +946,66 @@ impl PyWorkbook {
         Ok(trace.into())
     }
 
+    pub fn last_scc_exact_reuse(&self, py: Python<'_>) -> PyResult<PyObject> {
+        let wb = self.read_inner()?;
+        let records = PyList::empty(py);
+        for record in wb.engine().last_scc_exact_reuse() {
+            let row = PyDict::new(py);
+            row.set_item("stable_id", record.stable_id)?;
+            row.set_item("frontier_member_count", record.frontier_member_count)?;
+            row.set_item(
+                "static_remainder_member_count",
+                record.static_remainder_member_count,
+            )?;
+            row.set_item("frontier_evaluations", record.frontier_evaluations)?;
+            row.set_item("frontier_validation_ns", record.frontier_validation_ns)?;
+            row.set_item(
+                "frontier_values_unchanged",
+                record.frontier_values_unchanged,
+            )?;
+            row.set_item(
+                "dynamic_targets_unchanged",
+                record.dynamic_targets_unchanged,
+            )?;
+            row.set_item(
+                "frontier_shapes_unchanged",
+                record.frontier_shapes_unchanged,
+            )?;
+            row.set_item(
+                "live_edge_identities_unchanged",
+                record.live_edge_identities_unchanged,
+            )?;
+            row.set_item(
+                "frontier_origin_masks_unchanged",
+                record.frontier_origin_masks_unchanged,
+            )?;
+            row.set_item(
+                "boundary_revisions_unchanged",
+                record.boundary_revisions_unchanged,
+            )?;
+            row.set_item(
+                "semantic_revisions_unchanged",
+                record.semantic_revisions_unchanged,
+            )?;
+            row.set_item(
+                "static_remainder_fixed_point_witness",
+                record.static_remainder_fixed_point_witness,
+            )?;
+            row.set_item(
+                "static_remainder_changed_count_on_previous_recalc",
+                record.static_remainder_changed_count_on_previous_recalc,
+            )?;
+            row.set_item("accepted", record.accepted)?;
+            row.set_item("reason", record.reason)?;
+            row.set_item(
+                "avoided_member_evaluations",
+                record.avoided_member_evaluations,
+            )?;
+            records.append(row)?;
+        }
+        Ok(records.into())
+    }
+
     pub fn last_scc_pass_profile(&self, py: Python<'_>) -> PyResult<PyObject> {
         let wb = self.read_inner()?;
         let records = PyList::empty(py);

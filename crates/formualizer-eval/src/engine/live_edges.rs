@@ -79,6 +79,20 @@ struct MemberCoordinateIndex {
     by_sheet: FxHashMap<SheetId, Vec<IndexedMember>>,
 }
 
+const READ_FINGERPRINT_OFFSET: u64 = 0xcbf29ce484222325;
+
+fn mix_read_fingerprint(current: u64, fields: &[u64]) -> u64 {
+    fields.iter().fold(current, |hash, field| {
+        (hash ^ field).wrapping_mul(0x100000001b3)
+    })
+}
+
+fn text_fingerprint(text: &str) -> u64 {
+    text.bytes().fold(READ_FINGERPRINT_OFFSET, |hash, byte| {
+        (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3)
+    })
+}
+
 impl MemberCoordinateIndex {
     fn new(members: &[MemberCell]) -> Self {
         let mut by_sheet: FxHashMap<SheetId, Vec<IndexedMember>> = FxHashMap::default();
@@ -147,6 +161,7 @@ pub struct LiveReadCounters {
     pub range_membership_checks: u64,
     pub collection_ns: u64,
     pub read_events: u64,
+    pub read_fingerprint: u64,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -358,6 +373,21 @@ impl LiveEdgeCollector {
             if to.is_some() {
                 counters.internal_target_events += 1;
             }
+            let fingerprint = if counters.read_fingerprint == 0 {
+                READ_FINGERPRINT_OFFSET
+            } else {
+                counters.read_fingerprint
+            };
+            counters.read_fingerprint = mix_read_fingerprint(
+                fingerprint,
+                &[
+                    1,
+                    u64::from(origin.bit()),
+                    u64::from(sheet_id),
+                    u64::from(row),
+                    u64::from(col),
+                ],
+            );
         }
         if let Some(to) = to {
             st.edges.insert((from, to));
@@ -419,6 +449,23 @@ impl LiveEdgeCollector {
                     .saturating_mul(u64::from(ec.saturating_sub(sc).saturating_add(1))),
             );
             counters.read_events += 1;
+            let fingerprint = if counters.read_fingerprint == 0 {
+                READ_FINGERPRINT_OFFSET
+            } else {
+                counters.read_fingerprint
+            };
+            counters.read_fingerprint = mix_read_fingerprint(
+                fingerprint,
+                &[
+                    2,
+                    u64::from(origin.bit()),
+                    u64::from(sheet_id),
+                    u64::from(sr),
+                    u64::from(sc),
+                    u64::from(er),
+                    u64::from(ec),
+                ],
+            );
         }
         if self.mode == MemberCoordinateIndexMode::Legacy
             || self.mode == MemberCoordinateIndexMode::Compare
@@ -502,6 +549,15 @@ impl LiveEdgeCollector {
             if to.is_some() {
                 counters.internal_target_events += 1;
             }
+            let fingerprint = if counters.read_fingerprint == 0 {
+                READ_FINGERPRINT_OFFSET
+            } else {
+                counters.read_fingerprint
+            };
+            counters.read_fingerprint = mix_read_fingerprint(
+                fingerprint,
+                &[3, u64::from(origin.bit()), text_fingerprint(folded_name)],
+            );
         }
         if let Some(to) = to {
             st.edges.insert((from, to));

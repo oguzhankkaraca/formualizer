@@ -1,0 +1,109 @@
+{
+  "schema": "formualizer.exact-frontier-reuse-experiment/v1",
+  "branch": "investigation/fossil-excel-calculation",
+  "workbook": "Fossil_EstimatingTemplate_2026-08_21_A.xlsx",
+  "settings": {
+    "candidate_env": "FZ_DIAGNOSTIC_EXACT_SCC_REUSE=1",
+    "cycle_detection": "runtime",
+    "cycle_policy": "iterate",
+    "max_iterations": 100,
+    "max_change": 0.001,
+    "reuse_proof_does_not_use_max_change": true
+  },
+  "frontier_classification": {
+    "volatile_members": 270,
+    "dynamic_members": 270,
+    "volatile_only": 0,
+    "dynamic_only": 0,
+    "volatile_and_dynamic": 270,
+    "dynamic_reference_target_only": 268,
+    "dynamic_shape_only": 0,
+    "dynamic_target_and_shape": 2,
+    "external_udf_context_dependent": 0,
+    "non_cell_frontier_members": 0,
+    "shape_samples": ["Cash Flow Inputs!J55", "Cash Flow Inputs!K55"],
+    "target_formula_family": "Cash Flow Inputs!N:O rows using INDIRECT($J$19) and INDEX/MATCH",
+    "volatile_dynamic_shape_family": "Cash Flow Inputs!J55:K55 using OFFSET/FILTER/UNIQUE/VSTACK/MAP"
+  },
+  "heavy_sequence": [
+    {
+      "phase": "initial",
+      "wall_ms": 35618.911,
+      "frontier_member_count": 270,
+      "static_remainder_member_count": 4559,
+      "frontier_evaluations": 0,
+      "frontier_validation_ms": 0,
+      "accepted": false,
+      "reason": "no_prior_state",
+      "formula_fingerprint": [20710, 7185579490432752015]
+    },
+    {
+      "phase": "f7",
+      "wall_ms": 12844.419,
+      "frontier_member_count": 269,
+      "static_remainder_member_count": 4559,
+      "frontier_evaluations": 269,
+      "frontier_validation_ms": 0,
+      "boundary_revisions_unchanged": false,
+      "semantic_revisions_unchanged": true,
+      "accepted": false,
+      "reason": "boundary_revision_changed",
+      "static_remainder_changed_count_on_previous_recalc": 4559,
+      "formula_fingerprint": [20710, 1026544198047018979]
+    },
+    {
+      "phase": "noop",
+      "wall_ms": 13116.136,
+      "frontier_member_count": 269,
+      "static_remainder_member_count": 4559,
+      "frontier_evaluations": 269,
+      "frontier_validation_ms": 16.626,
+      "frontier_values_unchanged": true,
+      "dynamic_targets_unchanged": true,
+      "frontier_shapes_unchanged": true,
+      "live_edge_identities_unchanged": true,
+      "frontier_origin_masks_unchanged": false,
+      "boundary_revisions_unchanged": true,
+      "semantic_revisions_unchanged": true,
+      "static_remainder_fixed_point_witness": false,
+      "static_remainder_changed_count_on_previous_recalc": 11,
+      "accepted": false,
+      "reason": "static_remainder_progression_unproven",
+      "avoided_member_evaluations": 0,
+      "formula_fingerprint": [20710, 1026544198047018979]
+    }
+  ],
+  "controls": {
+    "changed_volatile_value": {
+      "status": "rejected",
+      "reason": "external_or_context_dependent",
+      "frontier_validation_ms": 0,
+      "avoided_member_evaluations": 0
+    },
+    "input_boundary_change": {
+      "status": "rejected",
+      "reason": "boundary_revision_changed"
+    },
+    "indirect_offset_target_change": {
+      "status": "rejected_or_cycle_removed",
+      "note": "target edit changes data revision and/or removes the candidate SCC; no reuse is accepted"
+    },
+    "filter_spill_shape_change": {
+      "status": "fail_closed",
+      "note": "shape is compared exactly for frontier values; no reuse is accepted without the static remainder witness"
+    },
+    "named_range_change": {
+      "status": "fail_closed",
+      "reason": "graph_symbol_revision_changed"
+    },
+    "semantic_config_change": {
+      "status": "fail_closed",
+      "reason": "semantic_revision_changed"
+    },
+    "external_udf_context_change": {
+      "status": "rejected",
+      "reason": "external_or_context_dependent"
+    }
+  },
+  "verdict": "The Heavy frontier is exactly unchanged on no-op, but reuse is correctly rejected because 4,559 static remainder members have no independent progression witness and 11 static members advance during the next normal recalc. No full-SCC reuse is semantically proven."
+}

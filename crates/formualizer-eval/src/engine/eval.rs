@@ -1066,7 +1066,10 @@ pub struct Engine<R> {
     edge_origin_trace_enabled: bool,
     diagnostic_early_termination_enabled: bool,
     diagnostic_early_scc_states: FxHashMap<u64, DiagnosticEarlySccState>,
+    diagnostic_exact_scc_reuse_enabled: bool,
+    diagnostic_exact_scc_states: FxHashMap<u64, DiagnosticExactSccState>,
     last_scc_early_termination: Vec<SccEarlyTerminationRecord>,
+    last_scc_exact_reuse: Vec<SccExactReuseRecord>,
     scc_dirty_attribution_baseline: Option<FxHashSet<VertexId>>,
     next_dirty_root_seeds: Vec<(&'static str, Vec<VertexId>)>,
     request_dirty_root_seeds: Vec<(&'static str, Vec<VertexId>)>,
@@ -2020,6 +2023,53 @@ struct DiagnosticEarlySccState {
     cycle_config: CycleConfig,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+struct DiagnosticExactSccState {
+    members: Box<[VertexId]>,
+    values: Vec<LiteralValue>,
+    frontier_indices: Vec<usize>,
+    frontier_read_fingerprints: Vec<u64>,
+    frontier_edge_fingerprint: u64,
+    frontier_origin_fingerprint: u64,
+    frontier_shapes: Vec<(usize, usize, usize)>,
+    data_snapshot_id: u64,
+    topology_epoch: u64,
+    graph_topology_revision: u64,
+    graph_symbol_revision: u64,
+    function_semantic_epoch: u64,
+    function_provider_revision: Option<u64>,
+    cycle_config: CycleConfig,
+    date_system: DateSystem,
+    workbook_seed: u64,
+    volatile_level: crate::traits::VolatileLevel,
+    deterministic_mode: crate::engine::DeterministicMode,
+    full_state_exactly_stable: bool,
+    static_remainder_changed_count: usize,
+    context_safe: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct SccExactReuseRecord {
+    pub stable_id: u64,
+    pub frontier_member_count: usize,
+    pub static_remainder_member_count: usize,
+    pub frontier_evaluations: usize,
+    pub frontier_validation_ns: u128,
+    pub frontier_values_unchanged: bool,
+    pub dynamic_targets_unchanged: bool,
+    pub frontier_shapes_unchanged: bool,
+    pub live_edge_identities_unchanged: bool,
+    pub frontier_origin_masks_unchanged: bool,
+    pub boundary_revisions_unchanged: bool,
+    pub semantic_revisions_unchanged: bool,
+    pub static_remainder_fixed_point_witness: bool,
+    pub static_remainder_changed_count_on_previous_recalc: usize,
+    pub accepted: bool,
+    pub reason: &'static str,
+    pub avoided_member_evaluations: usize,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct SccDirtyTelemetry {
@@ -2160,6 +2210,17 @@ fn diagnostic_early_termination_enabled() -> bool {
     }
 }
 
+fn diagnostic_exact_scc_reuse_enabled() -> bool {
+    #[cfg(target_arch = "wasm32")]
+    {
+        false
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        std::env::var_os("FZ_DIAGNOSTIC_EXACT_SCC_REUSE").is_some()
+    }
+}
+
 fn edge_origin_trace_enabled() -> bool {
     #[cfg(target_arch = "wasm32")]
     {
@@ -2193,6 +2254,45 @@ fn scc_pass_profile_enabled() -> bool {
     }
 }
 
+fn ast_contains_external_context(node: &ASTNode, provider: &dyn FunctionProvider) -> bool {
+    match &node.node_type {
+        ASTNodeType::Function { name, args } => {
+            let canonical = name.rsplit('.').next().unwrap_or(name);
+            let known_function = provider
+                .get_function_for_planning("", name)
+                .or_else(|| provider.get_function_for_planning("", canonical));
+            let global_function = crate::function_registry::get_for_planning("", name)
+                .or_else(|| crate::function_registry::get_for_planning("", canonical));
+            if matches!(
+                canonical.to_ascii_uppercase().as_str(),
+                "CELL" | "INFO" | "WEBSERVICE" | "RTD" | "CUBEMEMBER" | "CUBEVALUE"
+            ) || (known_function.is_none() && !name.to_ascii_uppercase().starts_with("_XLFN."))
+                || (global_function.is_none() && !name.to_ascii_uppercase().starts_with("_XLFN."))
+            {
+                return true;
+            }
+            args.iter()
+                .any(|arg| ast_contains_external_context(arg, provider))
+        }
+        ASTNodeType::Call { callee, args } => {
+            ast_contains_external_context(callee, provider)
+                || args
+                    .iter()
+                    .any(|arg| ast_contains_external_context(arg, provider))
+        }
+        ASTNodeType::UnaryOp { expr, .. } => ast_contains_external_context(expr, provider),
+        ASTNodeType::BinaryOp { left, right, .. } => {
+            ast_contains_external_context(left, provider)
+                || ast_contains_external_context(right, provider)
+        }
+        ASTNodeType::Array(rows) => rows
+            .iter()
+            .flatten()
+            .any(|item| ast_contains_external_context(item, provider)),
+        ASTNodeType::Reference { .. } | ASTNodeType::Literal(_) | ASTNodeType::Omitted => false,
+    }
+}
+
 fn literal_shape(value: &LiteralValue) -> (usize, usize) {
     match value {
         LiteralValue::Array(rows) => (rows.len(), rows.iter().map(Vec::len).max().unwrap_or(0)),
@@ -2212,6 +2312,67 @@ fn fingerprint_collected_edges(n: usize, edges: &FxHashSet<(u32, u32)>) -> u64 {
                 .wrapping_add(to as u64)
                 .wrapping_mul(0x100000001b3)
         })
+}
+
+fn fingerprint_live_edges_for_sources(
+    n: usize,
+    out_edges: &[Vec<u32>],
+    excluded: &[bool],
+    sources: &[bool],
+) -> u64 {
+    let mut edges = Vec::new();
+    for (from, targets) in out_edges.iter().enumerate() {
+        if excluded.get(from).copied().unwrap_or(true)
+            || !sources.get(from).copied().unwrap_or(false)
+        {
+            continue;
+        }
+        for &to in targets {
+            edges.push((from as u32, to));
+        }
+    }
+    edges.sort_unstable();
+    edges.dedup();
+    edges
+        .iter()
+        .fold(0xcbf29ce484222325_u64 ^ n as u64, |hash, &(from, to)| {
+            (hash ^ from as u64)
+                .wrapping_mul(0x100000001b3)
+                .wrapping_add(to as u64)
+                .wrapping_mul(0x100000001b3)
+        })
+}
+
+fn fingerprint_origin_maps(
+    n: usize,
+    origins: &[FxHashMap<u32, u16>],
+    sources: &[bool],
+    excluded: &[bool],
+) -> u64 {
+    let mut entries = Vec::new();
+    for (from, row) in origins.iter().enumerate() {
+        if excluded.get(from).copied().unwrap_or(true)
+            || !sources.get(from).copied().unwrap_or(false)
+        {
+            continue;
+        }
+        for (&to, &mask) in row {
+            entries.push((from as u32, to, mask));
+        }
+    }
+    entries.sort_unstable();
+    entries.dedup();
+    entries.iter().fold(
+        0xcbf29ce484222325_u64 ^ n as u64,
+        |hash, &(from, to, mask)| {
+            (hash ^ from as u64)
+                .wrapping_mul(0x100000001b3)
+                .wrapping_add(to as u64)
+                .wrapping_mul(0x100000001b3)
+                .wrapping_add(mask as u64)
+                .wrapping_mul(0x100000001b3)
+        },
+    )
 }
 
 fn fingerprint_live_edges(n: usize, out_edges: &[Vec<u32>], excluded: &[bool]) -> u64 {
@@ -3265,7 +3426,10 @@ where
             edge_origin_trace_enabled: edge_origin_trace_enabled(),
             diagnostic_early_termination_enabled: diagnostic_early_termination_enabled(),
             diagnostic_early_scc_states: FxHashMap::default(),
+            diagnostic_exact_scc_reuse_enabled: diagnostic_exact_scc_reuse_enabled(),
+            diagnostic_exact_scc_states: FxHashMap::default(),
             last_scc_early_termination: Vec::new(),
+            last_scc_exact_reuse: Vec::new(),
             scc_dirty_attribution_baseline: None,
             next_dirty_root_seeds: Vec::new(),
             request_dirty_root_seeds: Vec::new(),
@@ -3444,7 +3608,10 @@ where
             edge_origin_trace_enabled: edge_origin_trace_enabled(),
             diagnostic_early_termination_enabled: diagnostic_early_termination_enabled(),
             diagnostic_early_scc_states: FxHashMap::default(),
+            diagnostic_exact_scc_reuse_enabled: diagnostic_exact_scc_reuse_enabled(),
+            diagnostic_exact_scc_states: FxHashMap::default(),
             last_scc_early_termination: Vec::new(),
+            last_scc_exact_reuse: Vec::new(),
             scc_dirty_attribution_baseline: None,
             next_dirty_root_seeds: Vec::new(),
             request_dirty_root_seeds: Vec::new(),
@@ -3534,6 +3701,10 @@ where
 
     pub fn last_scc_early_termination(&self) -> &[SccEarlyTerminationRecord] {
         &self.last_scc_early_termination
+    }
+
+    pub fn last_scc_exact_reuse(&self) -> &[SccExactReuseRecord] {
+        &self.last_scc_exact_reuse
     }
 
     pub fn last_scc_pass_profile(&self) -> &[SccPassProfileRecord] {
@@ -4249,6 +4420,9 @@ where
         }
         if self.diagnostic_early_termination_enabled {
             self.last_scc_early_termination.clear();
+        }
+        if self.diagnostic_exact_scc_reuse_enabled {
+            self.last_scc_exact_reuse.clear();
         }
         if self.formula_timing_enabled
             && let Ok(mut timings) = self.formula_timings.lock()
@@ -26101,16 +26275,194 @@ where
             }
         }
 
+        let frontier_indices = members
+            .iter()
+            .enumerate()
+            .filter(|(index, member)| {
+                !excluded[*index]
+                    && (self.graph.is_volatile(member.vertex)
+                        || self.graph.is_dynamic(member.vertex))
+            })
+            .map(|(index, _)| index)
+            .collect::<Vec<_>>();
+        let mut frontier_flags = vec![false; n];
+        for &index in &frontier_indices {
+            frontier_flags[index] = true;
+        }
+        let static_remainder_member_count = n
+            .saturating_sub(excluded.iter().filter(|excluded| **excluded).count())
+            .saturating_sub(frontier_indices.len());
+        let frontier_context_safe = frontier_indices.iter().all(|&index| {
+            self.graph
+                .get_formula(members[index].vertex)
+                .is_none_or(|ast| !ast_contains_external_context(&ast, &self.resolver))
+        });
+
         let collector = LiveEdgeCollector::new_with_diagnostics_and_mode(
             &cell_refs,
             &name_keys,
-            self.edge_origin_trace_enabled,
-            self.scc_pass_profile_enabled,
+            self.edge_origin_trace_enabled || self.diagnostic_exact_scc_reuse_enabled,
+            self.scc_pass_profile_enabled || self.diagnostic_exact_scc_reuse_enabled,
             self.scc_member_index_mode,
         );
         self.last_scc_coordinate_index_build_ns = self
             .last_scc_coordinate_index_build_ns
             .saturating_add(collector.index_build_ns());
+
+        if self.diagnostic_exact_scc_reuse_enabled {
+            let mut record = SccExactReuseRecord {
+                stable_id: scc_stable_id,
+                frontier_member_count: frontier_indices.len(),
+                static_remainder_member_count,
+                frontier_evaluations: 0,
+                frontier_validation_ns: 0,
+                frontier_values_unchanged: false,
+                dynamic_targets_unchanged: false,
+                frontier_shapes_unchanged: false,
+                live_edge_identities_unchanged: false,
+                frontier_origin_masks_unchanged: false,
+                boundary_revisions_unchanged: false,
+                semantic_revisions_unchanged: false,
+                static_remainder_fixed_point_witness: false,
+                static_remainder_changed_count_on_previous_recalc: 0,
+                accepted: false,
+                reason: "no_prior_state",
+                avoided_member_evaluations: 0,
+            };
+            let previous = self
+                .diagnostic_exact_scc_states
+                .get(&scc_stable_id)
+                .cloned();
+            if let Some(previous) = previous {
+                record.frontier_evaluations = frontier_indices.len();
+                record.static_remainder_changed_count_on_previous_recalc =
+                    previous.static_remainder_changed_count;
+                if previous.members.as_ref()
+                    != members
+                        .iter()
+                        .map(|member| member.vertex)
+                        .collect::<Vec<_>>()
+                        .as_slice()
+                {
+                    record.reason = "members_changed";
+                } else {
+                    record.boundary_revisions_unchanged = previous.data_snapshot_id
+                        == self.data_snapshot_id()
+                        && previous.topology_epoch == self.topology_epoch
+                        && previous.graph_topology_revision == self.graph.topology_revision()
+                        && previous.graph_symbol_revision == self.graph.symbol_revision();
+                    record.semantic_revisions_unchanged = previous.function_semantic_epoch
+                        == crate::function_registry::semantic_epoch()
+                        && previous.function_provider_revision
+                            == self.resolver.planning_semantic_revision()
+                        && previous.cycle_config == self.config.cycle
+                        && previous.date_system == self.config.date_system
+                        && previous.workbook_seed == self.config.workbook_seed
+                        && previous.volatile_level == self.config.volatile_level
+                        && previous.deterministic_mode == self.config.deterministic_mode;
+                    if !record.boundary_revisions_unchanged {
+                        record.reason = "boundary_revision_changed";
+                    } else if !record.semantic_revisions_unchanged {
+                        record.reason = "semantic_revision_changed";
+                    } else if previous.frontier_indices != frontier_indices {
+                        record.reason = "frontier_members_changed";
+                    } else if !previous.context_safe || !frontier_context_safe {
+                        record.reason = "external_or_context_dependent";
+                    } else {
+                        let frontier_validation_started = crate::instant::FzInstant::now();
+                        let mut candidate_values = Vec::with_capacity(frontier_indices.len());
+                        let mut candidate_read_fingerprints =
+                            Vec::with_capacity(frontier_indices.len());
+                        for &index in &frontier_indices {
+                            collector.set_current(index as u32);
+                            let value = {
+                                let ctx = RecordingContext::new(&*self, &collector);
+                                match self.evaluate_vertex_recorded(
+                                    members[index].vertex,
+                                    &ctx,
+                                    &collector,
+                                ) {
+                                    Ok(value) => value,
+                                    Err(error) => LiteralValue::Error(error),
+                                }
+                            };
+                            let counters = collector.take_member_read_counters(index as u32);
+                            candidate_values.push(value);
+                            candidate_read_fingerprints.push(counters.read_fingerprint);
+                        }
+                        collector.clear_current();
+                        let candidate_edges = collector.take_edges();
+                        let candidate_origins = collector.take_edge_origins();
+                        let mut candidate_out_edges = vec![Vec::new(); n];
+                        let mut candidate_origin_maps = vec![FxHashMap::default(); n];
+                        for &(from, to) in &candidate_edges {
+                            candidate_out_edges[from as usize].push(to);
+                        }
+                        for ((from, to), mask) in candidate_origins {
+                            candidate_origin_maps[from as usize].insert(to, mask);
+                        }
+                        let candidate_shapes = frontier_indices
+                            .iter()
+                            .zip(candidate_values.iter())
+                            .map(|(&index, value)| {
+                                let (rows, cols) = literal_shape(value);
+                                (index, rows, cols)
+                            })
+                            .collect::<Vec<_>>();
+                        record.frontier_validation_ns =
+                            frontier_validation_started.elapsed().as_nanos();
+                        record.frontier_values_unchanged = frontier_indices
+                            .iter()
+                            .zip(candidate_values.iter())
+                            .all(|(&index, value)| previous.values[index] == *value);
+                        record.dynamic_targets_unchanged =
+                            previous.frontier_read_fingerprints == candidate_read_fingerprints;
+                        record.frontier_shapes_unchanged =
+                            previous.frontier_shapes == candidate_shapes;
+                        record.live_edge_identities_unchanged = previous.frontier_edge_fingerprint
+                            == fingerprint_live_edges_for_sources(
+                                n,
+                                &candidate_out_edges,
+                                &vec![false; n],
+                                &frontier_flags,
+                            );
+                        record.frontier_origin_masks_unchanged = previous
+                            .frontier_origin_fingerprint
+                            == fingerprint_origin_maps(
+                                n,
+                                &candidate_origin_maps,
+                                &frontier_flags,
+                                &vec![false; n],
+                            );
+                        record.static_remainder_fixed_point_witness = previous
+                            .full_state_exactly_stable
+                            && static_remainder_member_count == 0;
+                        if !record.frontier_values_unchanged {
+                            record.reason = "frontier_value_changed";
+                        } else if !record.dynamic_targets_unchanged {
+                            record.reason = "dynamic_target_changed";
+                        } else if !record.frontier_shapes_unchanged {
+                            record.reason = "frontier_shape_changed";
+                        } else if !record.live_edge_identities_unchanged {
+                            record.reason = "live_edge_changed";
+                        } else if !record.static_remainder_fixed_point_witness {
+                            record.reason = "static_remainder_progression_unproven";
+                        } else {
+                            record.accepted = true;
+                            record.reason = "exact_state_reuse";
+                            record.avoided_member_evaluations = n.saturating_sub(
+                                excluded.iter().filter(|excluded| **excluded).count(),
+                            );
+                        }
+                    }
+                }
+            }
+            self.last_scc_exact_reuse.push(record.clone());
+            if record.accepted {
+                collector.clear_current();
+                return Ok(0);
+            }
+        }
 
         // Per-member live out-edges, refreshed whenever a member re-runs.
         let mut out_edges: Vec<Vec<u32>> = vec![Vec::new(); n];
@@ -26118,11 +26470,14 @@ where
         let mut pos: Vec<i64> = vec![-1; n];
         // Whether each member's committed value changed in the most recent pass.
         let mut changed = vec![false; n];
-        let mut out_edge_origins = self.edge_origin_trace_enabled.then(|| {
-            (0..n)
-                .map(|_| FxHashMap::<u32, u16>::default())
-                .collect::<Vec<_>>()
-        });
+        let mut out_edge_origins = (self.edge_origin_trace_enabled
+            || self.diagnostic_exact_scc_reuse_enabled)
+            .then(|| {
+                (0..n)
+                    .map(|_| FxHashMap::<u32, u16>::default())
+                    .collect::<Vec<_>>()
+            });
+        let mut latest_read_fingerprints = vec![0_u64; n];
         let mut passes = 1usize;
         let mut pass_member_profiles = Vec::<SccMemberPassProfileRecord>::new();
 
@@ -26147,11 +26502,16 @@ where
                     }
                 };
                 let member_eval_ns = member_eval_started.elapsed().as_nanos();
-                let read_counters = if self.scc_pass_profile_enabled {
+                let read_counters = if self.scc_pass_profile_enabled
+                    || self.diagnostic_exact_scc_reuse_enabled
+                {
                     collector.take_member_read_counters(i as u32)
                 } else {
                     LiveReadCounters::default()
                 };
+                if self.diagnostic_exact_scc_reuse_enabled {
+                    latest_read_fingerprints[i] = read_counters.read_fingerprint;
+                }
                 let lookup_report = if self.scc_pass_profile_enabled {
                     self.lookup_index_cache.report()
                 } else {
@@ -26257,6 +26617,9 @@ where
                 p += 1;
             }
         }
+        let first_pass_static_remainder_changed_count = (0..n)
+            .filter(|&index| !excluded[index] && !frontier_flags[index] && changed[index])
+            .count();
 
         // ── 4. Settle loop (design doc §3 step 4; RFC #113 policy arm).
         //
@@ -26751,6 +27114,58 @@ where
         if iterating && !converged && !capped {
             converged = true;
             exactly_stable = true;
+        }
+
+        if self.diagnostic_exact_scc_reuse_enabled && iterating {
+            let frontier_shapes = frontier_indices
+                .iter()
+                .map(|&index| {
+                    let (rows, cols) = literal_shape(&last_value[index]);
+                    (index, rows, cols)
+                })
+                .collect::<Vec<_>>();
+            let frontier_origin_fingerprint = out_edge_origins
+                .as_ref()
+                .map(|origins| fingerprint_origin_maps(n, origins, &frontier_flags, &excluded))
+                .unwrap_or_default();
+            self.diagnostic_exact_scc_states.insert(
+                scc_stable_id,
+                DiagnosticExactSccState {
+                    members: members
+                        .iter()
+                        .map(|member| member.vertex)
+                        .collect::<Vec<_>>()
+                        .into_boxed_slice(),
+                    values: last_value.clone(),
+                    frontier_indices: frontier_indices.clone(),
+                    frontier_read_fingerprints: frontier_indices
+                        .iter()
+                        .map(|&index| latest_read_fingerprints[index])
+                        .collect(),
+                    frontier_edge_fingerprint: fingerprint_live_edges_for_sources(
+                        n,
+                        &out_edges,
+                        &excluded,
+                        &frontier_flags,
+                    ),
+                    frontier_origin_fingerprint,
+                    frontier_shapes,
+                    data_snapshot_id: self.data_snapshot_id(),
+                    topology_epoch: self.topology_epoch,
+                    graph_topology_revision: self.graph.topology_revision(),
+                    graph_symbol_revision: self.graph.symbol_revision(),
+                    function_semantic_epoch: crate::function_registry::semantic_epoch(),
+                    function_provider_revision: self.resolver.planning_semantic_revision(),
+                    cycle_config: self.config.cycle,
+                    date_system: self.config.date_system,
+                    workbook_seed: self.config.workbook_seed,
+                    volatile_level: self.config.volatile_level,
+                    deterministic_mode: self.config.deterministic_mode.clone(),
+                    full_state_exactly_stable: converged && exactly_stable && !capped,
+                    static_remainder_changed_count: first_pass_static_remainder_changed_count,
+                    context_safe: frontier_context_safe,
+                },
+            );
         }
 
         if self.diagnostic_early_termination_enabled && iterating {

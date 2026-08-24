@@ -1,0 +1,116 @@
+{
+  "schema": "formualizer.excel-formualizer-repeated-noop-comparison/v1",
+  "workbook": "Fossil_EstimatingTemplate_2026-08_21_A.xlsx",
+  "input": {
+    "sheet": "Inputs",
+    "address": "F7",
+    "value": 300
+  },
+  "sequence": {
+    "seed": "initial evaluation, then F7=300 edit and calculation",
+    "repeated_calculates": [1, 2, 3, 4, 5],
+    "no_edit_between_calculates": true
+  },
+  "settings": {
+    "formualizer": {
+      "cycle_detection": "runtime",
+      "cycle_policy": "iterate",
+      "max_iterations": 100,
+      "max_change": 0.001,
+      "parallel_enabled": true
+    },
+    "excel": {
+      "version": "16.0",
+      "build": "20228",
+      "calculation": "manual",
+      "iteration": true,
+      "max_iterations": 100,
+      "max_change": 0.001,
+      "multi_threaded": true,
+      "thread_count": 24
+    }
+  },
+  "formula_coverage": {
+    "excel_formula_cells": 94932,
+    "formualizer_formula_vertices": 94966,
+    "common_formula_addresses": 94932,
+    "formualizer_additional_vertices": 34
+  },
+  "excel": {
+    "seed_calculate_ms": 112.319,
+    "steps": [
+      {"calculate": 1, "wall_ms": 85.989, "changed_formula_count": 0, "max_abs_numeric_delta": 0, "formula_output_fingerprint": "249e277d3a5b7a0a8803e5a74f5332983be94ebb41ee5b0030ce9961635af1ff"},
+      {"calculate": 2, "wall_ms": 92.735, "changed_formula_count": 0, "max_abs_numeric_delta": 0, "formula_output_fingerprint": "249e277d3a5b7a0a8803e5a74f5332983be94ebb41ee5b0030ce9961635af1ff"},
+      {"calculate": 3, "wall_ms": 91.768, "changed_formula_count": 0, "max_abs_numeric_delta": 0, "formula_output_fingerprint": "249e277d3a5b7a0a8803e5a74f5332983be94ebb41ee5b0030ce9961635af1ff"},
+      {"calculate": 4, "wall_ms": 89.111, "changed_formula_count": 0, "max_abs_numeric_delta": 0, "formula_output_fingerprint": "249e277d3a5b7a0a8803e5a74f5332983be5b0030ce9961635af1ff"},
+      {"calculate": 5, "wall_ms": 88.333, "changed_formula_count": 0, "max_abs_numeric_delta": 0, "formula_output_fingerprint": "249e277d3a5b7a0a8803e5a74f5332983be5b0030ce9961635af1ff"}
+    ],
+    "note": "Every step captured all 94,932 formula-cell outputs; changed_formulas is empty for every consecutive comparison."
+  },
+  "formualizer": {
+    "seed_calculate_ms": 12959.725,
+    "seed_snapshot_sha256": "37852a90ca30a949b1959ffd1577c057a7ee92a58bc8ef010e526998a134c633",
+    "steps": [
+      {"calculate": 1, "wall_ms": 11047.688, "changed_formula_count": 0, "max_abs_numeric_delta": 0, "snapshot_sha256": "37852a90ca30a949b1959ffd1577c057a7ee92a58bc8ef010e526998a134c633", "static_pass1_changed_count": 11},
+      {"calculate": 2, "wall_ms": 11322.282, "changed_formula_count": 0, "max_abs_numeric_delta": 0, "snapshot_sha256": "37852a90ca30a949b1959ffd1577c057a7ee92a58bc8ef010e526998a134c633", "static_pass1_changed_count": 11},
+      {"calculate": 3, "wall_ms": 10790.236, "changed_formula_count": 0, "max_abs_numeric_delta": 0, "snapshot_sha256": "37852a90ca30a949b1959ffd1577c057a7ee92a58bc8ef010e526998a134c633", "static_pass1_changed_count": 11},
+      {"calculate": 4, "wall_ms": 11351.109, "changed_formula_count": 0, "max_abs_numeric_delta": 0, "snapshot_sha256": "37852a90ca30a949b1959ffd1577c057a7ee92a58bc8ef010e526998a134c633", "static_pass1_changed_count": 11},
+      {"calculate": 5, "wall_ms": 12002.791, "changed_formula_count": 0, "max_abs_numeric_delta": 0, "snapshot_sha256": "37852a90ca30a949b1959ffd1577c057a7ee92a58bc8ef010e526998a134c633", "static_pass1_changed_count": 11}
+    ],
+    "main_pass_pattern": "two passes per no-op: pass 1 changes 12 members, including 11 static remainder members; pass 2 changes 0 members",
+    "static_remainder_progression_members": [
+      "Cash Flow Engine!$Z$33",
+      "Cash Flow Engine!$Z$84",
+      "Cash Flow Engine!$Z$85",
+      "Cash Flow Engine!$Z$86",
+      "Cash Flow Engine!$Z$93",
+      "Cash Flow Engine!$Z$94",
+      "Cash Flow Engine!$Z$95",
+      "Cash Flow Engine!$Z$96",
+      "Cash Flow Engine!$Z$97",
+      "Cash Flow Engine!$Z$109",
+      "Cash Flow Engine!$Z$110"
+    ]
+  },
+  "tracked_static_values": {
+    "excel": {
+      "Cash Flow Engine!Z33": "number:0.78",
+      "Cash Flow Engine!Z84": "number:0.12999999999999998",
+      "Cash Flow Engine!Z85": "number:0.55100000000000016",
+      "Cash Flow Engine!Z86": "number:0.09",
+      "Cash Flow Engine!Z93": "number:0.63000000000000023",
+      "Cash Flow Engine!Z94": "number:0.63000000000000023",
+      "Cash Flow Engine!Z95": "number:0.63000000000000023",
+      "Cash Flow Engine!Z96": "number:0.63000000000000023",
+      "Cash Flow Engine!Z97": "number:0.063",
+      "Cash Flow Engine!Z109": "number:2.0500000000000003",
+      "Cash Flow Engine!Z110": "number:1.6800000000000004"
+    },
+    "formualizer": {
+      "Cash Flow Engine!Z33": {"type": "Error", "kind": "Value"},
+      "Cash Flow Engine!Z84": {"type": "Error", "kind": "Value"},
+      "Cash Flow Engine!Z85": {"type": "Error", "kind": "Value"},
+      "Cash Flow Engine!Z86": {"type": "Error", "kind": "Value"},
+      "Cash Flow Engine!Z93": {"type": "Error", "kind": "Value"},
+      "Cash Flow Engine!Z94": {"type": "Error", "kind": "Value"},
+      "Cash Flow Engine!Z95": {"type": "Error", "kind": "Value"},
+      "Cash Flow Engine!Z96": {"type": "Error", "kind": "Value"},
+      "Cash Flow Engine!Z97": {"type": "Error", "kind": "Value"},
+      "Cash Flow Engine!Z109": {"type": "Error", "kind": "Value"},
+      "Cash Flow Engine!Z110": {"type": "Error", "kind": "Value"}
+    }
+  },
+  "absolute_output_comparison": {
+    "strict_common_address_differences": 17219,
+    "differences_greater_than_1e-12_or_type": 12281,
+    "material_or_type_differences_greater_than_1e-9": 12138,
+    "note": "This is a separate absolute-engine-semantic mismatch at the F7=300 seed state. It must not be conflated with repeated no-op progression, where each engine's own full output snapshot is unchanged."
+  },
+  "verdict": {
+    "excel_repeated_noop_progresses_visible_outputs": false,
+    "formualizer_repeated_noop_final_outputs_progress": false,
+    "formualizer_repeated_noop_internal_scc_pass_progresses": true,
+    "same_absolute_fixed_point": false,
+    "next_problem_class": "B: Formualizer's iterative-redirty/full-SCC scheduling is over-conservative for this repeated no-op workload, although the separate seed-state output mismatches require independent semantic investigation."
+  }
+}

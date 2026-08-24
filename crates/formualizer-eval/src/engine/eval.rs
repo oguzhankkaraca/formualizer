@@ -1953,6 +1953,8 @@ pub struct SccPassProfileRecord {
     pub lookup_misses: usize,
     pub dynamic_source_member_count: usize,
     pub dynamic_source_read_events: u64,
+    pub changed_member_addresses: Vec<String>,
+    pub static_changed_member_addresses: Vec<String>,
     pub dirty_propagation_visits: u64,
     pub parallel_enabled: bool,
 }
@@ -1977,6 +1979,7 @@ pub struct SccMemberPassProfileRecord {
     pub lookup_hits: usize,
     pub lookup_misses: usize,
     pub dynamic_source: bool,
+    pub changed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3750,6 +3753,42 @@ where
             }
         }
         (count, hasher.finish())
+    }
+
+    pub fn formula_output_snapshot(&self) -> Vec<(String, LiteralValue)> {
+        let mut output = self
+            .graph
+            .vertices_with_formulas()
+            .filter_map(|vertex| {
+                let address = self
+                    .graph
+                    .get_cell_ref(vertex)
+                    .map(|cell| {
+                        format!(
+                            "{}!{}{}",
+                            self.graph.sheet_name(cell.sheet_id),
+                            Self::col_to_letters(cell.coord.col() + 1),
+                            cell.coord.row() + 1,
+                        )
+                    })
+                    .or_else(|| self.graph.name_key_for_vertex(vertex))?;
+                let value = self
+                    .graph
+                    .get_cell_ref(vertex)
+                    .and_then(|cell| {
+                        self.get_cell_value(
+                            self.graph.sheet_name(cell.sheet_id),
+                            cell.coord.row() + 1,
+                            cell.coord.col() + 1,
+                        )
+                    })
+                    .or_else(|| self.graph.get_value(vertex))
+                    .unwrap_or(LiteralValue::Empty);
+                Some((address, value))
+            })
+            .collect::<Vec<_>>();
+        output.sort_unstable_by(|left, right| left.0.cmp(&right.0));
+        output
     }
 
     pub fn last_recalc_telemetry(&self) -> &RecalcTelemetry {
@@ -26587,6 +26626,7 @@ where
                         lookup_hits: lookup_report.hits,
                         lookup_misses: lookup_report.misses,
                         dynamic_source: self.graph.is_dynamic(m.vertex),
+                        changed: changed[i],
                     });
                 }
             }};
@@ -26743,6 +26783,8 @@ where
                     lookup_misses: 0,
                     dynamic_source_member_count: 0,
                     dynamic_source_read_events: 0,
+                    changed_member_addresses: Vec::new(),
+                    static_changed_member_addresses: Vec::new(),
                     dirty_propagation_visits: self
                         .graph
                         .dirty_propagation_visits()
@@ -26779,6 +26821,16 @@ where
                         profile.dynamic_source_read_events = profile
                             .dynamic_source_read_events
                             .saturating_add(member.read_events);
+                    }
+                    if member.changed {
+                        profile
+                            .changed_member_addresses
+                            .push(member.address.clone());
+                        if !member.dynamic_source {
+                            profile
+                                .static_changed_member_addresses
+                                .push(member.address.clone());
+                        }
                     }
                 }
                 self.last_scc_pass_profile.push(profile);

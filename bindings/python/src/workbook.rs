@@ -1039,6 +1039,11 @@ impl PyWorkbook {
                 "dynamic_source_read_events",
                 record.dynamic_source_read_events,
             )?;
+            row.set_item("changed_member_addresses", &record.changed_member_addresses)?;
+            row.set_item(
+                "static_changed_member_addresses",
+                &record.static_changed_member_addresses,
+            )?;
             row.set_item("dirty_propagation_visits", record.dirty_propagation_visits)?;
             row.set_item("parallel_enabled", record.parallel_enabled)?;
             records.append(row)?;
@@ -1071,6 +1076,7 @@ impl PyWorkbook {
             row.set_item("lookup_hits", record.lookup_hits)?;
             row.set_item("lookup_misses", record.lookup_misses)?;
             row.set_item("dynamic_source", record.dynamic_source)?;
+            row.set_item("changed", record.changed)?;
             records.append(row)?;
         }
         Ok(records.into())
@@ -1102,6 +1108,15 @@ impl PyWorkbook {
     pub fn formula_value_fingerprint(&self) -> PyResult<(usize, u64)> {
         let wb = self.read_inner()?;
         Ok(wb.engine().formula_value_fingerprint())
+    }
+
+    pub fn formula_output_snapshot(&self, py: Python<'_>) -> PyResult<PyObject> {
+        let wb = self.read_inner()?;
+        let output = PyDict::new(py);
+        for (address, value) in wb.engine().formula_output_snapshot() {
+            output.set_item(address, literal_to_py(py, &value)?)?;
+        }
+        Ok(output.into())
     }
 
     pub fn compact_dependency_prototype_stats(&self, py: Python<'_>) -> PyResult<PyObject> {

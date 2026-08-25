@@ -1,0 +1,42 @@
+{
+  "schema": "formualizer.retained-path-cost-attribution/v1",
+  "status": "historical-pre-volatile-gate",
+  "note": "These timings describe the earlier diagnostic acceptance experiment. The result is not a current safety proof because Heavy's volatile frontier is now fail-closed.",
+  "workbook": "Fossil_EstimatingTemplate_2026-08_21_A.xlsx",
+  "accepted_probe": {
+    "evaluate_all_wall_ms": 425.124,
+    "post_eval_output_digest_ms": 154.038,
+    "profile_rank_ms": 0.023,
+    "scc_tasks_evaluated": 1,
+    "scc_member_evaluations": 264,
+    "main_candidate": {
+      "accepted": true,
+      "reason": "exact_state_reuse",
+      "frontier_member_count": 269,
+      "pre_validation_setup_ns": 7564200,
+      "pre_eval_state_compare_ns": 147500,
+      "generation_check_ns": 300,
+      "frontier_evaluation_ns": 21100000,
+      "canonical_value_compare_ns": 8700,
+      "target_fingerprint_compare_ns": 500,
+      "shape_compare_ns": 900,
+      "live_edge_compare_ns": 24900,
+      "static_remainder_check_ns": 0,
+      "avoided_member_evaluations": 4828
+    },
+    "remaining_profiled_scc": {
+      "evaluated_members": 264,
+      "wall_ms": 3.9004,
+      "formula_eval_ms": 3.5172,
+      "live_edge_analysis_ms": 0.032,
+      "collection_ms": 0.4642
+    }
+  },
+  "current_gate": {
+    "frontier_member_count": 269,
+    "frontier_volatile_member_count": 269,
+    "frontier_dynamic_member_count": 269,
+    "decision": "reject",
+    "reason": "volatile_generation_unproven"
+  }
+}

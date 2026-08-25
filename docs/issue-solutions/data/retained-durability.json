@@ -1,0 +1,7 @@
+{
+  "schema": "formualizer.retained-durability/v1-superseded",
+  "status": "superseded",
+  "reason": "The original 100-request Heavy retained run preceded the volatile-generation fail-closed gate and is not admissible as safety evidence.",
+  "replacement": "gated-durability.json",
+  "note": "Its stable-output result is retained only as historical evidence; the accepted path was invalidated because Heavy's dynamic frontier is also marked volatile."
+}

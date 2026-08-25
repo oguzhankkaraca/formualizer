@@ -954,6 +954,15 @@ impl PyWorkbook {
             row.set_item("stable_id", record.stable_id)?;
             row.set_item("frontier_member_count", record.frontier_member_count)?;
             row.set_item(
+                "frontier_volatile_member_count",
+                record.frontier_volatile_member_count,
+            )?;
+            row.set_item(
+                "frontier_dynamic_member_count",
+                record.frontier_dynamic_member_count,
+            )?;
+            row.set_item("pre_validation_setup_ns", record.pre_validation_setup_ns)?;
+            row.set_item(
                 "pre_eval_state_values_unchanged",
                 record.pre_eval_state_values_unchanged,
             )?;
@@ -983,6 +992,26 @@ impl PyWorkbook {
             )?;
             row.set_item("frontier_evaluations", record.frontier_evaluations)?;
             row.set_item("frontier_validation_ns", record.frontier_validation_ns)?;
+            row.set_item(
+                "pre_eval_state_compare_ns",
+                record.pre_eval_state_compare_ns,
+            )?;
+            row.set_item("generation_check_ns", record.generation_check_ns)?;
+            row.set_item("frontier_evaluation_ns", record.frontier_evaluation_ns)?;
+            row.set_item(
+                "canonical_value_compare_ns",
+                record.canonical_value_compare_ns,
+            )?;
+            row.set_item(
+                "target_fingerprint_compare_ns",
+                record.target_fingerprint_compare_ns,
+            )?;
+            row.set_item("shape_compare_ns", record.shape_compare_ns)?;
+            row.set_item("live_edge_compare_ns", record.live_edge_compare_ns)?;
+            row.set_item(
+                "static_remainder_check_ns",
+                record.static_remainder_check_ns,
+            )?;
             row.set_item(
                 "frontier_values_unchanged",
                 record.frontier_values_unchanged,

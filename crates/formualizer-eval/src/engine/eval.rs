@@ -2072,6 +2072,9 @@ struct DiagnosticExactSccState {
 pub struct SccExactReuseRecord {
     pub stable_id: u64,
     pub frontier_member_count: usize,
+    pub frontier_volatile_member_count: usize,
+    pub frontier_dynamic_member_count: usize,
+    pub pre_validation_setup_ns: u128,
     pub pre_eval_state_values_unchanged: bool,
     pub pre_eval_state_changed_member_count: usize,
     pub pre_eval_state_semantic_values_unchanged: bool,
@@ -2081,6 +2084,14 @@ pub struct SccExactReuseRecord {
     pub static_remainder_member_count: usize,
     pub frontier_evaluations: usize,
     pub frontier_validation_ns: u128,
+    pub pre_eval_state_compare_ns: u128,
+    pub generation_check_ns: u128,
+    pub frontier_evaluation_ns: u128,
+    pub canonical_value_compare_ns: u128,
+    pub target_fingerprint_compare_ns: u128,
+    pub shape_compare_ns: u128,
+    pub live_edge_compare_ns: u128,
+    pub static_remainder_check_ns: u128,
     pub frontier_values_unchanged: bool,
     pub frontier_raw_values_unchanged: bool,
     pub dynamic_targets_unchanged: bool,
@@ -26790,6 +26801,15 @@ where
             let mut record = SccExactReuseRecord {
                 stable_id: scc_stable_id,
                 frontier_member_count: frontier_indices.len(),
+                frontier_volatile_member_count: frontier_indices
+                    .iter()
+                    .filter(|&&index| self.graph.is_volatile(members[index].vertex))
+                    .count(),
+                frontier_dynamic_member_count: frontier_indices
+                    .iter()
+                    .filter(|&&index| self.graph.is_dynamic(members[index].vertex))
+                    .count(),
+                pre_validation_setup_ns: task_start.elapsed().as_nanos(),
                 pre_eval_state_values_unchanged: false,
                 pre_eval_state_changed_member_count: 0,
                 pre_eval_state_semantic_values_unchanged: false,
@@ -26799,6 +26819,14 @@ where
                 static_remainder_member_count,
                 frontier_evaluations: 0,
                 frontier_validation_ns: 0,
+                pre_eval_state_compare_ns: 0,
+                generation_check_ns: 0,
+                frontier_evaluation_ns: 0,
+                canonical_value_compare_ns: 0,
+                target_fingerprint_compare_ns: 0,
+                shape_compare_ns: 0,
+                live_edge_compare_ns: 0,
+                static_remainder_check_ns: 0,
                 frontier_values_unchanged: false,
                 frontier_raw_values_unchanged: false,
                 dynamic_targets_unchanged: false,
@@ -26824,6 +26852,7 @@ where
                     previous.static_remainder_changed_count;
                 record.static_remainder_canonical_changed_count_on_previous_recalc =
                     previous.static_remainder_canonical_changed_count;
+                let pre_eval_state_compare_started = Instant::now();
                 let pre_eval_changes = previous
                     .values
                     .iter()
@@ -26860,6 +26889,8 @@ where
                     .count();
                 record.pre_eval_state_semantic_values_unchanged =
                     record.pre_eval_state_semantic_changed_member_count == 0;
+                record.pre_eval_state_compare_ns =
+                    pre_eval_state_compare_started.elapsed().as_nanos();
                 if previous.members.as_ref()
                     != members
                         .iter()
@@ -26869,6 +26900,7 @@ where
                 {
                     record.reason = "members_changed";
                 } else {
+                    let generation_check_started = Instant::now();
                     record.boundary_revisions_unchanged = previous.data_snapshot_id
                         == self.data_snapshot_id()
                         && previous.topology_epoch == self.topology_epoch
@@ -26883,6 +26915,7 @@ where
                         && previous.workbook_seed == self.config.workbook_seed
                         && previous.volatile_level == self.config.volatile_level
                         && previous.deterministic_mode == self.config.deterministic_mode;
+                    record.generation_check_ns = generation_check_started.elapsed().as_nanos();
                     if !record.boundary_revisions_unchanged {
                         record.reason = "boundary_revision_changed";
                     } else if !record.semantic_revisions_unchanged {
@@ -26893,8 +26926,11 @@ where
                         record.reason = "pre_eval_semantic_state_changed";
                     } else if !previous.context_safe || !frontier_context_safe {
                         record.reason = "external_or_context_dependent";
+                    } else if record.frontier_volatile_member_count != 0 {
+                        record.reason = "volatile_generation_unproven";
                     } else {
                         let frontier_validation_started = crate::instant::FzInstant::now();
+                        let frontier_evaluation_started = Instant::now();
                         let mut candidate_values = Vec::with_capacity(frontier_indices.len());
                         let mut candidate_read_fingerprints =
                             Vec::with_capacity(frontier_indices.len());
@@ -26915,6 +26951,8 @@ where
                             candidate_values.push(value);
                             candidate_read_fingerprints.push(counters.read_fingerprint);
                         }
+                        record.frontier_evaluation_ns =
+                            frontier_evaluation_started.elapsed().as_nanos();
                         collector.clear_current();
                         let candidate_edges = collector.take_edges();
                         let candidate_origins = collector.take_edge_origins();
@@ -26934,8 +26972,7 @@ where
                                 (index, rows, cols)
                             })
                             .collect::<Vec<_>>();
-                        record.frontier_validation_ns =
-                            frontier_validation_started.elapsed().as_nanos();
+                        let canonical_value_compare_started = Instant::now();
                         record.frontier_raw_values_unchanged = frontier_indices
                             .iter()
                             .zip(candidate_values.iter())
@@ -26950,15 +26987,23 @@ where
                                     self.config.date_system,
                                 )
                             });
+                        record.canonical_value_compare_ns =
+                            canonical_value_compare_started.elapsed().as_nanos();
+                        let target_fingerprint_compare_started = Instant::now();
                         record.dynamic_targets_unchanged =
                             previous.frontier_read_fingerprints == candidate_read_fingerprints;
+                        record.target_fingerprint_compare_ns =
+                            target_fingerprint_compare_started.elapsed().as_nanos();
+                        let shape_compare_started = Instant::now();
                         record.frontier_shapes_unchanged =
                             previous.frontier_shapes == candidate_shapes;
+                        record.shape_compare_ns = shape_compare_started.elapsed().as_nanos();
+                        let live_edge_compare_started = Instant::now();
                         record.live_edge_identities_unchanged = previous.frontier_edge_fingerprint
                             == fingerprint_live_edges_for_sources(
                                 n,
                                 &candidate_out_edges,
-                                &vec![false; n],
+                                &excluded,
                                 &frontier_flags,
                             );
                         record.frontier_origin_masks_unchanged = previous
@@ -26967,11 +27012,17 @@ where
                                 n,
                                 &candidate_origin_maps,
                                 &frontier_flags,
-                                &vec![false; n],
+                                &excluded,
                             );
-                        record.static_remainder_fixed_point_witness = previous
-                            .full_state_exactly_stable
-                            && previous.static_remainder_canonical_changed_count == 0;
+                        record.live_edge_compare_ns =
+                            live_edge_compare_started.elapsed().as_nanos();
+                        let static_remainder_check_started = Instant::now();
+                        record.static_remainder_fixed_point_witness =
+                            previous.full_state_exactly_stable;
+                        record.static_remainder_check_ns =
+                            static_remainder_check_started.elapsed().as_nanos();
+                        record.frontier_validation_ns =
+                            frontier_validation_started.elapsed().as_nanos();
                         if !record.frontier_values_unchanged {
                             record.reason = "frontier_value_changed";
                         } else if !record.dynamic_targets_unchanged {
@@ -26980,6 +27031,8 @@ where
                             record.reason = "frontier_shape_changed";
                         } else if !record.live_edge_identities_unchanged {
                             record.reason = "live_edge_changed";
+                        } else if !record.frontier_origin_masks_unchanged {
+                            record.reason = "live_edge_origin_changed";
                         } else if !record.static_remainder_fixed_point_witness {
                             record.reason = "static_remainder_progression_unproven";
                         } else {

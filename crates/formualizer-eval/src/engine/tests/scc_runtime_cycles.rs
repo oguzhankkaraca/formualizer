@@ -1167,3 +1167,125 @@ fn diagnostic_early_termination_rejects_named_definition_change() {
             .any(|record| record.reason == "boundary_revision_changed")
     );
 }
+
+#[test]
+fn diagnostic_exact_reuse_fails_closed_for_real_mutations() {
+    if std::env::var_os("FZ_DIAGNOSTIC_EXACT_SCC_REUSE").is_none() {
+        return;
+    }
+
+    fn cfg() -> EvalConfig {
+        EvalConfig::default().with_cycle(CycleConfig {
+            detection: CycleDetection::Runtime,
+            policy: CyclePolicy::Iterate {
+                max_iterations: 20,
+                max_change: 0.001,
+            },
+        })
+    }
+
+    fn assert_not_accepted(engine: &Engine<TestWorkbook>) {
+        assert!(
+            engine
+                .last_scc_exact_reuse()
+                .iter()
+                .all(|record| !record.accepted),
+            "diagnostic reuse accepted after mutation: {:?}",
+            engine.last_scc_exact_reuse()
+        );
+    }
+
+    let mut structural = Engine::new(TestWorkbook::new(), cfg());
+    set_formula(&mut structural, "Sheet1", 1, 1, "=B1");
+    set_formula(&mut structural, "Sheet1", 1, 2, "=A1");
+    structural.evaluate_all().unwrap();
+    structural.insert_rows("Sheet1", 1, 1).unwrap();
+    structural.evaluate_all().unwrap();
+    assert_not_accepted(&structural);
+
+    let mut formula = Engine::new(TestWorkbook::new(), cfg());
+    set_formula(&mut formula, "Sheet1", 1, 1, "=B1");
+    set_formula(&mut formula, "Sheet1", 1, 2, "=A1");
+    formula.evaluate_all().unwrap();
+    set_formula(&mut formula, "Sheet1", 1, 1, "=B1+0");
+    formula.evaluate_all().unwrap();
+    assert_not_accepted(&formula);
+
+    let mut named = Engine::new(TestWorkbook::new(), cfg());
+    named
+        .define_name(
+            "N",
+            NamedDefinition::Literal(LiteralValue::Number(0.0)),
+            NameScope::Workbook,
+        )
+        .unwrap();
+    set_formula(&mut named, "Sheet1", 1, 1, "=B1+N");
+    set_formula(&mut named, "Sheet1", 1, 2, "=A1");
+    named.evaluate_all().unwrap();
+    named
+        .update_name(
+            "N",
+            NamedDefinition::Literal(LiteralValue::Number(0.0)),
+            NameScope::Workbook,
+        )
+        .unwrap();
+    named.evaluate_all().unwrap();
+    assert_not_accepted(&named);
+
+    let mut table = Engine::new(TestWorkbook::new(), cfg());
+    set_formula(&mut table, "Sheet1", 1, 1, "=B1");
+    set_formula(&mut table, "Sheet1", 1, 2, "=A1");
+    let sheet_id = table.sheet_id("Sheet1").unwrap();
+    table
+        .define_table(
+            "T",
+            RangeRef::new(
+                CellRef::new(sheet_id, Coord::from_excel(3, 1, true, true)),
+                CellRef::new(sheet_id, Coord::from_excel(4, 1, true, true)),
+            ),
+            false,
+            vec!["Value".into()],
+            false,
+        )
+        .unwrap();
+    table.evaluate_all().unwrap();
+    table
+        .update_table(
+            "T",
+            RangeRef::new(
+                CellRef::new(sheet_id, Coord::from_excel(3, 1, true, true)),
+                CellRef::new(sheet_id, Coord::from_excel(5, 1, true, true)),
+            ),
+            false,
+            vec!["Value".into()],
+            false,
+        )
+        .unwrap();
+    table.evaluate_all().unwrap();
+    assert_not_accepted(&table);
+
+    let mut upstream = Engine::new(TestWorkbook::new(), cfg());
+    set_value(&mut upstream, "Sheet1", 1, 5, LiteralValue::Number(0.0));
+    set_formula(&mut upstream, "Sheet1", 1, 1, "=IF(E1=0,B1,1)");
+    set_formula(&mut upstream, "Sheet1", 1, 2, "=A1");
+    set_formula(&mut upstream, "Sheet1", 1, 3, "=IF(A1=0,D1,1)");
+    set_formula(&mut upstream, "Sheet1", 1, 4, "=C1");
+    upstream.evaluate_all().unwrap();
+    set_value(&mut upstream, "Sheet1", 1, 5, LiteralValue::Number(1.0));
+    upstream.evaluate_all().unwrap();
+    assert_not_accepted(&upstream);
+
+    let mut cycle_config = Engine::new(TestWorkbook::new(), cfg());
+    set_formula(&mut cycle_config, "Sheet1", 1, 1, "=B1");
+    set_formula(&mut cycle_config, "Sheet1", 1, 2, "=A1");
+    cycle_config.evaluate_all().unwrap();
+    cycle_config.config.cycle = CycleConfig {
+        detection: CycleDetection::Runtime,
+        policy: CyclePolicy::Iterate {
+            max_iterations: 21,
+            max_change: 0.001,
+        },
+    };
+    cycle_config.evaluate_all().unwrap();
+    assert_not_accepted(&cycle_config);
+}

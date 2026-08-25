@@ -8,6 +8,8 @@
 - **Controls:** `docs/issue-solutions/data/canonical-retained-workspace-controls.json`
 - **Production behavior:** unchanged; all reuse is diagnostic opt-in only.
 
+> **Follow-up status:** The pre-gate retained-workspace acceptance described below is superseded by the strengthened volatile-generation evidence in report 024. Heavy's 269 frontier members are also marked volatile by the current planner, so the current fail-closed diagnostic rejects Heavy reuse until a volatile-generation contract exists.
+
 ## 1. Canonical semantic equality
 
 `LiteralValue` raw equality includes the complete `ExcelError` payload, including message/context. That payload is observable:

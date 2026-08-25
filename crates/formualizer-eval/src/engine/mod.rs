@@ -63,7 +63,8 @@ pub use eval::{
     CycleTelemetry, Engine, EngineAction, EngineBaselineStats, EvalResult, RecalcPlan,
     RecalcTelemetry, SccCollectorParityRecord, SccDirtyRecord, SccDirtyTelemetry,
     SccEarlyTerminationRecord, SccExactReuseRecord, SccIterationRecord, SccMemberPassProfileRecord,
-    SccPassProfileRecord, SourceFormulaIngress, StaticSccStats, TableMetadata, VirtualDepTelemetry,
+    SccPassProfileRecord, SccSameRequestExtraPassRecord, SourceFormulaIngress, StaticSccStats,
+    TableMetadata, VirtualDepTelemetry,
 };
 pub use eval_delta::{
     DeltaMode, EvalDelta, EvalDeltaCompatibilityPolicy, EvalDeltaRecord, TARGET_EVAL_DELTA_VERSION,

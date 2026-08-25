@@ -954,6 +954,22 @@ impl PyWorkbook {
             row.set_item("stable_id", record.stable_id)?;
             row.set_item("frontier_member_count", record.frontier_member_count)?;
             row.set_item(
+                "pre_eval_state_values_unchanged",
+                record.pre_eval_state_values_unchanged,
+            )?;
+            row.set_item(
+                "pre_eval_state_changed_member_count",
+                record.pre_eval_state_changed_member_count,
+            )?;
+            row.set_item(
+                "pre_eval_state_changed_member_addresses",
+                &record.pre_eval_state_changed_member_addresses,
+            )?;
+            row.set_item(
+                "pre_eval_state_changed_member_values",
+                &record.pre_eval_state_changed_member_values,
+            )?;
+            row.set_item(
                 "static_remainder_member_count",
                 record.static_remainder_member_count,
             )?;
@@ -1006,6 +1022,40 @@ impl PyWorkbook {
         Ok(records.into())
     }
 
+    pub fn last_scc_same_request_extra_pass(&self, py: Python<'_>) -> PyResult<PyObject> {
+        let wb = self.read_inner()?;
+        let records = PyList::empty(py);
+        for record in wb.engine().last_scc_same_request_extra_pass() {
+            let row = PyDict::new(py);
+            row.set_item("stable_id", record.stable_id)?;
+            row.set_item("member_count", record.member_count)?;
+            row.set_item("evaluated_members", record.evaluated_members)?;
+            row.set_item("pass_count", record.pass_count)?;
+            row.set_item("changed_member_count", record.changed_member_count)?;
+            row.set_item("changed_member_addresses", &record.changed_member_addresses)?;
+            row.set_item("changed_member_values", &record.changed_member_values)?;
+            row.set_item("changed_member_reads", &record.changed_member_reads)?;
+            row.set_item(
+                "internal_changed_member_count",
+                record.internal_changed_member_count,
+            )?;
+            row.set_item(
+                "internal_changed_member_addresses",
+                &record.internal_changed_member_addresses,
+            )?;
+            row.set_item(
+                "internal_changed_member_values",
+                &record.internal_changed_member_values,
+            )?;
+            row.set_item("before_state_fingerprint", record.before_state_fingerprint)?;
+            row.set_item("after_state_fingerprint", record.after_state_fingerprint)?;
+            row.set_item("max_abs_numeric_delta", record.max_abs_numeric_delta)?;
+            row.set_item("reason", record.reason)?;
+            records.append(row)?;
+        }
+        Ok(records.into())
+    }
+
     pub fn last_scc_pass_profile(&self, py: Python<'_>) -> PyResult<PyObject> {
         let wb = self.read_inner()?;
         let records = PyList::empty(py);
@@ -1013,6 +1063,7 @@ impl PyWorkbook {
             let row = PyDict::new(py);
             row.set_item("stable_id", record.stable_id)?;
             row.set_item("iteration", record.iteration)?;
+            row.set_item("operator", record.operator)?;
             row.set_item("evaluated_members", record.evaluated_members)?;
             row.set_item("elapsed_ns", record.elapsed_ns)?;
             row.set_item("formula_eval_ns", record.formula_eval_ns)?;
@@ -1077,6 +1128,9 @@ impl PyWorkbook {
             row.set_item("lookup_misses", record.lookup_misses)?;
             row.set_item("dynamic_source", record.dynamic_source)?;
             row.set_item("changed", record.changed)?;
+            row.set_item("before_value", literal_to_py(py, &record.before_value)?)?;
+            row.set_item("after_value", literal_to_py(py, &record.after_value)?)?;
+            row.set_item("read_trace", &record.read_trace)?;
             records.append(row)?;
         }
         Ok(records.into())

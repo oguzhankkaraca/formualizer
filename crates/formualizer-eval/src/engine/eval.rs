@@ -1068,6 +1068,8 @@ pub struct Engine<R> {
     diagnostic_early_scc_states: FxHashMap<u64, DiagnosticEarlySccState>,
     diagnostic_exact_scc_reuse_enabled: bool,
     diagnostic_exact_scc_states: FxHashMap<u64, DiagnosticExactSccState>,
+    diagnostic_same_request_extra_pass_enabled: bool,
+    last_scc_same_request_extra_pass: Vec<SccSameRequestExtraPassRecord>,
     diagnostic_disable_iterative_redirty: bool,
     diagnostic_disable_volatile_redirty: bool,
     last_scc_early_termination: Vec<SccEarlyTerminationRecord>,
@@ -1939,6 +1941,7 @@ pub struct SccIterationRecord {
 pub struct SccPassProfileRecord {
     pub stable_id: u64,
     pub iteration: usize,
+    pub operator: &'static str,
     pub evaluated_members: usize,
     pub elapsed_ns: u128,
     pub formula_eval_ns: u128,
@@ -1986,6 +1989,9 @@ pub struct SccMemberPassProfileRecord {
     pub lookup_misses: usize,
     pub dynamic_source: bool,
     pub changed: bool,
+    pub before_value: LiteralValue,
+    pub after_value: LiteralValue,
+    pub read_trace: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2062,6 +2068,10 @@ struct DiagnosticExactSccState {
 pub struct SccExactReuseRecord {
     pub stable_id: u64,
     pub frontier_member_count: usize,
+    pub pre_eval_state_values_unchanged: bool,
+    pub pre_eval_state_changed_member_count: usize,
+    pub pre_eval_state_changed_member_addresses: Vec<String>,
+    pub pre_eval_state_changed_member_values: Vec<(String, String, String)>,
     pub static_remainder_member_count: usize,
     pub frontier_evaluations: usize,
     pub frontier_validation_ns: u128,
@@ -2077,6 +2087,26 @@ pub struct SccExactReuseRecord {
     pub accepted: bool,
     pub reason: &'static str,
     pub avoided_member_evaluations: usize,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub struct SccSameRequestExtraPassRecord {
+    pub stable_id: u64,
+    pub member_count: usize,
+    pub evaluated_members: usize,
+    pub pass_count: usize,
+    pub changed_member_count: usize,
+    pub changed_member_addresses: Vec<String>,
+    pub changed_member_values: Vec<(String, String, String)>,
+    pub changed_member_reads: Vec<(String, Vec<String>)>,
+    pub internal_changed_member_count: usize,
+    pub internal_changed_member_addresses: Vec<String>,
+    pub internal_changed_member_values: Vec<(String, String, String)>,
+    pub before_state_fingerprint: u64,
+    pub after_state_fingerprint: u64,
+    pub max_abs_numeric_delta: f64,
+    pub reason: &'static str,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -2220,6 +2250,17 @@ fn diagnostic_early_termination_enabled() -> bool {
     #[cfg(not(target_arch = "wasm32"))]
     {
         std::env::var_os("FZ_DIAGNOSTIC_EARLY_SCC_TERMINATION").is_some()
+    }
+}
+
+fn diagnostic_same_request_extra_pass_enabled() -> bool {
+    #[cfg(target_arch = "wasm32")]
+    {
+        false
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        std::env::var_os("FZ_DIAGNOSTIC_SAME_REQUEST_EXTRA_PASS").is_some()
     }
 }
 
@@ -3476,6 +3517,9 @@ where
             diagnostic_early_scc_states: FxHashMap::default(),
             diagnostic_exact_scc_reuse_enabled: diagnostic_exact_scc_reuse_enabled(),
             diagnostic_exact_scc_states: FxHashMap::default(),
+            diagnostic_same_request_extra_pass_enabled: diagnostic_same_request_extra_pass_enabled(
+            ),
+            last_scc_same_request_extra_pass: Vec::new(),
             diagnostic_disable_iterative_redirty: diagnostic_disable_iterative_redirty(),
             diagnostic_disable_volatile_redirty: diagnostic_disable_volatile_redirty(),
             last_scc_early_termination: Vec::new(),
@@ -3664,6 +3708,9 @@ where
             diagnostic_early_scc_states: FxHashMap::default(),
             diagnostic_exact_scc_reuse_enabled: diagnostic_exact_scc_reuse_enabled(),
             diagnostic_exact_scc_states: FxHashMap::default(),
+            diagnostic_same_request_extra_pass_enabled: diagnostic_same_request_extra_pass_enabled(
+            ),
+            last_scc_same_request_extra_pass: Vec::new(),
             diagnostic_disable_iterative_redirty: diagnostic_disable_iterative_redirty(),
             diagnostic_disable_volatile_redirty: diagnostic_disable_volatile_redirty(),
             last_scc_early_termination: Vec::new(),
@@ -3765,6 +3812,10 @@ where
 
     pub fn last_scc_exact_reuse(&self) -> &[SccExactReuseRecord] {
         &self.last_scc_exact_reuse
+    }
+
+    pub fn last_scc_same_request_extra_pass(&self) -> &[SccSameRequestExtraPassRecord] {
+        &self.last_scc_same_request_extra_pass
     }
 
     pub fn last_scc_pass_profile(&self) -> &[SccPassProfileRecord] {
@@ -4522,6 +4573,9 @@ where
         if self.diagnostic_exact_scc_reuse_enabled {
             self.last_scc_exact_reuse.clear();
         }
+        if self.diagnostic_same_request_extra_pass_enabled {
+            self.last_scc_same_request_extra_pass.clear();
+        }
         if self.formula_timing_enabled
             && let Ok(mut timings) = self.formula_timings.lock()
         {
@@ -4591,6 +4645,177 @@ where
         self.clock.refresh();
     }
 
+    fn diagnostic_same_request_extra_pass(&mut self, cycle: &[VertexId]) {
+        let before_values = cycle
+            .iter()
+            .map(|&vertex| {
+                let value = self
+                    .graph
+                    .get_cell_ref(vertex)
+                    .and_then(|cell| {
+                        self.get_cell_value(
+                            self.graph.sheet_name(cell.sheet_id),
+                            cell.coord.row() + 1,
+                            cell.coord.col() + 1,
+                        )
+                    })
+                    .or_else(|| self.graph.get_value(vertex))
+                    .unwrap_or(LiteralValue::Empty);
+                (vertex, value)
+            })
+            .collect::<Vec<_>>();
+        let before_state_fingerprint =
+            before_values
+                .iter()
+                .fold(0xcbf29ce484222325_u64, |hash, (vertex, value)| {
+                    use std::hash::{Hash, Hasher};
+                    let mut value_hasher = std::collections::hash_map::DefaultHasher::new();
+                    format!("{value:?}").hash(&mut value_hasher);
+                    (hash ^ vertex.0 as u64)
+                        .wrapping_mul(0x100000001b3)
+                        .wrapping_add(value_hasher.finish())
+                        .wrapping_mul(0x100000001b3)
+                });
+        let saved_pending_iterative_redirty = self.pending_iterative_redirty.clone();
+        let saved_pending_iterative_state_refresh = self.pending_iterative_state_refresh.clone();
+        let saved_pending_iterative_scc_redirty = self.pending_iterative_scc_redirty.clone();
+        let saved_reusable_iterative_sccs = self.reusable_iterative_sccs.clone();
+        let saved_iterative_state_values = self.iterative_state_values.clone();
+        let saved_exact_states = self.diagnostic_exact_scc_states.clone();
+        let saved_recalc_telemetry = self.last_recalc_telemetry.clone();
+        let saved_index_build_ns = self.last_scc_coordinate_index_build_ns;
+        let saved_pass_profile_len = self.last_scc_pass_profile.len();
+        let saved_member_profile_len = self.last_scc_member_profile.len();
+        let saved_iteration_trace_len = self.last_scc_iteration_trace.len();
+        let saved_collector_parity_len = self.last_scc_collector_parity.len();
+        let saved_early_termination_len = self.last_scc_early_termination.len();
+        let result = self.evaluate_scc_unit(cycle, None, None);
+        let after_values = cycle
+            .iter()
+            .map(|&vertex| {
+                let value = self
+                    .graph
+                    .get_cell_ref(vertex)
+                    .and_then(|cell| {
+                        self.get_cell_value(
+                            self.graph.sheet_name(cell.sheet_id),
+                            cell.coord.row() + 1,
+                            cell.coord.col() + 1,
+                        )
+                    })
+                    .or_else(|| self.graph.get_value(vertex))
+                    .unwrap_or(LiteralValue::Empty);
+                (vertex, value)
+            })
+            .collect::<Vec<_>>();
+        let mut changed_member_addresses = Vec::new();
+        let mut changed_member_values = Vec::new();
+        let mut max_abs_numeric_delta = 0.0_f64;
+        for ((vertex, before), (_, after)) in before_values.iter().zip(after_values.iter()) {
+            if before == after {
+                continue;
+            }
+            changed_member_addresses.push(self.diagnostic_vertex_address(*vertex));
+            changed_member_values.push((
+                self.diagnostic_vertex_address(*vertex),
+                format!("{before:?}"),
+                format!("{after:?}"),
+            ));
+            if let Some(delta) = crate::engine::convergence::values_converged(
+                before,
+                after,
+                f64::INFINITY,
+                self.config.date_system,
+            )
+            .abs_delta
+            {
+                max_abs_numeric_delta = max_abs_numeric_delta.max(delta);
+            }
+        }
+        let after_state_fingerprint =
+            after_values
+                .iter()
+                .fold(0xcbf29ce484222325_u64, |hash, (vertex, value)| {
+                    use std::hash::{Hash, Hasher};
+                    let mut value_hasher = std::collections::hash_map::DefaultHasher::new();
+                    format!("{value:?}").hash(&mut value_hasher);
+                    (hash ^ vertex.0 as u64)
+                        .wrapping_mul(0x100000001b3)
+                        .wrapping_add(value_hasher.finish())
+                        .wrapping_mul(0x100000001b3)
+                });
+        let pass_count = self
+            .last_scc_pass_profile
+            .len()
+            .saturating_sub(saved_pass_profile_len);
+        let mut internal_changed_member_addresses = Vec::new();
+        let mut internal_changed_member_values = Vec::new();
+        let mut changed_member_reads = Vec::new();
+        for row in self.last_scc_member_profile[saved_member_profile_len..]
+            .iter()
+            .filter(|row| {
+                row.stable_id
+                    == cycle.iter().fold(0xcbf29ce484222325_u64, |hash, vertex| {
+                        (hash ^ vertex.0 as u64).wrapping_mul(0x100000001b3)
+                    })
+                    && row.changed
+            })
+        {
+            internal_changed_member_addresses.push(row.address.clone());
+            internal_changed_member_values.push((
+                row.address.clone(),
+                format!("{:?}", row.before_value),
+                format!("{:?}", row.after_value),
+            ));
+            changed_member_reads.push((row.address.clone(), row.read_trace.clone()));
+        }
+        self.last_scc_same_request_extra_pass
+            .push(SccSameRequestExtraPassRecord {
+                stable_id: cycle.iter().fold(0xcbf29ce484222325_u64, |hash, vertex| {
+                    (hash ^ vertex.0 as u64).wrapping_mul(0x100000001b3)
+                }),
+                member_count: cycle.len(),
+                evaluated_members: cycle.len(),
+                pass_count,
+                changed_member_count: changed_member_addresses.len(),
+                changed_member_addresses,
+                changed_member_values,
+                changed_member_reads,
+                internal_changed_member_count: internal_changed_member_addresses.len(),
+                internal_changed_member_addresses,
+                internal_changed_member_values,
+                before_state_fingerprint,
+                after_state_fingerprint,
+                max_abs_numeric_delta,
+                reason: if result.is_ok() {
+                    "completed_and_restored"
+                } else {
+                    "evaluation_error_and_restored"
+                },
+            });
+        for (vertex, value) in before_values {
+            self.graph.update_vertex_value(vertex, value.clone());
+            self.mirror_vertex_value_to_overlay(vertex, &value);
+        }
+        self.pending_iterative_redirty = saved_pending_iterative_redirty;
+        self.pending_iterative_state_refresh = saved_pending_iterative_state_refresh;
+        self.pending_iterative_scc_redirty = saved_pending_iterative_scc_redirty;
+        self.reusable_iterative_sccs = saved_reusable_iterative_sccs;
+        self.iterative_state_values = saved_iterative_state_values;
+        self.diagnostic_exact_scc_states = saved_exact_states;
+        self.last_recalc_telemetry = saved_recalc_telemetry;
+        self.last_scc_coordinate_index_build_ns = saved_index_build_ns;
+        self.last_scc_pass_profile.truncate(saved_pass_profile_len);
+        self.last_scc_member_profile
+            .truncate(saved_member_profile_len);
+        self.last_scc_iteration_trace
+            .truncate(saved_iteration_trace_len);
+        self.last_scc_collector_parity
+            .truncate(saved_collector_parity_len);
+        self.last_scc_early_termination
+            .truncate(saved_early_termination_len);
+    }
+
     fn diagnostic_vertex_address(&self, vertex: VertexId) -> String {
         if let Some(cell) = self.graph.get_cell_ref(vertex) {
             return format!(
@@ -4620,6 +4845,19 @@ where
                 .into_iter()
                 .collect::<FxHashSet<VertexId>>()
         });
+        if self.diagnostic_same_request_extra_pass_enabled
+            && let Some(cycle) = self
+                .pending_iterative_scc_redirty
+                .iter()
+                .max_by_key(|scc| scc.members.len())
+                .map(|scc| scc.members.clone())
+        {
+            self.diagnostic_same_request_extra_pass(&cycle);
+            #[cfg(not(target_arch = "wasm32"))]
+            if std::env::var_os("FZ_DIAGNOSTIC_SAME_REQUEST_EXTRA_PASS_TWICE").is_some() {
+                self.diagnostic_same_request_extra_pass(&cycle);
+            }
+        }
         let volatile_redirty_enabled = !self.diagnostic_disable_volatile_redirty;
         self.last_recalc_telemetry.volatile_vertices_redirtied = if volatile_redirty_enabled {
             self.graph.volatile_vertex_count()
@@ -26535,6 +26773,10 @@ where
             let mut record = SccExactReuseRecord {
                 stable_id: scc_stable_id,
                 frontier_member_count: frontier_indices.len(),
+                pre_eval_state_values_unchanged: false,
+                pre_eval_state_changed_member_count: 0,
+                pre_eval_state_changed_member_addresses: Vec::new(),
+                pre_eval_state_changed_member_values: Vec::new(),
                 static_remainder_member_count,
                 frontier_evaluations: 0,
                 frontier_validation_ns: 0,
@@ -26559,6 +26801,28 @@ where
                 record.frontier_evaluations = frontier_indices.len();
                 record.static_remainder_changed_count_on_previous_recalc =
                     previous.static_remainder_changed_count;
+                let pre_eval_changes = previous
+                    .values
+                    .iter()
+                    .zip(snapshot.iter())
+                    .enumerate()
+                    .filter(|(_, (previous, current))| previous != current)
+                    .map(|(index, (_, current))| (index, current.clone()))
+                    .collect::<Vec<_>>();
+                record.pre_eval_state_changed_member_count = pre_eval_changes.len();
+                record.pre_eval_state_values_unchanged = pre_eval_changes.is_empty();
+                for (index, current) in pre_eval_changes {
+                    let before = previous.values[index].clone();
+                    let address = self.diagnostic_vertex_address(members[index].vertex);
+                    record
+                        .pre_eval_state_changed_member_addresses
+                        .push(address.clone());
+                    record.pre_eval_state_changed_member_values.push((
+                        address,
+                        format!("{before:?}"),
+                        format!("{current:?}"),
+                    ));
+                }
                 if previous.members.as_ref()
                     != members
                         .iter()
@@ -26712,6 +26976,7 @@ where
                 if i < recordable {
                     collector.set_current(i as u32);
                 }
+                let before_value = last_value[i].clone();
                 let member_eval_started = crate::instant::FzInstant::now();
                 if self.scc_pass_profile_enabled {
                     self.lookup_index_cache.reset_counters();
@@ -26734,6 +26999,11 @@ where
                 if self.diagnostic_exact_scc_reuse_enabled {
                     latest_read_fingerprints[i] = read_counters.read_fingerprint;
                 }
+                let read_trace = if self.scc_pass_profile_enabled {
+                    collector.take_member_read_trace(i as u32)
+                } else {
+                    Vec::new()
+                };
                 let lookup_report = if self.scc_pass_profile_enabled {
                     self.lookup_index_cache.report()
                 } else {
@@ -26810,6 +27080,17 @@ where
                         lookup_misses: lookup_report.misses,
                         dynamic_source: self.graph.is_dynamic(m.vertex),
                         changed: changed[i],
+                        before_value: if changed[i] {
+                            before_value
+                        } else {
+                            LiteralValue::Empty
+                        },
+                        after_value: if changed[i] {
+                            last_value[i].clone()
+                        } else {
+                            LiteralValue::Empty
+                        },
+                        read_trace: if changed[i] { read_trace } else { Vec::new() },
                     });
                 }
             }};
@@ -26946,6 +27227,11 @@ where
                 let mut profile = SccPassProfileRecord {
                     stable_id: scc_stable_id,
                     iteration: passes,
+                    operator: if prev_pass.is_none() {
+                        "first_pass_no_prev_pass"
+                    } else {
+                        "iterative_pass_with_prev_pass"
+                    },
                     evaluated_members: pass_member_profiles.len(),
                     elapsed_ns: pass_started.elapsed().as_nanos(),
                     formula_eval_ns: 0,

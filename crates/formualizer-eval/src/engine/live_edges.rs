@@ -137,6 +137,7 @@ struct CollectorState {
     legacy_edges: FxHashSet<(u32, u32)>,
     legacy_origins: FxHashMap<(u32, u32), u16>,
     read_counters: FxHashMap<u32, LiveReadCounters>,
+    read_traces: FxHashMap<u32, Vec<String>>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -388,6 +389,13 @@ impl LiveEdgeCollector {
                     u64::from(col),
                 ],
             );
+            let trace = st.read_traces.entry(from).or_default();
+            if trace.len() < 64 {
+                trace.push(format!(
+                    "scalar sheet={sheet_id:?} row={row} col={col} origin={} target_member={to:?}",
+                    origin.label(),
+                ));
+            }
         }
         if let Some(to) = to {
             st.edges.insert((from, to));
@@ -466,6 +474,13 @@ impl LiveEdgeCollector {
                     u64::from(ec),
                 ],
             );
+            let trace = st.read_traces.entry(from).or_default();
+            if trace.len() < 64 {
+                trace.push(format!(
+                    "range sheet={sheet_id:?} rows={sr}:{er} cols={sc}:{ec} origin={}",
+                    origin.label(),
+                ));
+            }
         }
         if self.mode == MemberCoordinateIndexMode::Legacy
             || self.mode == MemberCoordinateIndexMode::Compare
@@ -558,6 +573,13 @@ impl LiveEdgeCollector {
                 fingerprint,
                 &[3, u64::from(origin.bit()), text_fingerprint(folded_name)],
             );
+            let trace = st.read_traces.entry(from).or_default();
+            if trace.len() < 64 {
+                trace.push(format!(
+                    "name key={folded_name} origin={} target_member={to:?}",
+                    origin.label(),
+                ));
+            }
         }
         if let Some(to) = to {
             st.edges.insert((from, to));
@@ -604,6 +626,17 @@ impl LiveEdgeCollector {
                 .lock()
                 .unwrap()
                 .read_counters
+                .entry(member_idx)
+                .or_default(),
+        )
+    }
+
+    pub fn take_member_read_trace(&self, member_idx: u32) -> Vec<String> {
+        std::mem::take(
+            self.state
+                .lock()
+                .unwrap()
+                .read_traces
                 .entry(member_idx)
                 .or_default(),
         )

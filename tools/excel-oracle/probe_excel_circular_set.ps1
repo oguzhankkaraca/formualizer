@@ -3,6 +3,9 @@ param(
     [string]$FormualizerBaselinePath = "C:\rust_engines\formualizer-v0.8.4\docs\issue-solutions\data\latest-upstream-heavy-baseline.json",
     [string]$FormualizerRuntimePath = "C:\rust_engines\formualizer-v0.8.4\docs\issue-solutions\data\fossil-runtime-live-scc-topology.json",
     [string]$OutputPath = "C:\rust_engines\formualizer-v0.8.4\docs\issue-solutions\data\excel-circular-set-oracle.json",
+    [string]$SeedInputSheet = "Inputs",
+    [string]$SeedInputAddress = "F7",
+    [double]$SeedInputValue = 300,
     [int]$TimingWarmRuns = 3
 )
 
@@ -76,6 +79,21 @@ function Wait-ExcelCalculation {
         $guard++
     }
     return [int]$Excel.CalculationState
+}
+
+function Set-SeedInput {
+    param([object]$Workbook)
+    $worksheet = $null
+    $cell = $null
+    try {
+        $worksheet = $Workbook.Worksheets.Item($SeedInputSheet)
+        $cell = $worksheet.Range($SeedInputAddress)
+        $cell.Value2 = $SeedInputValue
+    }
+    finally {
+        Release-ComObject $cell
+        Release-ComObject $worksheet
+    }
 }
 
 function New-OracleSession {
@@ -389,6 +407,7 @@ function Invoke-Intervention {
     $session = $null
     try {
         $session = New-OracleSession -SourcePath $SourcePath -CopyPath $copy -Iteration $true -MaxIterations 100 -MaxChange 0.001 -MultiThreaded $true
+        Set-SeedInput $session.workbook
         $beforeRebuild = Invoke-FullRebuild $session.excel
         $beforeSeeds = @(Get-CircularSeeds $session.workbook)
         $freeze = Freeze-FormulaGroup -Workbook $session.workbook -Group $Group
@@ -418,6 +437,7 @@ function Invoke-DependencyTracePhase {
     $session = $null
     try {
         $session = New-OracleSession -SourcePath $SourcePath -CopyPath $copy -Iteration $true -MaxIterations 100 -MaxChange 0.001 -MultiThreaded $true
+        Set-SeedInput $session.workbook
         $rebuild = Invoke-FullRebuild $session.excel
         $paths = @()
         foreach ($seed in $Seeds) {
@@ -438,6 +458,7 @@ function Invoke-SeedPhase {
     $session = $null
     try {
         $session = New-OracleSession -SourcePath $SourcePath -CopyPath $copy -Iteration $Iteration -MaxIterations 100 -MaxChange 0.001 -MultiThreaded $true
+        Set-SeedInput $session.workbook
         $rebuild = Invoke-FullRebuild $session.excel
         $seeds = @(Get-CircularSeeds $session.workbook)
         foreach ($seed in $seeds) { Add-FormualizerMembership -Seed $seed -FzEvidence $FzEvidence }
@@ -462,6 +483,7 @@ function Invoke-TimingCase {
     $session = $null
     try {
         $session = New-OracleSession -SourcePath $SourcePath -CopyPath $copy -Iteration $Iteration -MaxIterations 100 -MaxChange 0.001 -MultiThreaded $MultiThreaded
+        Set-SeedInput $session.workbook
         $baseline = Invoke-FullRebuild $session.excel
         $warm = @()
         for ($run = 1; $run -le $WarmRuns; $run++) {
@@ -552,6 +574,7 @@ try {
         schema                      = "formualizer.excel-circular-set-oracle/v1"
         generated_at_utc            = [DateTime]::UtcNow.ToString("o")
         workbook                    = $source
+        oracle_seed_input           = [ordered]@{ sheet = $SeedInputSheet; address = $SeedInputAddress; value = $SeedInputValue }
         original_excel_settings     = $originalSettings
         phase1_circular_seeds       = [ordered]@{ iteration_enabled = $seedEnabled; iteration_disabled = $seedDisabled }
         unique_seed_count           = $uniqueSeeds.Count

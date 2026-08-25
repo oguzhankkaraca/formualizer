@@ -1173,6 +1173,7 @@ impl PyWorkbook {
             let row = PyDict::new(py);
             row.set_item("stable_id", record.stable_id)?;
             row.set_item("iteration", record.iteration)?;
+            row.set_item("member_index", record.member_index)?;
             row.set_item("vertex_id", record.vertex_id)?;
             row.set_item("address", record.address)?;
             row.set_item("elapsed_ns", record.elapsed_ns)?;

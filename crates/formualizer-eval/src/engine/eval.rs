@@ -84,6 +84,7 @@ use formualizer_parse::{ASTNode, ASTNodeType, ExcelError, ExcelErrorKind};
 use rayon::ThreadPoolBuilder;
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::fmt::Write as _;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -1068,6 +1069,7 @@ pub struct Engine<R> {
     diagnostic_early_scc_states: FxHashMap<u64, DiagnosticEarlySccState>,
     diagnostic_exact_scc_reuse_enabled: bool,
     diagnostic_exact_scc_states: FxHashMap<u64, DiagnosticExactSccState>,
+    diagnostic_edge_dump_max_size: usize,
     diagnostic_same_request_extra_pass_enabled: bool,
     last_scc_same_request_extra_pass: Vec<SccSameRequestExtraPassRecord>,
     diagnostic_disable_iterative_redirty: bool,
@@ -1975,6 +1977,7 @@ pub struct SccPassProfileRecord {
 pub struct SccMemberPassProfileRecord {
     pub stable_id: u64,
     pub iteration: usize,
+    pub member_index: usize,
     pub vertex_id: u32,
     pub address: String,
     pub elapsed_ns: u128,
@@ -2328,6 +2331,87 @@ fn diagnostic_exact_scc_reuse_enabled() -> bool {
     #[cfg(not(target_arch = "wasm32"))]
     {
         std::env::var_os("FZ_DIAGNOSTIC_EXACT_SCC_REUSE").is_some()
+    }
+}
+
+fn diagnostic_edge_dump_path() -> Option<String> {
+    #[cfg(target_arch = "wasm32")]
+    {
+        None
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        std::env::var("FZ_DIAGNOSTIC_EDGE_DUMP_PATH").ok()
+    }
+}
+
+fn diagnostic_static_edge_dump_path() -> Option<String> {
+    #[cfg(target_arch = "wasm32")]
+    {
+        None
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        std::env::var("FZ_DIAGNOSTIC_STATIC_EDGE_DUMP_PATH").ok()
+    }
+}
+
+fn diagnostic_edge_dump_escape(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace('\t', " ")
+        .replace('\r', " ")
+        .replace('\n', " ")
+}
+
+fn diagnostic_formula_origin_mask(ast: &ASTNode) -> u16 {
+    fn visit(node: &ASTNode, mask: &mut u16) {
+        match &node.node_type {
+            ASTNodeType::Reference { reference, .. } => match reference {
+                ReferenceType::Cell { .. } => *mask |= LiveEdgeOrigin::DirectCell.bit(),
+                ReferenceType::Range { .. }
+                | ReferenceType::Cell3D { .. }
+                | ReferenceType::Range3D { .. } => *mask |= LiveEdgeOrigin::Range.bit(),
+                ReferenceType::NamedRange(_) => *mask |= LiveEdgeOrigin::NamedRange.bit(),
+                ReferenceType::Table(_) => *mask |= LiveEdgeOrigin::Table.bit(),
+                ReferenceType::External(_) => *mask |= LiveEdgeOrigin::Other.bit(),
+            },
+            ASTNodeType::Function { name, args } => {
+                let name = name.rsplit('.').next().unwrap_or(name).to_ascii_uppercase();
+                if matches!(name.as_str(), "INDIRECT" | "OFFSET") {
+                    *mask |= LiveEdgeOrigin::DynamicReference.bit();
+                }
+                for arg in args {
+                    visit(arg, mask);
+                }
+            }
+            ASTNodeType::Call { callee, args } => {
+                visit(callee, mask);
+                for arg in args {
+                    visit(arg, mask);
+                }
+            }
+            ASTNodeType::UnaryOp { expr, .. } => visit(expr, mask),
+            ASTNodeType::BinaryOp { left, right, .. } => {
+                visit(left, mask);
+                visit(right, mask);
+            }
+            ASTNodeType::Array(rows) => {
+                for row in rows {
+                    for item in row {
+                        visit(item, mask);
+                    }
+                }
+            }
+            ASTNodeType::Literal(_) | ASTNodeType::Omitted => {}
+        }
+    }
+    let mut mask = 0;
+    visit(ast, &mut mask);
+    if mask == 0 {
+        LiveEdgeOrigin::DirectCell.bit()
+    } else {
+        mask
     }
 }
 
@@ -3538,6 +3622,7 @@ where
             diagnostic_early_scc_states: FxHashMap::default(),
             diagnostic_exact_scc_reuse_enabled: diagnostic_exact_scc_reuse_enabled(),
             diagnostic_exact_scc_states: FxHashMap::default(),
+            diagnostic_edge_dump_max_size: 0,
             diagnostic_same_request_extra_pass_enabled: diagnostic_same_request_extra_pass_enabled(
             ),
             last_scc_same_request_extra_pass: Vec::new(),
@@ -3729,6 +3814,7 @@ where
             diagnostic_early_scc_states: FxHashMap::default(),
             diagnostic_exact_scc_reuse_enabled: diagnostic_exact_scc_reuse_enabled(),
             diagnostic_exact_scc_states: FxHashMap::default(),
+            diagnostic_edge_dump_max_size: 0,
             diagnostic_same_request_extra_pass_enabled: diagnostic_same_request_extra_pass_enabled(
             ),
             last_scc_same_request_extra_pass: Vec::new(),
@@ -4593,6 +4679,9 @@ where
         }
         if self.diagnostic_exact_scc_reuse_enabled {
             self.last_scc_exact_reuse.clear();
+        }
+        if diagnostic_edge_dump_path().is_some() {
+            self.diagnostic_edge_dump_max_size = 0;
         }
         if self.diagnostic_same_request_extra_pass_enabled {
             self.last_scc_same_request_extra_pass.clear();
@@ -6259,6 +6348,157 @@ where
         scheduled.dedup();
         let schedule = Scheduler::new(&self.graph)
             .create_schedule_with_virtual(&scheduled, &virtual_dependencies)?;
+        if let Some(path) = diagnostic_static_edge_dump_path()
+            && let Some(largest_cycle) = schedule.cycles.iter().max_by_key(|cycle| cycle.len())
+        {
+            let mut cycle_members = largest_cycle.clone();
+            cycle_members.sort_unstable_by_key(|vertex| vertex.0);
+            let member_index = cycle_members
+                .iter()
+                .enumerate()
+                .map(|(index, vertex)| (*vertex, index))
+                .collect::<FxHashMap<_, _>>();
+            let stable_id = cycle_members
+                .iter()
+                .fold(0xcbf29ce484222325_u64, |hash, vertex| {
+                    (hash ^ vertex.0 as u64).wrapping_mul(0x100000001b3)
+                });
+            let mut dump = String::new();
+            let _ = writeln!(
+                dump,
+                "FZ_SCC_GRAPH_V1\t{}\t{}",
+                stable_id,
+                cycle_members.len()
+            );
+            for (index, vertex) in cycle_members.iter().enumerate() {
+                let address = self.graph.get_cell_ref(*vertex).map_or_else(
+                    || {
+                        self.graph
+                            .name_key_for_vertex(*vertex)
+                            .unwrap_or_else(|| format!("vertex:{}", vertex.0))
+                    },
+                    |cell| {
+                        format!(
+                            "{}!{}{}",
+                            self.graph.sheet_name(cell.sheet_id),
+                            Self::col_to_letters(cell.coord.col() + 1),
+                            cell.coord.row() + 1,
+                        )
+                    },
+                );
+                let formula_debug = self
+                    .graph
+                    .get_formula(*vertex)
+                    .map(|formula| format!("{formula:?}"))
+                    .unwrap_or_default();
+                let _ = writeln!(
+                    dump,
+                    "M\t{}\t{}\t{}\t{}\t{}\t{}",
+                    index,
+                    vertex.0,
+                    diagnostic_edge_dump_escape(&address),
+                    self.graph.is_dynamic(*vertex),
+                    self.graph.is_volatile(*vertex),
+                    diagnostic_edge_dump_escape(&formula_debug)
+                );
+            }
+            let mut static_edges = Vec::new();
+            for (source, vertex) in cycle_members.iter().enumerate() {
+                let formula_origin = self
+                    .graph
+                    .get_formula(*vertex)
+                    .map(|formula| diagnostic_formula_origin_mask(&formula))
+                    .unwrap_or(LiveEdgeOrigin::DirectCell.bit());
+                if let Some(targets) = self.graph.dependencies_slice(*vertex) {
+                    for &target in targets {
+                        if let Some(&target_index) = member_index.get(&target) {
+                            let origin = if self.graph.get_cell_ref(target).is_none()
+                                && self.graph.name_key_for_vertex(target).is_some()
+                            {
+                                LiveEdgeOrigin::NamedRange.bit()
+                            } else {
+                                LiveEdgeOrigin::DirectCell.bit()
+                            };
+                            static_edges.push((source, target_index, origin));
+                        }
+                    }
+                }
+                if let Some(targets) = self.graph.name_cell_dependencies(*vertex) {
+                    for &target in targets {
+                        if let Some(&target_index) = member_index.get(&target) {
+                            static_edges.push((
+                                source,
+                                target_index,
+                                LiveEdgeOrigin::NamedRange.bit(),
+                            ));
+                        }
+                    }
+                }
+                if let Some(ranges) = self.graph.formula_range_dependencies(*vertex) {
+                    for range in ranges {
+                        let Some(range_sheet) = range
+                            .sheet
+                            .name()
+                            .and_then(|name| self.graph.sheet_id(name))
+                        else {
+                            continue;
+                        };
+                        let start_row = range.start_row.map_or(0, |bound| bound.index);
+                        let start_col = range.start_col.map_or(0, |bound| bound.index);
+                        let end_row = range.end_row.map_or(u32::MAX, |bound| bound.index);
+                        let end_col = range.end_col.map_or(u32::MAX, |bound| bound.index);
+                        for (target, target_vertex) in cycle_members.iter().enumerate() {
+                            let Some(target_cell) = self.graph.get_cell_ref(*target_vertex) else {
+                                continue;
+                            };
+                            if target_cell.sheet_id == range_sheet
+                                && target_cell.coord.row() >= start_row
+                                && target_cell.coord.row() <= end_row
+                                && target_cell.coord.col() >= start_col
+                                && target_cell.coord.col() <= end_col
+                            {
+                                static_edges.push((source, target, LiveEdgeOrigin::Range.bit()));
+                            }
+                        }
+                    }
+                }
+                if let Some(targets) = virtual_dependencies.get(vertex) {
+                    let virtual_origin_mask = formula_origin
+                        & (LiveEdgeOrigin::Range.bit()
+                            | LiveEdgeOrigin::NamedRange.bit()
+                            | LiveEdgeOrigin::Table.bit()
+                            | LiveEdgeOrigin::DynamicReference.bit()
+                            | LiveEdgeOrigin::Other.bit());
+                    let origin = if virtual_origin_mask == 0 {
+                        LiveEdgeOrigin::Range.bit()
+                    } else {
+                        virtual_origin_mask
+                    };
+                    for &target in targets {
+                        if let Some(&target_index) = member_index.get(&target) {
+                            static_edges.push((source, target_index, origin));
+                        }
+                    }
+                }
+            }
+            static_edges.sort_unstable();
+            let mut combined_static_edges = Vec::new();
+            for (source, target, origin) in static_edges {
+                if let Some((last_source, last_target, last_origin)) =
+                    combined_static_edges.last_mut()
+                    && *last_source == source
+                    && *last_target == target
+                {
+                    *last_origin |= origin;
+                } else {
+                    combined_static_edges.push((source, target, origin));
+                }
+            }
+            for (source, target, origin) in combined_static_edges {
+                let _ = writeln!(dump, "S\t{}\t{}\t{}", source, target, origin);
+            }
+            let _ = std::fs::write(path, dump);
+        }
         let mut components = schedule.cycles.clone();
         let cyclic_members = components
             .iter()
@@ -27171,6 +27411,7 @@ where
                     pass_member_profiles.push(SccMemberPassProfileRecord {
                         stable_id: scc_stable_id,
                         iteration: passes,
+                        member_index: i,
                         vertex_id: m.vertex.0,
                         address,
                         elapsed_ns: member_eval_ns,
@@ -27862,6 +28103,112 @@ where
                     d.record_cell(cell.sheet_id, cell.coord.row(), cell.coord.col());
                 }
             }
+        }
+
+        if let Some(path) = diagnostic_edge_dump_path()
+            && n >= self.diagnostic_edge_dump_max_size
+        {
+            let member_index = members
+                .iter()
+                .enumerate()
+                .map(|(index, member)| (member.vertex, index))
+                .collect::<FxHashMap<_, _>>();
+            let mut dump = String::new();
+            let _ = writeln!(dump, "FZ_SCC_GRAPH_V1\t{}\t{}", scc_stable_id, n);
+            for (index, member) in members.iter().enumerate() {
+                let address = member.cell.map_or_else(
+                    || {
+                        self.graph
+                            .name_key_for_vertex(member.vertex)
+                            .unwrap_or_else(|| format!("vertex:{}", member.vertex.0))
+                    },
+                    |cell| {
+                        format!(
+                            "{}!{}{}",
+                            self.graph.sheet_name(cell.sheet_id),
+                            Self::col_to_letters(cell.coord.col() + 1),
+                            cell.coord.row() + 1,
+                        )
+                    },
+                );
+                let formula_debug = self
+                    .graph
+                    .get_formula(member.vertex)
+                    .map(|formula| format!("{formula:?}"))
+                    .unwrap_or_default();
+                let _ = writeln!(
+                    dump,
+                    "M\t{}\t{}\t{}\t{}\t{}\t{}",
+                    index,
+                    member.vertex.0,
+                    diagnostic_edge_dump_escape(&address),
+                    self.graph.is_dynamic(member.vertex),
+                    self.graph.is_volatile(member.vertex),
+                    diagnostic_edge_dump_escape(&formula_debug)
+                );
+            }
+            let mut static_edges = Vec::new();
+            for (source, member) in members.iter().enumerate() {
+                if let Some(targets) = self.graph.dependencies_slice(member.vertex) {
+                    for &target_vertex in targets {
+                        if let Some(&target) = member_index.get(&target_vertex) {
+                            static_edges.push((source, target));
+                        }
+                    }
+                }
+                if let Some(targets) = self.graph.name_cell_dependencies(member.vertex) {
+                    for &target_vertex in targets {
+                        if let Some(&target) = member_index.get(&target_vertex) {
+                            static_edges.push((source, target));
+                        }
+                    }
+                }
+                if let Some(ranges) = self.graph.formula_range_dependencies(member.vertex) {
+                    for range in ranges {
+                        for (target, target_member) in members.iter().enumerate() {
+                            let Some(target_cell) = target_member.cell else {
+                                continue;
+                            };
+                            let Some(range_sheet) = range
+                                .sheet
+                                .name()
+                                .and_then(|name| self.graph.sheet_id(name))
+                            else {
+                                continue;
+                            };
+                            let start_row = range.start_row.map_or(0, |bound| bound.index);
+                            let start_col = range.start_col.map_or(0, |bound| bound.index);
+                            let end_row = range.end_row.map_or(u32::MAX, |bound| bound.index);
+                            let end_col = range.end_col.map_or(u32::MAX, |bound| bound.index);
+                            if target_cell.sheet_id != range_sheet
+                                || target_cell.coord.row() < start_row
+                                || target_cell.coord.row() > end_row
+                                || target_cell.coord.col() < start_col
+                                || target_cell.coord.col() > end_col
+                            {
+                                continue;
+                            }
+                            static_edges.push((source, target));
+                        }
+                    }
+                }
+            }
+            static_edges.sort_unstable();
+            static_edges.dedup();
+            for (source, target) in static_edges {
+                let _ = writeln!(dump, "S\t{}\t{}", source, target);
+            }
+            for (source, targets) in out_edges.iter().enumerate() {
+                for &target in targets {
+                    let origin_mask = out_edge_origins
+                        .as_ref()
+                        .and_then(|origins| origins[source].get(&target).copied())
+                        .unwrap_or_default();
+                    let _ = writeln!(dump, "R\t{}\t{}\t{}", source, target, origin_mask);
+                }
+            }
+            let _ = std::fs::write(path, dump);
+            self.diagnostic_edge_dump_max_size = n;
         }
 
         // Preserve final member values for structural-overlay recovery. Only

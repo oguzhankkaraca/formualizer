@@ -1,7 +1,12 @@
 {
     "schema":  "formualizer.excel-circular-set-oracle/v1",
-    "generated_at_utc":  "2026-08-25T10:39:27.0031288Z",
+    "generated_at_utc":  "2026-08-25T11:22:46.9887367Z",
     "workbook":  "C:\\Users\\OXK0A0A\\Downloads\\Fossil_EstimatingTemplate_2026-08_21_A.xlsx",
+    "oracle_seed_input":  {
+                              "sheet":  "Inputs",
+                              "address":  "F7",
+                              "value":  300
+                          },
     "original_excel_settings":  {
                                     "version":  "16.0",
                                     "build":  "20228",
@@ -543,19 +548,19 @@
                                             "warm_calculate":  [
                                                                    {
                                                                        "run":  1,
-                                                                       "elapsed_ms":  148.447,
+                                                                       "elapsed_ms":  148.142,
                                                                        "calculation_state":  0,
                                                                        "error":  null
                                                                    },
                                                                    {
                                                                        "run":  2,
-                                                                       "elapsed_ms":  83.709,
+                                                                       "elapsed_ms":  94.882,
                                                                        "calculation_state":  0,
                                                                        "error":  null
                                                                    },
                                                                    {
                                                                        "run":  3,
-                                                                       "elapsed_ms":  80.925,
+                                                                       "elapsed_ms":  93.654,
                                                                        "calculation_state":  0,
                                                                        "error":  null
                                                                    }
@@ -563,13 +568,13 @@
                                             "full_methods":  [
                                                                  {
                                                                      "method":  "CalculateFull",
-                                                                     "elapsed_ms":  124.455,
+                                                                     "elapsed_ms":  119.356,
                                                                      "calculation_state":  0,
                                                                      "error":  null
                                                                  },
                                                                  {
                                                                      "method":  "CalculateFullRebuild",
-                                                                     "elapsed_ms":  607.055,
+                                                                     "elapsed_ms":  608.054,
                                                                      "calculation_state":  0,
                                                                      "error":  null
                                                                  }
@@ -624,19 +629,19 @@
                                             "warm_calculate":  [
                                                                    {
                                                                        "run":  1,
-                                                                       "elapsed_ms":  340.405,
+                                                                       "elapsed_ms":  340.378,
                                                                        "calculation_state":  0,
                                                                        "error":  null
                                                                    },
                                                                    {
                                                                        "run":  2,
-                                                                       "elapsed_ms":  299.809,
+                                                                       "elapsed_ms":  291.339,
                                                                        "calculation_state":  0,
                                                                        "error":  null
                                                                    },
                                                                    {
                                                                        "run":  3,
-                                                                       "elapsed_ms":  299.939,
+                                                                       "elapsed_ms":  294.407,
                                                                        "calculation_state":  0,
                                                                        "error":  null
                                                                    }
@@ -644,13 +649,13 @@
                                             "full_methods":  [
                                                                  {
                                                                      "method":  "CalculateFull",
-                                                                     "elapsed_ms":  363.384,
+                                                                     "elapsed_ms":  360.447,
                                                                      "calculation_state":  0,
                                                                      "error":  null
                                                                  },
                                                                  {
                                                                      "method":  "CalculateFullRebuild",
-                                                                     "elapsed_ms":  827.586,
+                                                                     "elapsed_ms":  838.531,
                                                                      "calculation_state":  0,
                                                                      "error":  null
                                                                  }
@@ -705,19 +710,19 @@
                                             "warm_calculate":  [
                                                                    {
                                                                        "run":  1,
-                                                                       "elapsed_ms":  160.748,
+                                                                       "elapsed_ms":  135.188,
                                                                        "calculation_state":  0,
                                                                        "error":  null
                                                                    },
                                                                    {
                                                                        "run":  2,
-                                                                       "elapsed_ms":  106.671,
+                                                                       "elapsed_ms":  92.908,
                                                                        "calculation_state":  0,
                                                                        "error":  null
                                                                    },
                                                                    {
                                                                        "run":  3,
-                                                                       "elapsed_ms":  97.616,
+                                                                       "elapsed_ms":  87.776,
                                                                        "calculation_state":  0,
                                                                        "error":  null
                                                                    }
@@ -725,13 +730,13 @@
                                             "full_methods":  [
                                                                  {
                                                                      "method":  "CalculateFull",
-                                                                     "elapsed_ms":  126.269,
+                                                                     "elapsed_ms":  120.089,
                                                                      "calculation_state":  0,
                                                                      "error":  null
                                                                  },
                                                                  {
                                                                      "method":  "CalculateFullRebuild",
-                                                                     "elapsed_ms":  587.411,
+                                                                     "elapsed_ms":  605.411,
                                                                      "calculation_state":  0,
                                                                      "error":  null
                                                                  }
@@ -786,19 +791,19 @@
                                             "warm_calculate":  [
                                                                    {
                                                                        "run":  1,
-                                                                       "elapsed_ms":  374.249,
+                                                                       "elapsed_ms":  324.854,
                                                                        "calculation_state":  0,
                                                                        "error":  null
                                                                    },
                                                                    {
                                                                        "run":  2,
-                                                                       "elapsed_ms":  298.097,
+                                                                       "elapsed_ms":  282.665,
                                                                        "calculation_state":  0,
                                                                        "error":  null
                                                                    },
                                                                    {
                                                                        "run":  3,
-                                                                       "elapsed_ms":  307.098,
+                                                                       "elapsed_ms":  294.079,
                                                                        "calculation_state":  0,
                                                                        "error":  null
                                                                    }
@@ -806,13 +811,13 @@
                                             "full_methods":  [
                                                                  {
                                                                      "method":  "CalculateFull",
-                                                                     "elapsed_ms":  368.599,
+                                                                     "elapsed_ms":  337.769,
                                                                      "calculation_state":  0,
                                                                      "error":  null
                                                                  },
                                                                  {
                                                                      "method":  "CalculateFullRebuild",
-                                                                     "elapsed_ms":  925.238,
+                                                                     "elapsed_ms":  800.886,
                                                                      "calculation_state":  0,
                                                                      "error":  null
                                                                  }

@@ -1579,6 +1579,12 @@ impl DependencyGraph {
         self.formula_to_range_deps.get(&vertex).map(Vec::as_slice)
     }
 
+    pub(crate) fn name_cell_dependencies(&self, vertex: VertexId) -> Option<&[VertexId]> {
+        self.name_to_cell_dependencies
+            .get(&vertex)
+            .map(Vec::as_slice)
+    }
+
     pub(crate) fn spill_anchors_in_region(
         &self,
         sheet_id: SheetId,

@@ -1,0 +1,138 @@
+{
+  "schema": "formualizer.latest-upstream-heavy-comparison/v1",
+  "branch": "investigation/fossil-upstream-integration",
+  "upstream_main": "60c0afad109de3ed05b72d38a9008c17c755fa85",
+  "previous_investigation_reference": "352b0ce747ed3dc2beebacf938dc792d5bcc4c28",
+  "workbook": "Fossil_EstimatingTemplate_2026-08_21_A.xlsx",
+  "input": "Inputs!F7=300",
+  "configuration": {
+    "cycle_detection": "runtime",
+    "cycle_policy": "iterate",
+    "max_iterations": 100,
+    "max_change": 0.001,
+    "parallel_enabled": true
+  },
+  "correctness": {
+    "formualizer_formula_vertices_previous_latest": [94966, 94966],
+    "common_formula_addresses_previous_latest": [94932, 94932],
+    "strict_output_differences_previous_latest": [17219, 17218],
+    "material_or_type_differences_previous_latest": [12138, 12137],
+    "excel_numeric_formualizer_value_error_previous_latest": [543, 262],
+    "excel_numeric_formualizer_ref_error_previous_latest": [5165, 5186],
+    "excel_numeric_formualizer_nimpl_error_previous_latest": [942, 942],
+    "other_material_or_type_differences_previous_latest": [5488, 5747],
+    "note": "Other includes numeric precision/material mismatches and other error/type categories such as N/A, NAME, DIV, text, and CIRC."
+  },
+  "z_cells": {
+    "excel": {
+      "CashFlow Engine!Z33": "number:0.78",
+      "CashFlow Engine!Z84": "number:0.12999999999999998",
+      "CashFlow Engine!Z85": "number:0.55100000000000016",
+      "CashFlow Engine!Z86": "number:0.09",
+      "CashFlow Engine!Z93": "number:0.63000000000000023",
+      "CashFlow Engine!Z94": "number:0.63000000000000023",
+      "CashFlow Engine!Z95": "number:0.63000000000000023",
+      "CashFlow Engine!Z96": "number:0.63000000000000023",
+      "CashFlow Engine!Z97": "number:0.063",
+      "CashFlow Engine!Z109": "number:2.0500000000000003",
+      "CashFlow Engine!Z110": "number:1.6800000000000004"
+    },
+    "formualizer_latest": {
+      "CashFlow Engine!Z33": {"type": "Error", "kind": "Value"},
+      "CashFlow Engine!Z84": {"type": "Error", "kind": "Value"},
+      "CashFlow Engine!Z85": {"type": "Error", "kind": "Value"},
+      "CashFlow Engine!Z86": {"type": "Error", "kind": "Value"},
+      "CashFlow Engine!Z93": {"type": "Error", "kind": "Value"},
+      "CashFlow Engine!Z94": {"type": "Error", "kind": "Value"},
+      "CashFlow Engine!Z95": {"type": "Error", "kind": "Value"},
+      "CashFlow Engine!Z96": {"type": "Error", "kind": "Value"},
+      "CashFlow Engine!Z97": {"type": "Error", "kind": "Value"},
+      "CashFlow Engine!Z109": {"type": "Error", "kind": "Value"},
+      "CashFlow Engine!Z110": {"type": "Error", "kind": "Value"}
+    }
+  },
+  "scc_state": {
+    "cyclic_scc_count_previous_latest": [84, 84],
+    "largest_static_scc_previous_latest": [4829, 4829],
+    "main_runtime_live_scc_previous_latest": [4829, 4829],
+    "main_runtime_live_members_previous_latest": [4139, 4139],
+    "volatile_members_previous_latest": [270, 270],
+    "dynamic_members_previous_latest": [270, 270],
+    "volatile_dynamic_overlap_previous_latest": [270, 270],
+    "live_edge_fingerprint_previous_latest": [1142813687581787051, 1142813687581787051],
+    "no_op_scc_tasks_previous_latest": [84, 84],
+    "no_op_scc_member_evaluations_previous_latest": [14802, 14802],
+    "no_op_dirty_vertices_previous_latest": [20710, 20710],
+    "no_op_volatile_redirty_seeds_previous_latest": [1212, 1212],
+    "no_op_iterative_redirty_members_previous_latest": [4829, 4829],
+    "no_op_iterative_state_values_previous_latest": [15132, 15132]
+  },
+  "performance_ms": {
+    "previous_reference": {
+      "initial_indexed_median": 31080.734,
+      "f7_indexed_median": 12066.703,
+      "no_op_indexed_median": 11309.44,
+      "same_value_indexed_median": 12311.027
+    },
+    "latest": {
+      "initial": 33001.07,
+      "f7_edit": 12917.024,
+      "no_op_values": [12976.028, 12628.834, 13182.557, 11976.188, 11860.221],
+      "no_op_median": 12628.834,
+      "same_value_edit": 13042.917
+    },
+    "delta_percent_vs_previous_indexed_median": {
+      "initial": 6.18,
+      "f7_edit": 7.05,
+      "no_op_median": 11.67,
+      "same_value_edit": 5.94
+    }
+  },
+  "latest_phase_metrics": {
+    "initial": {
+      "passes": 4,
+      "scc_member_evaluations": 58700,
+      "scalar_reads": 127220,
+      "range_reads": 955268,
+      "range_cells": 795795357,
+      "named_reads": 756989,
+      "internal_target_events": 241305502,
+      "collector_ms": 2738.6341,
+      "index_build_ms": 0.2491
+    },
+    "f7_edit": {
+      "passes": 2,
+      "scc_member_evaluations": 28952,
+      "scalar_reads": 63666,
+      "range_reads": 477678,
+      "range_cells": 397903718,
+      "named_reads": 378516,
+      "internal_target_events": 120652254,
+      "collector_ms": 1364.9847,
+      "index_build_ms": 0.2379
+    },
+    "no_op_median": {
+      "passes": 2,
+      "scc_member_evaluations": 14802,
+      "scalar_reads": 63666,
+      "range_reads": 477678,
+      "range_cells": 397903718,
+      "named_reads": 378516,
+      "internal_target_events": 120652254,
+      "collector_ms": 1337.3735,
+      "index_build_ms": 0.1288
+    },
+    "same_value_edit": {
+      "passes": 2,
+      "scc_member_evaluations": 28688,
+      "scalar_reads": 63666,
+      "range_reads": 477678,
+      "range_cells": 397903718,
+      "named_reads": 378516,
+      "internal_target_events": 120652254,
+      "collector_ms": 1428.4885,
+      "index_build_ms": 0.3263
+    }
+  },
+  "verdict": "Latest upstream did not materially alter Heavy SCC topology, classification, or iterative-redirty workload. Correctness differences improved by one strict/material common address, while F7 and true no-op performance regressed versus the previous indexed medians."
+}

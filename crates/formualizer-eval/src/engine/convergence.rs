@@ -73,6 +73,42 @@ fn numeric_serial(v: &LiteralValue, date_system: DateSystem) -> Option<f64> {
     }
 }
 
+/// Canonical spreadsheet-semantic equality. Error message/context fields are
+/// diagnostic metadata; error kind remains semantic. Reference identity and
+/// resolved targets are compared by the live-edge/read-target diagnostics.
+pub(crate) fn values_semantically_equal(
+    left: &LiteralValue,
+    right: &LiteralValue,
+    date_system: DateSystem,
+) -> bool {
+    if let (Some(left), Some(right)) = (
+        numeric_serial(left, date_system),
+        numeric_serial(right, date_system),
+    ) {
+        return if left.is_nan() || right.is_nan() {
+            left.to_bits() == right.to_bits()
+        } else {
+            left == right
+        };
+    }
+    match (left, right) {
+        (LiteralValue::Boolean(left), LiteralValue::Boolean(right)) => left == right,
+        (LiteralValue::Text(left), LiteralValue::Text(right)) => left == right,
+        (LiteralValue::Empty, LiteralValue::Empty) => true,
+        (LiteralValue::Error(left), LiteralValue::Error(right)) => left.kind == right.kind,
+        (LiteralValue::Array(left), LiteralValue::Array(right)) => {
+            left.len() == right.len()
+                && left.iter().zip(right.iter()).all(|(left_row, right_row)| {
+                    left_row.len() == right_row.len()
+                        && left_row.iter().zip(right_row.iter()).all(|(left, right)| {
+                            values_semantically_equal(left, right, date_system)
+                        })
+                })
+        }
+        _ => false,
+    }
+}
+
 /// Spec-§6 convergence test for one member: `prev` is the pass-*N−1* value,
 /// `cur` the pass-*N* value.
 pub(crate) fn values_converged(
@@ -277,6 +313,29 @@ mod tests {
         let na = LiteralValue::Error(ExcelError::new(ExcelErrorKind::Na));
         assert!(conv(&div, &div2).converged, "same kind, message ignored");
         assert!(!conv(&div, &na).converged);
+    }
+
+    #[test]
+    fn canonical_semantics_ignore_error_metadata_but_keep_kind() {
+        let value = LiteralValue::Error(ExcelError::new(ExcelErrorKind::Value));
+        let value_with_metadata = LiteralValue::Error(
+            ExcelError::new(ExcelErrorKind::Value).with_message("diagnostic detail"),
+        );
+        let ref_error = LiteralValue::Error(ExcelError::new(ExcelErrorKind::Ref));
+        assert!(values_semantically_equal(&value, &value_with_metadata, DS));
+        assert!(!values_semantically_equal(&value, &ref_error, DS));
+    }
+
+    #[test]
+    fn canonical_arrays_require_exact_shape_and_element_semantics() {
+        let value = LiteralValue::Array(vec![vec![LiteralValue::Number(1.0)]]);
+        let same = LiteralValue::Array(vec![vec![LiteralValue::Number(1.0)]]);
+        let different_shape = LiteralValue::Array(vec![
+            vec![LiteralValue::Number(1.0)],
+            vec![LiteralValue::Number(2.0)],
+        ]);
+        assert!(values_semantically_equal(&value, &same, DS));
+        assert!(!values_semantically_equal(&value, &different_shape, DS));
     }
 
     #[test]

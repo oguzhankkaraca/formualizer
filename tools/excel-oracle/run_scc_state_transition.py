@@ -9,7 +9,6 @@ from typing import Any
 
 os.environ["FZ_TRACE_SCC_PASS_PROFILE"] = "1"
 os.environ["FZ_TRACE_SCC_ITERATIONS"] = "1"
-os.environ["FZ_DIAGNOSTIC_EXACT_SCC_REUSE"] = "1"
 os.environ["FZ_DIAGNOSTIC_SAME_REQUEST_EXTRA_PASS"] = "1"
 os.environ["FZ_DIAGNOSTIC_SAME_REQUEST_EXTRA_PASS_TWICE"] = "1"
 
@@ -120,6 +119,7 @@ def changed_member_rows(workbook: Any) -> list[dict[str, Any]]:
             "iteration": row["iteration"],
             "address": row["address"],
             "dynamic_source": row["dynamic_source"],
+            "canonical_changed": row["canonical_changed"],
             "before_value": json_value(row["before_value"]),
             "after_value": json_value(row["after_value"]),
             "read_trace": row["read_trace"],
@@ -147,6 +147,8 @@ def pass_summary(workbook: Any) -> list[dict[str, Any]]:
                 "internal_target_events",
                 "changed_member_addresses",
                 "static_changed_member_addresses",
+                "canonical_changed_member_addresses",
+                "static_canonical_changed_member_addresses",
             ]
         }
         for row in workbook.last_scc_pass_profile()

@@ -1,0 +1,315 @@
+{
+  "schema": "formualizer.canonical-retained-workspace-probe/v1",
+  "workbook": "Fossil_EstimatingTemplate_2026-08_21_A.xlsx",
+  "input": "Inputs!F7=300",
+  "modes": {
+    "normal": {
+      "mode": "normal",
+      "phases": [
+        {
+          "label": "initial",
+          "wall_ms": 36711.698,
+          "formula_output_count": 94966,
+          "formula_output_sha256": "811cf6cb324559ef0d7a8ac1794c54beaad03afbbccf74e3a4bbbe67d6c73036",
+          "scc_tasks_evaluated": 143,
+          "scc_member_evaluations": 58700,
+          "exact_reuse": []
+        },
+        {
+          "label": "f7_edit",
+          "wall_ms": 13153.727,
+          "formula_output_count": 94966,
+          "formula_output_sha256": "c69041a5b0c9b395c74cbe2f3d77fc3a646b9ad51bd40445682ac3a96555494a",
+          "scc_tasks_evaluated": 137,
+          "scc_member_evaluations": 28952,
+          "exact_reuse": []
+        },
+        {
+          "label": "noop",
+          "wall_ms": 14731.445,
+          "formula_output_count": 94966,
+          "formula_output_sha256": "c69041a5b0c9b395c74cbe2f3d77fc3a646b9ad51bd40445682ac3a96555494a",
+          "scc_tasks_evaluated": 84,
+          "scc_member_evaluations": 14802,
+          "exact_reuse": []
+        }
+      ]
+    },
+    "canonical": {
+      "mode": "canonical",
+      "phases": [
+        {
+          "label": "initial",
+          "wall_ms": 36987.145,
+          "formula_output_count": 94966,
+          "formula_output_sha256": "811cf6cb324559ef0d7a8ac1794c54beaad03afbbccf74e3a4bbbe67d6c73036",
+          "scc_tasks_evaluated": 143,
+          "scc_member_evaluations": 58700,
+          "exact_reuse": [
+            {
+              "stable_id": 1321560910633541638,
+              "frontier_member_count": 270,
+              "pre_eval_state_values_unchanged": false,
+              "pre_eval_state_changed_member_count": 0,
+              "pre_eval_state_semantic_values_unchanged": false,
+              "pre_eval_state_semantic_changed_member_count": 0,
+              "pre_eval_state_changed_member_addresses": [],
+              "pre_eval_state_changed_member_values": [],
+              "static_remainder_member_count": 4559,
+              "frontier_evaluations": 0,
+              "frontier_validation_ns": 0,
+              "frontier_values_unchanged": false,
+              "frontier_raw_values_unchanged": false,
+              "dynamic_targets_unchanged": false,
+              "frontier_shapes_unchanged": false,
+              "live_edge_identities_unchanged": false,
+              "frontier_origin_masks_unchanged": false,
+              "boundary_revisions_unchanged": false,
+              "semantic_revisions_unchanged": false,
+              "static_remainder_fixed_point_witness": false,
+              "static_remainder_changed_count_on_previous_recalc": 0,
+              "static_remainder_canonical_changed_count_on_previous_recalc": 0,
+              "accepted": false,
+              "reason": "no_prior_state",
+              "avoided_member_evaluations": 0
+            }
+          ]
+        },
+        {
+          "label": "f7_edit",
+          "wall_ms": 14081.047,
+          "formula_output_count": 94966,
+          "formula_output_sha256": "c69041a5b0c9b395c74cbe2f3d77fc3a646b9ad51bd40445682ac3a96555494a",
+          "scc_tasks_evaluated": 137,
+          "scc_member_evaluations": 28952,
+          "exact_reuse": [
+            {
+              "stable_id": 1321560910633541638,
+              "frontier_member_count": 269,
+              "pre_eval_state_values_unchanged": false,
+              "pre_eval_state_changed_member_count": 13,
+              "pre_eval_state_semantic_values_unchanged": false,
+              "pre_eval_state_semantic_changed_member_count": 1,
+              "pre_eval_state_changed_member_addresses": [
+                "CashFlow Inputs!J55",
+                "CashFlow Inputs!K55",
+                "CashFlow Engine!Z33",
+                "CashFlow Engine!Z84",
+                "CashFlow Engine!Z85",
+                "CashFlow Engine!Z86",
+                "CashFlow Engine!Z93",
+                "CashFlow Engine!Z94",
+                "CashFlow Engine!Z95",
+                "CashFlow Engine!Z96",
+                "CashFlow Engine!Z97",
+                "CashFlow Engine!Z109",
+                "CashFlow Engine!Z110"
+              ],
+              "pre_eval_state_changed_member_values": [
+                [
+                  "CashFlow Inputs!J55",
+                  "Error(ExcelError { kind: Circ, message: Some(\"Circular dependency detected\"), context: None, extra: None })",
+                  "Error(ExcelError { kind: Spill, message: None, context: None, extra: None })"
+                ],
+                [
+                  "CashFlow Inputs!K55",
+                  "Error(ExcelError { kind: Name, message: Some(\"Unknown function: _xlfn.MAP\"), context: None, extra: None })",
+                  "Error(ExcelError { kind: Name, message: None, context: None, extra: None })"
+                ],
+                [
+                  "CashFlow Engine!Z33",
+                  "Error(ExcelError { kind: Value, message: Some(\"Cannot convert to number (strict)\"), context: None, extra: None })",
+                  "Error(ExcelError { kind: Value, message: None, context: None, extra: None })"
+                ],
+                [
+                  "CashFlow Engine!Z84",
+                  "Error(ExcelError { kind: Value, message: Some(\"Cannot convert to number (strict)\"), context: None, extra: None })",
+                  "Error(ExcelError { kind: Value, message: None, context: None, extra: None })"
+                ],
+                [
+                  "CashFlow Engine!Z85",
+                  "Error(ExcelError { kind: Value, message: Some(\"Cannot convert to number (strict)\"), context: None, extra: None })",
+                  "Error(ExcelError { kind: Value, message: None, context: None, extra: None })"
+                ],
+                [
+                  "CashFlow Engine!Z86",
+                  "Error(ExcelError { kind: Value, message: Some(\"Cannot convert to number (strict)\"), context: None, extra: None })",
+                  "Error(ExcelError { kind: Value, message: None, context: None, extra: None })"
+                ],
+                [
+                  "CashFlow Engine!Z93",
+                  "Error(ExcelError { kind: Value, message: Some(\"Cannot convert to number (strict)\"), context: None, extra: None })",
+                  "Error(ExcelError { kind: Value, message: None, context: None, extra: None })"
+                ],
+                [
+                  "CashFlow Engine!Z94",
+                  "Error(ExcelError { kind: Value, message: Some(\"Cannot convert to number (strict)\"), context: None, extra: None })",
+                  "Error(ExcelError { kind: Value, message: None, context: None, extra: None })"
+                ],
+                [
+                  "CashFlow Engine!Z95",
+                  "Error(ExcelError { kind: Value, message: Some(\"Cannot convert to number (strict)\"), context: None, extra: None })",
+                  "Error(ExcelError { kind: Value, message: None, context: None, extra: None })"
+                ],
+                [
+                  "CashFlow Engine!Z96",
+                  "Error(ExcelError { kind: Value, message: Some(\"Cannot convert to number (strict)\"), context: None, extra: None })",
+                  "Error(ExcelError { kind: Value, message: None, context: None, extra: None })"
+                ],
+                [
+                  "CashFlow Engine!Z97",
+                  "Error(ExcelError { kind: Value, message: Some(\"Cannot convert to number (strict)\"), context: None, extra: None })",
+                  "Error(ExcelError { kind: Value, message: None, context: None, extra: None })"
+                ],
+                [
+                  "CashFlow Engine!Z109",
+                  "Error(ExcelError { kind: Value, message: Some(\"Cannot convert to number (strict)\"), context: None, extra: None })",
+                  "Error(ExcelError { kind: Value, message: None, context: None, extra: None })"
+                ],
+                [
+                  "CashFlow Engine!Z110",
+                  "Error(ExcelError { kind: Value, message: Some(\"Cannot convert to number (strict)\"), context: None, extra: None })",
+                  "Error(ExcelError { kind: Value, message: None, context: None, extra: None })"
+                ]
+              ],
+              "static_remainder_member_count": 4559,
+              "frontier_evaluations": 269,
+              "frontier_validation_ns": 0,
+              "frontier_values_unchanged": false,
+              "frontier_raw_values_unchanged": false,
+              "dynamic_targets_unchanged": false,
+              "frontier_shapes_unchanged": false,
+              "live_edge_identities_unchanged": false,
+              "frontier_origin_masks_unchanged": false,
+              "boundary_revisions_unchanged": false,
+              "semantic_revisions_unchanged": true,
+              "static_remainder_fixed_point_witness": false,
+              "static_remainder_changed_count_on_previous_recalc": 4559,
+              "static_remainder_canonical_changed_count_on_previous_recalc": 4559,
+              "accepted": false,
+              "reason": "boundary_revision_changed",
+              "avoided_member_evaluations": 0
+            }
+          ]
+        },
+        {
+          "label": "noop",
+          "wall_ms": 631.342,
+          "formula_output_count": 94966,
+          "formula_output_sha256": "c69041a5b0c9b395c74cbe2f3d77fc3a646b9ad51bd40445682ac3a96555494a",
+          "scc_tasks_evaluated": 1,
+          "scc_member_evaluations": 264,
+          "exact_reuse": [
+            {
+              "stable_id": 1321560910633541638,
+              "frontier_member_count": 269,
+              "pre_eval_state_values_unchanged": false,
+              "pre_eval_state_changed_member_count": 13,
+              "pre_eval_state_semantic_values_unchanged": true,
+              "pre_eval_state_semantic_changed_member_count": 0,
+              "pre_eval_state_changed_member_addresses": [
+                "CashFlow Inputs!J55",
+                "CashFlow Inputs!K55",
+                "CashFlow Engine!Z33",
+                "CashFlow Engine!Z84",
+                "CashFlow Engine!Z85",
+                "CashFlow Engine!Z86",
+                "CashFlow Engine!Z93",
+                "CashFlow Engine!Z94",
+                "CashFlow Engine!Z95",
+                "CashFlow Engine!Z96",
+                "CashFlow Engine!Z97",
+                "CashFlow Engine!Z109",
+                "CashFlow Engine!Z110"
+              ],
+              "pre_eval_state_changed_member_values": [
+                [
+                  "CashFlow Inputs!J55",
+                  "Error(ExcelError { kind: Circ, message: Some(\"Circular dependency detected\"), context: None, extra: None })",
+                  "Error(ExcelError { kind: Circ, message: None, context: None, extra: None })"
+                ],
+                [
+                  "CashFlow Inputs!K55",
+                  "Error(ExcelError { kind: Name, message: Some(\"Unknown function: _xlfn.MAP\"), context: None, extra: None })",
+                  "Error(ExcelError { kind: Name, message: None, context: None, extra: None })"
+                ],
+                [
+                  "CashFlow Engine!Z33",
+                  "Error(ExcelError { kind: Value, message: Some(\"Cannot convert to number (strict)\"), context: None, extra: None })",
+                  "Error(ExcelError { kind: Value, message: None, context: None, extra: None })"
+                ],
+                [
+                  "CashFlow Engine!Z84",
+                  "Error(ExcelError { kind: Value, message: Some(\"Cannot convert to number (strict)\"), context: None, extra: None })",
+                  "Error(ExcelError { kind: Value, message: None, context: None, extra: None })"
+                ],
+                [
+                  "CashFlow Engine!Z85",
+                  "Error(ExcelError { kind: Value, message: Some(\"Cannot convert to number (strict)\"), context: None, extra: None })",
+                  "Error(ExcelError { kind: Value, message: None, context: None, extra: None })"
+                ],
+                [
+                  "CashFlow Engine!Z86",
+                  "Error(ExcelError { kind: Value, message: Some(\"Cannot convert to number (strict)\"), context: None, extra: None })",
+                  "Error(ExcelError { kind: Value, message: None, context: None, extra: None })"
+                ],
+                [
+                  "CashFlow Engine!Z93",
+                  "Error(ExcelError { kind: Value, message: Some(\"Cannot convert to number (strict)\"), context: None, extra: None })",
+                  "Error(ExcelError { kind: Value, message: None, context: None, extra: None })"
+                ],
+                [
+                  "CashFlow Engine!Z94",
+                  "Error(ExcelError { kind: Value, message: Some(\"Cannot convert to number (strict)\"), context: None, extra: None })",
+                  "Error(ExcelError { kind: Value, message: None, context: None, extra: None })"
+                ],
+                [
+                  "CashFlow Engine!Z95",
+                  "Error(ExcelError { kind: Value, message: Some(\"Cannot convert to number (strict)\"), context: None, extra: None })",
+                  "Error(ExcelError { kind: Value, message: None, context: None, extra: None })"
+                ],
+                [
+                  "CashFlow Engine!Z96",
+                  "Error(ExcelError { kind: Value, message: Some(\"Cannot convert to number (strict)\"), context: None, extra: None })",
+                  "Error(ExcelError { kind: Value, message: None, context: None, extra: None })"
+                ],
+                [
+                  "CashFlow Engine!Z97",
+                  "Error(ExcelError { kind: Value, message: Some(\"Cannot convert to number (strict)\"), context: None, extra: None })",
+                  "Error(ExcelError { kind: Value, message: None, context: None, extra: None })"
+                ],
+                [
+                  "CashFlow Engine!Z109",
+                  "Error(ExcelError { kind: Value, message: Some(\"Cannot convert to number (strict)\"), context: None, extra: None })",
+                  "Error(ExcelError { kind: Value, message: None, context: None, extra: None })"
+                ],
+                [
+                  "CashFlow Engine!Z110",
+                  "Error(ExcelError { kind: Value, message: Some(\"Cannot convert to number (strict)\"), context: None, extra: None })",
+                  "Error(ExcelError { kind: Value, message: None, context: None, extra: None })"
+                ]
+              ],
+              "static_remainder_member_count": 4559,
+              "frontier_evaluations": 269,
+              "frontier_validation_ns": 22872200,
+              "frontier_values_unchanged": true,
+              "frontier_raw_values_unchanged": true,
+              "dynamic_targets_unchanged": true,
+              "frontier_shapes_unchanged": true,
+              "live_edge_identities_unchanged": true,
+              "frontier_origin_masks_unchanged": false,
+              "boundary_revisions_unchanged": true,
+              "semantic_revisions_unchanged": true,
+              "static_remainder_fixed_point_witness": true,
+              "static_remainder_changed_count_on_previous_recalc": 11,
+              "static_remainder_canonical_changed_count_on_previous_recalc": 0,
+              "accepted": true,
+              "reason": "exact_state_reuse",
+              "avoided_member_evaluations": 4828
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

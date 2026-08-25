@@ -1964,6 +1964,8 @@ pub struct SccPassProfileRecord {
     pub dynamic_source_read_events: u64,
     pub changed_member_addresses: Vec<String>,
     pub static_changed_member_addresses: Vec<String>,
+    pub canonical_changed_member_addresses: Vec<String>,
+    pub static_canonical_changed_member_addresses: Vec<String>,
     pub dirty_propagation_visits: u64,
     pub parallel_enabled: bool,
 }
@@ -1992,6 +1994,7 @@ pub struct SccMemberPassProfileRecord {
     pub before_value: LiteralValue,
     pub after_value: LiteralValue,
     pub read_trace: Vec<String>,
+    pub canonical_changed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2060,6 +2063,7 @@ struct DiagnosticExactSccState {
     deterministic_mode: crate::engine::DeterministicMode,
     full_state_exactly_stable: bool,
     static_remainder_changed_count: usize,
+    static_remainder_canonical_changed_count: usize,
     context_safe: bool,
 }
 
@@ -2070,12 +2074,15 @@ pub struct SccExactReuseRecord {
     pub frontier_member_count: usize,
     pub pre_eval_state_values_unchanged: bool,
     pub pre_eval_state_changed_member_count: usize,
+    pub pre_eval_state_semantic_values_unchanged: bool,
+    pub pre_eval_state_semantic_changed_member_count: usize,
     pub pre_eval_state_changed_member_addresses: Vec<String>,
     pub pre_eval_state_changed_member_values: Vec<(String, String, String)>,
     pub static_remainder_member_count: usize,
     pub frontier_evaluations: usize,
     pub frontier_validation_ns: u128,
     pub frontier_values_unchanged: bool,
+    pub frontier_raw_values_unchanged: bool,
     pub dynamic_targets_unchanged: bool,
     pub frontier_shapes_unchanged: bool,
     pub live_edge_identities_unchanged: bool,
@@ -2084,6 +2091,7 @@ pub struct SccExactReuseRecord {
     pub semantic_revisions_unchanged: bool,
     pub static_remainder_fixed_point_witness: bool,
     pub static_remainder_changed_count_on_previous_recalc: usize,
+    pub static_remainder_canonical_changed_count_on_previous_recalc: usize,
     pub accepted: bool,
     pub reason: &'static str,
     pub avoided_member_evaluations: usize,
@@ -2102,6 +2110,8 @@ pub struct SccSameRequestExtraPassRecord {
     pub changed_member_reads: Vec<(String, Vec<String>)>,
     pub internal_changed_member_count: usize,
     pub internal_changed_member_addresses: Vec<String>,
+    pub internal_canonical_changed_member_count: usize,
+    pub internal_canonical_changed_member_addresses: Vec<String>,
     pub internal_changed_member_values: Vec<(String, String, String)>,
     pub before_state_fingerprint: u64,
     pub after_state_fingerprint: u64,
@@ -4749,6 +4759,7 @@ where
             .len()
             .saturating_sub(saved_pass_profile_len);
         let mut internal_changed_member_addresses = Vec::new();
+        let mut internal_canonical_changed_member_addresses = Vec::new();
         let mut internal_changed_member_values = Vec::new();
         let mut changed_member_reads = Vec::new();
         for row in self.last_scc_member_profile[saved_member_profile_len..]
@@ -4762,6 +4773,9 @@ where
             })
         {
             internal_changed_member_addresses.push(row.address.clone());
+            if row.canonical_changed {
+                internal_canonical_changed_member_addresses.push(row.address.clone());
+            }
             internal_changed_member_values.push((
                 row.address.clone(),
                 format!("{:?}", row.before_value),
@@ -4783,6 +4797,9 @@ where
                 changed_member_reads,
                 internal_changed_member_count: internal_changed_member_addresses.len(),
                 internal_changed_member_addresses,
+                internal_canonical_changed_member_count:
+                    internal_canonical_changed_member_addresses.len(),
+                internal_canonical_changed_member_addresses,
                 internal_changed_member_values,
                 before_state_fingerprint,
                 after_state_fingerprint,
@@ -26775,12 +26792,15 @@ where
                 frontier_member_count: frontier_indices.len(),
                 pre_eval_state_values_unchanged: false,
                 pre_eval_state_changed_member_count: 0,
+                pre_eval_state_semantic_values_unchanged: false,
+                pre_eval_state_semantic_changed_member_count: 0,
                 pre_eval_state_changed_member_addresses: Vec::new(),
                 pre_eval_state_changed_member_values: Vec::new(),
                 static_remainder_member_count,
                 frontier_evaluations: 0,
                 frontier_validation_ns: 0,
                 frontier_values_unchanged: false,
+                frontier_raw_values_unchanged: false,
                 dynamic_targets_unchanged: false,
                 frontier_shapes_unchanged: false,
                 live_edge_identities_unchanged: false,
@@ -26789,6 +26809,7 @@ where
                 semantic_revisions_unchanged: false,
                 static_remainder_fixed_point_witness: false,
                 static_remainder_changed_count_on_previous_recalc: 0,
+                static_remainder_canonical_changed_count_on_previous_recalc: 0,
                 accepted: false,
                 reason: "no_prior_state",
                 avoided_member_evaluations: 0,
@@ -26801,6 +26822,8 @@ where
                 record.frontier_evaluations = frontier_indices.len();
                 record.static_remainder_changed_count_on_previous_recalc =
                     previous.static_remainder_changed_count;
+                record.static_remainder_canonical_changed_count_on_previous_recalc =
+                    previous.static_remainder_canonical_changed_count;
                 let pre_eval_changes = previous
                     .values
                     .iter()
@@ -26823,6 +26846,20 @@ where
                         format!("{current:?}"),
                     ));
                 }
+                record.pre_eval_state_semantic_changed_member_count = previous
+                    .values
+                    .iter()
+                    .zip(snapshot.iter())
+                    .filter(|(previous, current)| {
+                        !crate::engine::convergence::values_semantically_equal(
+                            previous,
+                            current,
+                            self.config.date_system,
+                        )
+                    })
+                    .count();
+                record.pre_eval_state_semantic_values_unchanged =
+                    record.pre_eval_state_semantic_changed_member_count == 0;
                 if previous.members.as_ref()
                     != members
                         .iter()
@@ -26852,6 +26889,8 @@ where
                         record.reason = "semantic_revision_changed";
                     } else if previous.frontier_indices != frontier_indices {
                         record.reason = "frontier_members_changed";
+                    } else if !record.pre_eval_state_semantic_values_unchanged {
+                        record.reason = "pre_eval_semantic_state_changed";
                     } else if !previous.context_safe || !frontier_context_safe {
                         record.reason = "external_or_context_dependent";
                     } else {
@@ -26897,10 +26936,20 @@ where
                             .collect::<Vec<_>>();
                         record.frontier_validation_ns =
                             frontier_validation_started.elapsed().as_nanos();
-                        record.frontier_values_unchanged = frontier_indices
+                        record.frontier_raw_values_unchanged = frontier_indices
                             .iter()
                             .zip(candidate_values.iter())
                             .all(|(&index, value)| previous.values[index] == *value);
+                        record.frontier_values_unchanged = frontier_indices
+                            .iter()
+                            .zip(candidate_values.iter())
+                            .all(|(&index, value)| {
+                                crate::engine::convergence::values_semantically_equal(
+                                    &previous.values[index],
+                                    value,
+                                    self.config.date_system,
+                                )
+                            });
                         record.dynamic_targets_unchanged =
                             previous.frontier_read_fingerprints == candidate_read_fingerprints;
                         record.frontier_shapes_unchanged =
@@ -26922,7 +26971,7 @@ where
                             );
                         record.static_remainder_fixed_point_witness = previous
                             .full_state_exactly_stable
-                            && static_remainder_member_count == 0;
+                            && previous.static_remainder_canonical_changed_count == 0;
                         if !record.frontier_values_unchanged {
                             record.reason = "frontier_value_changed";
                         } else if !record.dynamic_targets_unchanged {
@@ -27045,6 +27094,11 @@ where
                     last_value[i] = value;
                 }
                 if self.scc_pass_profile_enabled {
+                    let canonical_changed = !crate::engine::convergence::values_semantically_equal(
+                        &before_value,
+                        &last_value[i],
+                        self.config.date_system,
+                    );
                     let address = m
                         .cell
                         .map(|cell| {
@@ -27091,6 +27145,7 @@ where
                             LiteralValue::Empty
                         },
                         read_trace: if changed[i] { read_trace } else { Vec::new() },
+                        canonical_changed,
                     });
                 }
             }};
@@ -27123,6 +27178,17 @@ where
         }
         let first_pass_static_remainder_changed_count = (0..n)
             .filter(|&index| !excluded[index] && !frontier_flags[index] && changed[index])
+            .count();
+        let first_pass_static_remainder_canonical_changed_count = (0..n)
+            .filter(|&index| {
+                !excluded[index]
+                    && !frontier_flags[index]
+                    && !crate::engine::convergence::values_semantically_equal(
+                        &snapshot[index],
+                        &last_value[index],
+                        self.config.date_system,
+                    )
+            })
             .count();
 
         // ── 4. Settle loop (design doc §3 step 4; RFC #113 policy arm).
@@ -27254,6 +27320,8 @@ where
                     dynamic_source_read_events: 0,
                     changed_member_addresses: Vec::new(),
                     static_changed_member_addresses: Vec::new(),
+                    canonical_changed_member_addresses: Vec::new(),
+                    static_canonical_changed_member_addresses: Vec::new(),
                     dirty_propagation_visits: self
                         .graph
                         .dirty_propagation_visits()
@@ -27298,6 +27366,16 @@ where
                         if !member.dynamic_source {
                             profile
                                 .static_changed_member_addresses
+                                .push(member.address.clone());
+                        }
+                    }
+                    if member.canonical_changed {
+                        profile
+                            .canonical_changed_member_addresses
+                            .push(member.address.clone());
+                        if !member.dynamic_source {
+                            profile
+                                .static_canonical_changed_member_addresses
                                 .push(member.address.clone());
                         }
                     }
@@ -27684,6 +27762,8 @@ where
                     deterministic_mode: self.config.deterministic_mode.clone(),
                     full_state_exactly_stable: converged && exactly_stable && !capped,
                     static_remainder_changed_count: first_pass_static_remainder_changed_count,
+                    static_remainder_canonical_changed_count:
+                        first_pass_static_remainder_canonical_changed_count,
                     context_safe: frontier_context_safe,
                 },
             );

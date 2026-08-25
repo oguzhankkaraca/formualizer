@@ -962,6 +962,14 @@ impl PyWorkbook {
                 record.pre_eval_state_changed_member_count,
             )?;
             row.set_item(
+                "pre_eval_state_semantic_values_unchanged",
+                record.pre_eval_state_semantic_values_unchanged,
+            )?;
+            row.set_item(
+                "pre_eval_state_semantic_changed_member_count",
+                record.pre_eval_state_semantic_changed_member_count,
+            )?;
+            row.set_item(
                 "pre_eval_state_changed_member_addresses",
                 &record.pre_eval_state_changed_member_addresses,
             )?;
@@ -978,6 +986,10 @@ impl PyWorkbook {
             row.set_item(
                 "frontier_values_unchanged",
                 record.frontier_values_unchanged,
+            )?;
+            row.set_item(
+                "frontier_raw_values_unchanged",
+                record.frontier_raw_values_unchanged,
             )?;
             row.set_item(
                 "dynamic_targets_unchanged",
@@ -1011,6 +1023,10 @@ impl PyWorkbook {
                 "static_remainder_changed_count_on_previous_recalc",
                 record.static_remainder_changed_count_on_previous_recalc,
             )?;
+            row.set_item(
+                "static_remainder_canonical_changed_count_on_previous_recalc",
+                record.static_remainder_canonical_changed_count_on_previous_recalc,
+            )?;
             row.set_item("accepted", record.accepted)?;
             row.set_item("reason", record.reason)?;
             row.set_item(
@@ -1038,6 +1054,14 @@ impl PyWorkbook {
             row.set_item(
                 "internal_changed_member_count",
                 record.internal_changed_member_count,
+            )?;
+            row.set_item(
+                "internal_canonical_changed_member_count",
+                record.internal_canonical_changed_member_count,
+            )?;
+            row.set_item(
+                "internal_canonical_changed_member_addresses",
+                &record.internal_canonical_changed_member_addresses,
             )?;
             row.set_item(
                 "internal_changed_member_addresses",
@@ -1095,6 +1119,14 @@ impl PyWorkbook {
                 "static_changed_member_addresses",
                 &record.static_changed_member_addresses,
             )?;
+            row.set_item(
+                "canonical_changed_member_addresses",
+                &record.canonical_changed_member_addresses,
+            )?;
+            row.set_item(
+                "static_canonical_changed_member_addresses",
+                &record.static_canonical_changed_member_addresses,
+            )?;
             row.set_item("dirty_propagation_visits", record.dirty_propagation_visits)?;
             row.set_item("parallel_enabled", record.parallel_enabled)?;
             records.append(row)?;
@@ -1128,6 +1160,7 @@ impl PyWorkbook {
             row.set_item("lookup_misses", record.lookup_misses)?;
             row.set_item("dynamic_source", record.dynamic_source)?;
             row.set_item("changed", record.changed)?;
+            row.set_item("canonical_changed", record.canonical_changed)?;
             row.set_item("before_value", literal_to_py(py, &record.before_value)?)?;
             row.set_item("after_value", literal_to_py(py, &record.after_value)?)?;
             row.set_item("read_trace", &record.read_trace)?;

@@ -1,0 +1,25 @@
+{
+    "sheet":  "CashFlow Engine",
+    "cells":  [
+                  {
+                      "address":  "I65",
+                      "formula":  "=IF(AND($J$11=\"CC\",$J$14\u003e4),\"Yes\",\"No\")",
+                      "value2":  "No",
+                      "text":  "No"
+                  },
+                  {
+                      "address":  "K65",
+                      "formula":  "=IF(I65=\"Yes\",K64-1,\"\")",
+                      "value2":  "",
+                      "text":  ""
+                  }
+              ],
+    "excel_evaluated_condition":  {
+                                      "and_condition":  false,
+                                      "i65_equals_yes":  false,
+                                      "i65_selected_value":  "No"
+                                  },
+    "excel_evaluated_k65":  "",
+    "direct_precedents":  "\u0027[Fossil_EstimatingTemplate_2026-08_21_A.xlsx]CashFlow Engine\u0027!I65,K64",
+    "direct_precedents_error":  null
+}

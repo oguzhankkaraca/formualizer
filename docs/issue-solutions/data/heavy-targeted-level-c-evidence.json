@@ -1,0 +1,524 @@
+{
+  "schema": "formualizer.heavy-targeted-level-c-evidence/v1",
+  "workbook": "Fossil_EstimatingTemplate_2026-08_21_A.xlsx",
+  "input": "Inputs!F7=300",
+  "baseline": {
+    "static_scc": {
+      "cashflow_engine_members": 695,
+      "cashflow_inputs_members": 4130,
+      "cross_sheet_cycle": true,
+      "cyclic_scc_count": 1,
+      "edge_count": 13399,
+      "largest_scc": 4829,
+      "main_component_mismatch_members": 4360,
+      "original_static_members_retained": 4825
+    },
+    "runtime_observed_scc": {
+      "cashflow_engine_members": 525,
+      "cashflow_inputs_members": 3613,
+      "cross_sheet_cycle": true,
+      "cyclic_scc_count": 1,
+      "edge_count": 2076397,
+      "largest_scc": 4142,
+      "main_component_mismatch_members": 3679,
+      "original_static_members_retained": 4138
+    }
+  },
+  "corrections": [
+    {
+      "id": "conditional_empty_string_to_blank_k65",
+      "level": "C_value_semantics_only",
+      "before": {
+        "address": "CashFlow Engine!K65",
+        "formula": "=IF(I65=\"Yes\",K64-1,\"\")",
+        "condition": {
+          "formula": "=IF(AND($J$11=\"CC\",$J$14>4),\"Yes\",\"No\")",
+          "excel_value": "No",
+          "selected_branch": "false_literal_empty_string",
+          "direct_precedents": "'[Fossil_EstimatingTemplate_2026-08_21_A.xlsx]CashFlow Engine'!I65,K64"
+        },
+        "excel": {
+          "kind": "empty",
+          "value": null
+        },
+        "formualizer": {
+          "kind": "string",
+          "value": ""
+        },
+        "formualizer_selected_branch": "false_literal_empty_string",
+        "excel_current_branch_read": "I65 evaluates to No, selecting the false literal branch",
+        "excel_dependency_edge_proof": "Excel DirectPrecedents exposes I65,K64 even though K64 is on the inactive branch",
+        "excel_k65_value": "",
+        "formualizer_references_observed": [
+          "I65",
+          "K64"
+        ],
+        "inactive_branch_reference": null
+      },
+      "after": {
+        "address": "CashFlow Engine!K65",
+        "formula": "=IF(I65=\"Yes\",K64-1,\"\")",
+        "condition": {
+          "formula": "=IF(AND($J$11=\"CC\",$J$14>4),\"Yes\",\"No\")",
+          "excel_value": "No",
+          "selected_branch": "false_literal_empty_string",
+          "direct_precedents": "'[Fossil_EstimatingTemplate_2026-08_21_A.xlsx]CashFlow Engine'!I65,K64"
+        },
+        "excel": {
+          "kind": "empty",
+          "value": null
+        },
+        "formualizer": {
+          "kind": "string",
+          "value": ""
+        },
+        "formualizer_selected_branch": "false_literal_empty_string",
+        "excel_current_branch_read": "I65 evaluates to No, selecting the false literal branch",
+        "excel_dependency_edge_proof": "Excel DirectPrecedents exposes I65,K64 even though K64 is on the inactive branch",
+        "excel_k65_value": "",
+        "formualizer_references_observed": [
+          "I65",
+          "K64"
+        ],
+        "inactive_branch_reference": null,
+        "formualizer_after_correction": {
+          "kind": "empty",
+          "value": null
+        },
+        "excel_parity_after_correction": true,
+        "dependency_edges_changed": false,
+        "static_scc_before": {
+          "cashflow_engine_members": 695,
+          "cashflow_inputs_members": 4130,
+          "cross_sheet_cycle": true,
+          "cyclic_scc_count": 1,
+          "edge_count": 13399,
+          "largest_scc": 4829,
+          "main_component_mismatch_members": 4360,
+          "original_static_members_retained": 4825
+        },
+        "static_scc_after": {
+          "cashflow_engine_members": 695,
+          "cashflow_inputs_members": 4130,
+          "cross_sheet_cycle": true,
+          "cyclic_scc_count": 1,
+          "edge_count": 13399,
+          "largest_scc": 4829,
+          "main_component_mismatch_members": 4360,
+          "original_static_members_retained": 4825
+        },
+        "runtime_scc_before": {
+          "cashflow_engine_members": 525,
+          "cashflow_inputs_members": 3613,
+          "cross_sheet_cycle": true,
+          "cyclic_scc_count": 1,
+          "edge_count": 2076397,
+          "largest_scc": 4142,
+          "main_component_mismatch_members": 3679,
+          "original_static_members_retained": 4138
+        },
+        "runtime_scc_after": {
+          "cashflow_engine_members": 525,
+          "cashflow_inputs_members": 3613,
+          "cross_sheet_cycle": true,
+          "cyclic_scc_count": 1,
+          "edge_count": 2076397,
+          "largest_scc": 4142,
+          "main_component_mismatch_members": 3679,
+          "original_static_members_retained": 4138
+        }
+      },
+      "interpretation": "Excel-compatible branch/value representation correction; no dependency/reference correction was required or observed."
+    },
+    {
+      "id": "index_selected_reference_j8",
+      "level": "B_excel_assisted_reference_counterfactual",
+      "sources": [
+        {
+          "address": "J8",
+          "formula": "=INDEX(Cash_Flow_Inputs,MATCH($C8,Cash_Flow_Inputs_R,0),MATCH($J$6,Cash_Flow_Inputs_C,0))",
+          "excel_selected_reference": "'[Fossil_EstimatingTemplate_2026-08_21_A.xlsx]CashFlow Inputs'!$J$23"
+        },
+        {
+          "address": "J9",
+          "formula": "=INDEX(Cash_Flow_Inputs,MATCH($C9,Cash_Flow_Inputs_R,0),MATCH($J$6,Cash_Flow_Inputs_C,0))",
+          "excel_selected_reference": "'[Fossil_EstimatingTemplate_2026-08_21_A.xlsx]CashFlow Inputs'!$J$24"
+        },
+        {
+          "address": "J11",
+          "formula": "=INDEX(Cash_Flow_Inputs,MATCH($C11,Cash_Flow_Inputs_R,0),MATCH($J$6,Cash_Flow_Inputs_C,0))",
+          "excel_selected_reference": "'[Fossil_EstimatingTemplate_2026-08_21_A.xlsx]CashFlow Inputs'!$J$9"
+        },
+        {
+          "address": "J13",
+          "formula": "=INDEX(Cash_Flow_Inputs,MATCH($C13,Cash_Flow_Inputs_R,0),MATCH($J$6,Cash_Flow_Inputs_C,0))",
+          "excel_selected_reference": "'[Fossil_EstimatingTemplate_2026-08_21_A.xlsx]CashFlow Inputs'!$J$11"
+        },
+        {
+          "address": "J14",
+          "formula": "=INDEX(Cash_Flow_Inputs,MATCH($C14,Cash_Flow_Inputs_R,0),MATCH($J$6,Cash_Flow_Inputs_C,0))",
+          "excel_selected_reference": "'[Fossil_EstimatingTemplate_2026-08_21_A.xlsx]CashFlow Inputs'!$J$12"
+        },
+        {
+          "address": "J15",
+          "formula": "=INDEX(Cash_Flow_Inputs,MATCH($C15,Cash_Flow_Inputs_R,0),MATCH($J$6,Cash_Flow_Inputs_C,0))",
+          "excel_selected_reference": "'[Fossil_EstimatingTemplate_2026-08_21_A.xlsx]CashFlow Inputs'!$J$13"
+        },
+        {
+          "address": "J16",
+          "formula": "=INDEX(Cash_Flow_Inputs,MATCH($C16,Cash_Flow_Inputs_R,0),MATCH($J$6,Cash_Flow_Inputs_C,0))",
+          "excel_selected_reference": "'[Fossil_EstimatingTemplate_2026-08_21_A.xlsx]CashFlow Inputs'!$J$14"
+        },
+        {
+          "address": "J21",
+          "formula": "=INDEX(Cash_Flow_Inputs,MATCH($C21,Cash_Flow_Inputs_R,0),MATCH($J$6,Cash_Flow_Inputs_C,0))",
+          "excel_selected_reference": "'[Fossil_EstimatingTemplate_2026-08_21_A.xlsx]CashFlow Inputs'!$J$19"
+        }
+      ],
+      "matched_sources_inside_main_scc": 1,
+      "static_before": {
+        "cashflow_engine_members": 695,
+        "cashflow_inputs_members": 4130,
+        "cross_sheet_cycle": true,
+        "cyclic_scc_count": 1,
+        "edge_count": 13399,
+        "largest_scc": 4829,
+        "main_component_mismatch_members": 4360,
+        "original_static_members_retained": 4825
+      },
+      "static_after": {
+        "added_edges": 1,
+        "cashflow_engine_members": 695,
+        "cashflow_inputs_members": 4130,
+        "cross_sheet_cycle": true,
+        "cyclic_scc_count": 1,
+        "edge_count": 13399,
+        "largest_scc": 4829,
+        "main_component_mismatch_members": 4360,
+        "original_static_members_retained": 4825,
+        "removed_edges": 1,
+        "selected_source_count": 1,
+        "variant": "static_graph_index_selected_target_only",
+        "witnesses": [
+          {
+            "addresses": [
+              "CashFlow Inputs!J23",
+              "CashFlow Engine!K29"
+            ],
+            "direction": "CashFlow Inputs -> CashFlow Engine",
+            "formulas": [
+              "ASTNode { node_type: Function { name: \"EDATE\", args: [ASTNode { node_type: Reference { original: \"J24\", reference: Cell { sheet: None, row: 24, col: 10, row_abs: false, col_abs: false } }, source_token: None, contains_volatile: false }, ASTNode { node_type: BinaryOp { op: \"-\", left: ASTNode { node_type: Function { name: \"MIN\", args: [ASTNode { node_type: Reference { original: \"'CashFlow Engine'!K29:K112\", reference: Range { sheet: Some(\"CashFlow Engine\"), start_row: Some(29), start_col: Some(11), end_row: Some(112), end_col: Some(11), start_row_abs: false, start_col_abs: false, end_row_abs: false, end_col_abs: false } }, source_token: None, contains_volatile: false }] }, source_token: None, contains_volatile: false }, right: ASTNode { node_type: Literal(Number(12.0)), source_token: None, contains_volatile: false } }, source_token: None, contains_volatile: false }] }, source_token: None, contains_volatile: false }",
+              "ASTNode { node_type: Function { name: \"IF\", args: [ASTNode { node_type: BinaryOp { op: \"=\", left: ASTNode { node_type: Reference { original: \"$I29\", reference: Cell { sheet: None, row: 29, col: 9, row_abs: false, col_abs: true } }, source_token: None, contains_volatile: false }, right: ASTNode { node_type: Literal(Text(\"Yes\")), source_token: None, contains_volatile: false } }, source_token: None, contains_volatile: false }, ASTNode { node_type: Function { name: \"IFERROR\", args: [ASTNode { node_type: Function { name: \"INDEX\", args: [ASTNode { node_type: Reference { original: \"Schedule_Offset\", reference: NamedRange(\"Schedule_Offset\") }, source_token: None, contains_volatile: false }, ASTNode { node_type: Function { name: \"MATCH\", args: [ASTNode { node_type: Reference { original: \"$G29\", reference: Cell { sheet: None, row: 29, col: 7, row_abs: false, col_abs: true } }, source_token: None, contains_volatile: false }, ASTNode { node_type: Reference { original: \"Schedule_Offset_R\", reference: NamedRange(\"Schedule_Offset_R\") }, source_token: None, contains_volatile: false }, ASTNode { node_type: Literal(Number(0.0)), source_token: None, contains_volatile: false }] }, source_token: None, contains_volatile: false }, ASTNode { node_type: Function { name: \"IF\", args: [ASTNode { node_type: BinaryOp { op: \"=\", left: ASTNode { node_type: Reference { original: \"$J$11\", reference: Cell { sheet: None, row: 11, col: 10, row_abs: true, col_abs: true } }, source_token: None, contains_volatile: false }, right: ASTNode { node_type: Literal(Text(\"CC\")), source_token: None, contains_volatile: false } }, source_token: None, contains_volatile: false }, ASTNode { node_type: Function { name: \"MATCH\", args: [ASTNode { node_type: Literal(Text(\"CC Offset (Months)\")), source_token: None, contains_volatile: false }, ASTNode { node_type: Reference { original: \"Schedule_Offset_C\", reference: NamedRange(\"Schedule_Offset_C\") }, source_token: None, contains_volatile: false }, ASTNode { node_type: Literal(Number(0.0)), source_token: None, contains_volatile: false }] }, source_token: None, contains_volatile: false }, ASTNode { node_type: Function { name: \"MATCH\", args: [ASTNode { node_type: Literal(Text(\"SC Offset (Months)\")), source_token: None, contains_volatile: false }, ASTNode { node_type: Reference { original: \"Schedule_Offset_C\", reference: NamedRange(\"Schedule_Offset_C\") }, source_token: None, contains_volatile: false }, ASTNode { node_type: Literal(Number(0.0)), source_token: None, contains_volatile: false }] }, source_token: None, contains_volatile: false }] }, source_token: None, contains_volatile: false }] }, source_token: None, contains_volatile: false }, ASTNode { node_type: Literal(Text(\"\")), source_token: None, contains_volatile: false }] }, source_token: None, contains_volatile: false }, ASTNode { node_type: Literal(Text(\"\")), source_token: None, contains_volatile: false }] }, source_token: None, contains_volatile: false }"
+            ],
+            "member_indices": [
+              4,
+              14
+            ]
+          },
+          {
+            "addresses": [
+              "CashFlow Engine!J8",
+              "CashFlow Inputs!J23"
+            ],
+            "direction": "CashFlow Engine -> CashFlow Inputs",
+            "formulas": [
+              "ASTNode { node_type: Function { name: \"INDEX\", args: [ASTNode { node_type: Reference { original: \"Cash_Flow_Inputs\", reference: NamedRange(\"Cash_Flow_Inputs\") }, source_token: None, contains_volatile: false }, ASTNode { node_type: Function { name: \"MATCH\", args: [ASTNode { node_type: Reference { original: \"$C8\", reference: Cell { sheet: None, row: 8, col: 3, row_abs: false, col_abs: true } }, source_token: None, contains_volatile: false }, ASTNode { node_type: Reference { original: \"Cash_Flow_Inputs_R\", reference: NamedRange(\"Cash_Flow_Inputs_R\") }, source_token: None, contains_volatile: false }, ASTNode { node_type: Literal(Number(0.0)), source_token: None, contains_volatile: false }] }, source_token: None, contains_volatile: false }, ASTNode { node_type: Function { name: \"MATCH\", args: [ASTNode { node_type: Reference { original: \"$J$6\", reference: Cell { sheet: None, row: 6, col: 10, row_abs: true, col_abs: true } }, source_token: None, contains_volatile: false }, ASTNode { node_type: Reference { original: \"Cash_Flow_Inputs_C\", reference: NamedRange(\"Cash_Flow_Inputs_C\") }, source_token: None, contains_volatile: false }, ASTNode { node_type: Literal(Number(0.0)), source_token: None, contains_volatile: false }] }, source_token: None, contains_volatile: false }] }, source_token: None, contains_volatile: false }",
+              "ASTNode { node_type: Function { name: \"EDATE\", args: [ASTNode { node_type: Reference { original: \"J24\", reference: Cell { sheet: None, row: 24, col: 10, row_abs: false, col_abs: false } }, source_token: None, contains_volatile: false }, ASTNode { node_type: BinaryOp { op: \"-\", left: ASTNode { node_type: Function { name: \"MIN\", args: [ASTNode { node_type: Reference { original: \"'CashFlow Engine'!K29:K112\", reference: Range { sheet: Some(\"CashFlow Engine\"), start_row: Some(29), start_col: Some(11), end_row: Some(112), end_col: Some(11), start_row_abs: false, start_col_abs: false, end_row_abs: false, end_col_abs: false } }, source_token: None, contains_volatile: false }] }, source_token: None, contains_volatile: false }, right: ASTNode { node_type: Literal(Number(12.0)), source_token: None, contains_volatile: false } }, source_token: None, contains_volatile: false }] }, source_token: None, contains_volatile: false }"
+            ],
+            "member_indices": [
+              5,
+              4
+            ]
+          },
+          {
+            "addresses": [
+              "cash_flow_inputs",
+              "CashFlow Inputs!J23",
+              "CashFlow Engine!K29",
+              "CashFlow Engine!J11",
+              "cash_flow_inputs"
+            ],
+            "direction": "complete_cycle",
+            "edge_masks": [
+              2,
+              2,
+              1,
+              16
+            ],
+            "formulas": [
+              null,
+              "ASTNode { node_type: Function { name: \"EDATE\", args: [ASTNode { node_type: Reference { original: \"J24\", reference: Cell { sheet: None, row: 24, col: 10, row_abs: false, col_abs: false } }, source_token: None, contains_volatile: false }, ASTNode { node_type: BinaryOp { op: \"-\", left: ASTNode { node_type: Function { name: \"MIN\", args: [ASTNode { node_type: Reference { original: \"'CashFlow Engine'!K29:K112\", reference: Range { sheet: Some(\"CashFlow Engine\"), start_row: Some(29), start_col: Some(11), end_row: Some(112), end_col: Some(11), start_row_abs: false, start_col_abs: false, end_row_abs: false, end_col_abs: false } }, source_token: None, contains_volatile: false }] }, source_token: None, contains_volatile: false }, right: ASTNode { node_type: Literal(Number(12.0)), source_token: None, contains_volatile: false } }, source_token: None, contains_volatile: false }] }, source_token: None, contains_volatile: false }",
+              "ASTNode { node_type: Function { name: \"IF\", args: [ASTNode { node_type: BinaryOp { op: \"=\", left: ASTNode { node_type: Reference { original: \"$I29\", reference: Cell { sheet: None, row: 29, col: 9, row_abs: false, col_abs: true } }, source_token: None, contains_volatile: false }, right: ASTNode { node_type: Literal(Text(\"Yes\")), source_token: None, contains_volatile: false } }, source_token: None, contains_volatile: false }, ASTNode { node_type: Function { name: \"IFERROR\", args: [ASTNode { node_type: Function { name: \"INDEX\", args: [ASTNode { node_type: Reference { original: \"Schedule_Offset\", reference: NamedRange(\"Schedule_Offset\") }, source_token: None, contains_volatile: false }, ASTNode { node_type: Function { name: \"MATCH\", args: [ASTNode { node_type: Reference { original: \"$G29\", reference: Cell { sheet: None, row: 29, col: 7, row_abs: false, col_abs: true } }, source_token: None, contains_volatile: false }, ASTNode { node_type: Reference { original: \"Schedule_Offset_R\", reference: NamedRange(\"Schedule_Offset_R\") }, source_token: None, contains_volatile: false }, ASTNode { node_type: Literal(Number(0.0)), source_token: None, contains_volatile: false }] }, source_token: None, contains_volatile: false }, ASTNode { node_type: Function { name: \"IF\", args: [ASTNode { node_type: BinaryOp { op: \"=\", left: ASTNode { node_type: Reference { original: \"$J$11\", reference: Cell { sheet: None, row: 11, col: 10, row_abs: true, col_abs: true } }, source_token: None, contains_volatile: false }, right: ASTNode { node_type: Literal(Text(\"CC\")), source_token: None, contains_volatile: false } }, source_token: None, contains_volatile: false }, ASTNode { node_type: Function { name: \"MATCH\", args: [ASTNode { node_type: Literal(Text(\"CC Offset (Months)\")), source_token: None, contains_volatile: false }, ASTNode { node_type: Reference { original: \"Schedule_Offset_C\", reference: NamedRange(\"Schedule_Offset_C\") }, source_token: None, contains_volatile: false }, ASTNode { node_type: Literal(Number(0.0)), source_token: None, contains_volatile: false }] }, source_token: None, contains_volatile: false }, ASTNode { node_type: Function { name: \"MATCH\", args: [ASTNode { node_type: Literal(Text(\"SC Offset (Months)\")), source_token: None, contains_volatile: false }, ASTNode { node_type: Reference { original: \"Schedule_Offset_C\", reference: NamedRange(\"Schedule_Offset_C\") }, source_token: None, contains_volatile: false }, ASTNode { node_type: Literal(Number(0.0)), source_token: None, contains_volatile: false }] }, source_token: None, contains_volatile: false }] }, source_token: None, contains_volatile: false }] }, source_token: None, contains_volatile: false }, ASTNode { node_type: Literal(Text(\"\")), source_token: None, contains_volatile: false }] }, source_token: None, contains_volatile: false }, ASTNode { node_type: Literal(Text(\"\")), source_token: None, contains_volatile: false }] }, source_token: None, contains_volatile: false }",
+              "ASTNode { node_type: Function { name: \"INDEX\", args: [ASTNode { node_type: Reference { original: \"Cash_Flow_Inputs\", reference: NamedRange(\"Cash_Flow_Inputs\") }, source_token: None, contains_volatile: false }, ASTNode { node_type: Function { name: \"MATCH\", args: [ASTNode { node_type: Reference { original: \"$C11\", reference: Cell { sheet: None, row: 11, col: 3, row_abs: false, col_abs: true } }, source_token: None, contains_volatile: false }, ASTNode { node_type: Reference { original: \"Cash_Flow_Inputs_R\", reference: NamedRange(\"Cash_Flow_Inputs_R\") }, source_token: None, contains_volatile: false }, ASTNode { node_type: Literal(Number(0.0)), source_token: None, contains_volatile: false }] }, source_token: None, contains_volatile: false }, ASTNode { node_type: Function { name: \"MATCH\", args: [ASTNode { node_type: Reference { original: \"$J$6\", reference: Cell { sheet: None, row: 6, col: 10, row_abs: true, col_abs: true } }, source_token: None, contains_volatile: false }, ASTNode { node_type: Reference { original: \"Cash_Flow_Inputs_C\", reference: NamedRange(\"Cash_Flow_Inputs_C\") }, source_token: None, contains_volatile: false }, ASTNode { node_type: Literal(Number(0.0)), source_token: None, contains_volatile: false }] }, source_token: None, contains_volatile: false }] }, source_token: None, contains_volatile: false }",
+              null
+            ],
+            "member_indices": [
+              0,
+              4,
+              14,
+              7,
+              0
+            ]
+          }
+        ]
+      },
+      "runtime_before": {
+        "cashflow_engine_members": 525,
+        "cashflow_inputs_members": 3613,
+        "cross_sheet_cycle": true,
+        "cyclic_scc_count": 1,
+        "edge_count": 2076397,
+        "largest_scc": 4142,
+        "main_component_mismatch_members": 3679,
+        "original_static_members_retained": 4138
+      },
+      "runtime_after": {
+        "added_edges": 1,
+        "cashflow_engine_members": 525,
+        "cashflow_inputs_members": 3613,
+        "cross_sheet_cycle": true,
+        "cyclic_scc_count": 1,
+        "edge_count": 2072267,
+        "largest_scc": 4142,
+        "main_component_mismatch_members": 3679,
+        "original_static_members_retained": 4138,
+        "removed_edges": 4131,
+        "selected_source_count": 1,
+        "variant": "runtime_observed_index_selected_target_only",
+        "witnesses": [
+          {
+            "addresses": [
+              "CashFlow Inputs!J23",
+              "CashFlow Engine!K65"
+            ],
+            "direction": "CashFlow Inputs -> CashFlow Engine",
+            "formulas": [
+              "ASTNode { node_type: Function { name: \"EDATE\", args: [ASTNode { node_type: Reference { original: \"J24\", reference: Cell { sheet: None, row: 24, col: 10, row_abs: false, col_abs: false } }, source_token: None, contains_volatile: false }, ASTNode { node_type: BinaryOp { op: \"-\", left: ASTNode { node_type: Function { name: \"MIN\", args: [ASTNode { node_type: Reference { original: \"'CashFlow Engine'!K29:K112\", reference: Range { sheet: Some(\"CashFlow Engine\"), start_row: Some(29), start_col: Some(11), end_row: Some(112), end_col: Some(11), start_row_abs: false, start_col_abs: false, end_row_abs: false, end_col_abs: false } }, source_token: None, contains_volatile: false }] }, source_token: None, contains_volatile: false }, right: ASTNode { node_type: Literal(Number(12.0)), source_token: None, contains_volatile: false } }, source_token: None, contains_volatile: false }] }, source_token: None, contains_volatile: false }",
+              "ASTNode { node_type: Function { name: \"IF\", args: [ASTNode { node_type: BinaryOp { op: \"=\", left: ASTNode { node_type: Reference { original: \"I65\", reference: Cell { sheet: None, row: 65, col: 9, row_abs: false, col_abs: false } }, source_token: None, contains_volatile: false }, right: ASTNode { node_type: Literal(Text(\"Yes\")), source_token: None, contains_volatile: false } }, source_token: None, contains_volatile: false }, ASTNode { node_type: BinaryOp { op: \"-\", left: ASTNode { node_type: Reference { original: \"K64\", reference: Cell { sheet: None, row: 64, col: 11, row_abs: false, col_abs: false } }, source_token: None, contains_volatile: false }, right: ASTNode { node_type: Literal(Number(1.0)), source_token: None, contains_volatile: false } }, source_token: None, contains_volatile: false }, ASTNode { node_type: Literal(Text(\"\")), source_token: None, contains_volatile: false }] }, source_token: None, contains_volatile: false }"
+            ],
+            "member_indices": [
+              0,
+              4452
+            ]
+          },
+          {
+            "addresses": [
+              "CashFlow Engine!J8",
+              "CashFlow Inputs!J23"
+            ],
+            "direction": "CashFlow Engine -> CashFlow Inputs",
+            "formulas": [
+              "ASTNode { node_type: Function { name: \"INDEX\", args: [ASTNode { node_type: Reference { original: \"Cash_Flow_Inputs\", reference: NamedRange(\"Cash_Flow_Inputs\") }, source_token: None, contains_volatile: false }, ASTNode { node_type: Function { name: \"MATCH\", args: [ASTNode { node_type: Reference { original: \"$C8\", reference: Cell { sheet: None, row: 8, col: 3, row_abs: false, col_abs: true } }, source_token: None, contains_volatile: false }, ASTNode { node_type: Reference { original: \"Cash_Flow_Inputs_R\", reference: NamedRange(\"Cash_Flow_Inputs_R\") }, source_token: None, contains_volatile: false }, ASTNode { node_type: Literal(Number(0.0)), source_token: None, contains_volatile: false }] }, source_token: None, contains_volatile: false }, ASTNode { node_type: Function { name: \"MATCH\", args: [ASTNode { node_type: Reference { original: \"$J$6\", reference: Cell { sheet: None, row: 6, col: 10, row_abs: true, col_abs: true } }, source_token: None, contains_volatile: false }, ASTNode { node_type: Reference { original: \"Cash_Flow_Inputs_C\", reference: NamedRange(\"Cash_Flow_Inputs_C\") }, source_token: None, contains_volatile: false }, ASTNode { node_type: Literal(Number(0.0)), source_token: None, contains_volatile: false }] }, source_token: None, contains_volatile: false }] }, source_token: None, contains_volatile: false }",
+              "ASTNode { node_type: Function { name: \"EDATE\", args: [ASTNode { node_type: Reference { original: \"J24\", reference: Cell { sheet: None, row: 24, col: 10, row_abs: false, col_abs: false } }, source_token: None, contains_volatile: false }, ASTNode { node_type: BinaryOp { op: \"-\", left: ASTNode { node_type: Function { name: \"MIN\", args: [ASTNode { node_type: Reference { original: \"'CashFlow Engine'!K29:K112\", reference: Range { sheet: Some(\"CashFlow Engine\"), start_row: Some(29), start_col: Some(11), end_row: Some(112), end_col: Some(11), start_row_abs: false, start_col_abs: false, end_row_abs: false, end_col_abs: false } }, source_token: None, contains_volatile: false }] }, source_token: None, contains_volatile: false }, right: ASTNode { node_type: Literal(Number(12.0)), source_token: None, contains_volatile: false } }, source_token: None, contains_volatile: false }] }, source_token: None, contains_volatile: false }"
+            ],
+            "member_indices": [
+              4130,
+              0
+            ]
+          },
+          {
+            "addresses": [
+              "CashFlow Inputs!J23",
+              "CashFlow Engine!K65",
+              "CashFlow Engine!I65",
+              "CashFlow Engine!J11",
+              "CashFlow Inputs!J23"
+            ],
+            "direction": "complete_cycle",
+            "edge_masks": [
+              2,
+              1,
+              1,
+              16
+            ],
+            "formulas": [
+              "ASTNode { node_type: Function { name: \"EDATE\", args: [ASTNode { node_type: Reference { original: \"J24\", reference: Cell { sheet: None, row: 24, col: 10, row_abs: false, col_abs: false } }, source_token: None, contains_volatile: false }, ASTNode { node_type: BinaryOp { op: \"-\", left: ASTNode { node_type: Function { name: \"MIN\", args: [ASTNode { node_type: Reference { original: \"'CashFlow Engine'!K29:K112\", reference: Range { sheet: Some(\"CashFlow Engine\"), start_row: Some(29), start_col: Some(11), end_row: Some(112), end_col: Some(11), start_row_abs: false, start_col_abs: false, end_row_abs: false, end_col_abs: false } }, source_token: None, contains_volatile: false }] }, source_token: None, contains_volatile: false }, right: ASTNode { node_type: Literal(Number(12.0)), source_token: None, contains_volatile: false } }, source_token: None, contains_volatile: false }] }, source_token: None, contains_volatile: false }",
+              "ASTNode { node_type: Function { name: \"IF\", args: [ASTNode { node_type: BinaryOp { op: \"=\", left: ASTNode { node_type: Reference { original: \"I65\", reference: Cell { sheet: None, row: 65, col: 9, row_abs: false, col_abs: false } }, source_token: None, contains_volatile: false }, right: ASTNode { node_type: Literal(Text(\"Yes\")), source_token: None, contains_volatile: false } }, source_token: None, contains_volatile: false }, ASTNode { node_type: BinaryOp { op: \"-\", left: ASTNode { node_type: Reference { original: \"K64\", reference: Cell { sheet: None, row: 64, col: 11, row_abs: false, col_abs: false } }, source_token: None, contains_volatile: false }, right: ASTNode { node_type: Literal(Number(1.0)), source_token: None, contains_volatile: false } }, source_token: None, contains_volatile: false }, ASTNode { node_type: Literal(Text(\"\")), source_token: None, contains_volatile: false }] }, source_token: None, contains_volatile: false }",
+              "ASTNode { node_type: Function { name: \"IF\", args: [ASTNode { node_type: Function { name: \"AND\", args: [ASTNode { node_type: BinaryOp { op: \"=\", left: ASTNode { node_type: Reference { original: \"$J$11\", reference: Cell { sheet: None, row: 11, col: 10, row_abs: true, col_abs: true } }, source_token: None, contains_volatile: false }, right: ASTNode { node_type: Literal(Text(\"CC\")), source_token: None, contains_volatile: false } }, source_token: None, contains_volatile: false }, ASTNode { node_type: BinaryOp { op: \">\", left: ASTNode { node_type: Reference { original: \"$J$14\", reference: Cell { sheet: None, row: 14, col: 10, row_abs: true, col_abs: true } }, source_token: None, contains_volatile: false }, right: ASTNode { node_type: Literal(Number(4.0)), source_token: None, contains_volatile: false } }, source_token: None, contains_volatile: false }] }, source_token: None, contains_volatile: false }, ASTNode { node_type: Literal(Text(\"Yes\")), source_token: None, contains_volatile: false }, ASTNode { node_type: Literal(Text(\"No\")), source_token: None, contains_volatile: false }] }, source_token: None, contains_volatile: false }",
+              "ASTNode { node_type: Function { name: \"INDEX\", args: [ASTNode { node_type: Reference { original: \"Cash_Flow_Inputs\", reference: NamedRange(\"Cash_Flow_Inputs\") }, source_token: None, contains_volatile: false }, ASTNode { node_type: Function { name: \"MATCH\", args: [ASTNode { node_type: Reference { original: \"$C11\", reference: Cell { sheet: None, row: 11, col: 3, row_abs: false, col_abs: true } }, source_token: None, contains_volatile: false }, ASTNode { node_type: Reference { original: \"Cash_Flow_Inputs_R\", reference: NamedRange(\"Cash_Flow_Inputs_R\") }, source_token: None, contains_volatile: false }, ASTNode { node_type: Literal(Number(0.0)), source_token: None, contains_volatile: false }] }, source_token: None, contains_volatile: false }, ASTNode { node_type: Function { name: \"MATCH\", args: [ASTNode { node_type: Reference { original: \"$J$6\", reference: Cell { sheet: None, row: 6, col: 10, row_abs: true, col_abs: true } }, source_token: None, contains_volatile: false }, ASTNode { node_type: Reference { original: \"Cash_Flow_Inputs_C\", reference: NamedRange(\"Cash_Flow_Inputs_C\") }, source_token: None, contains_volatile: false }, ASTNode { node_type: Literal(Number(0.0)), source_token: None, contains_volatile: false }] }, source_token: None, contains_volatile: false }] }, source_token: None, contains_volatile: false }",
+              "ASTNode { node_type: Function { name: \"EDATE\", args: [ASTNode { node_type: Reference { original: \"J24\", reference: Cell { sheet: None, row: 24, col: 10, row_abs: false, col_abs: false } }, source_token: None, contains_volatile: false }, ASTNode { node_type: BinaryOp { op: \"-\", left: ASTNode { node_type: Function { name: \"MIN\", args: [ASTNode { node_type: Reference { original: \"'CashFlow Engine'!K29:K112\", reference: Range { sheet: Some(\"CashFlow Engine\"), start_row: Some(29), start_col: Some(11), end_row: Some(112), end_col: Some(11), start_row_abs: false, start_col_abs: false, end_row_abs: false, end_col_abs: false } }, source_token: None, contains_volatile: false }] }, source_token: None, contains_volatile: false }, right: ASTNode { node_type: Literal(Number(12.0)), source_token: None, contains_volatile: false } }, source_token: None, contains_volatile: false }] }, source_token: None, contains_volatile: false }"
+            ],
+            "member_indices": [
+              0,
+              4452,
+              4451,
+              4132,
+              0
+            ]
+          }
+        ]
+      },
+      "interpretation": "Replace the selected INDEX source dependency surface with Excel's observed selected cell. This is not proof that Excel invalidates only that cell, so it remains Level B rather than Level C."
+    }
+  ],
+  "combined": {
+    "tested_corrections": [
+      "conditional_empty_string_to_blank_k65",
+      "index_selected_reference_j8"
+    ],
+    "static_scc": {
+      "added_edges": 1,
+      "cashflow_engine_members": 695,
+      "cashflow_inputs_members": 4130,
+      "cross_sheet_cycle": true,
+      "cyclic_scc_count": 1,
+      "edge_count": 13399,
+      "largest_scc": 4829,
+      "main_component_mismatch_members": 4360,
+      "original_static_members_retained": 4825,
+      "removed_edges": 1,
+      "selected_source_count": 1,
+      "variant": "static_graph_index_selected_target_only",
+      "witnesses": [
+        {
+          "addresses": [
+            "CashFlow Inputs!J23",
+            "CashFlow Engine!K29"
+          ],
+          "direction": "CashFlow Inputs -> CashFlow Engine",
+          "formulas": [
+            "ASTNode { node_type: Function { name: \"EDATE\", args: [ASTNode { node_type: Reference { original: \"J24\", reference: Cell { sheet: None, row: 24, col: 10, row_abs: false, col_abs: false } }, source_token: None, contains_volatile: false }, ASTNode { node_type: BinaryOp { op: \"-\", left: ASTNode { node_type: Function { name: \"MIN\", args: [ASTNode { node_type: Reference { original: \"'CashFlow Engine'!K29:K112\", reference: Range { sheet: Some(\"CashFlow Engine\"), start_row: Some(29), start_col: Some(11), end_row: Some(112), end_col: Some(11), start_row_abs: false, start_col_abs: false, end_row_abs: false, end_col_abs: false } }, source_token: None, contains_volatile: false }] }, source_token: None, contains_volatile: false }, right: ASTNode { node_type: Literal(Number(12.0)), source_token: None, contains_volatile: false } }, source_token: None, contains_volatile: false }] }, source_token: None, contains_volatile: false }",
+            "ASTNode { node_type: Function { name: \"IF\", args: [ASTNode { node_type: BinaryOp { op: \"=\", left: ASTNode { node_type: Reference { original: \"$I29\", reference: Cell { sheet: None, row: 29, col: 9, row_abs: false, col_abs: true } }, source_token: None, contains_volatile: false }, right: ASTNode { node_type: Literal(Text(\"Yes\")), source_token: None, contains_volatile: false } }, source_token: None, contains_volatile: false }, ASTNode { node_type: Function { name: \"IFERROR\", args: [ASTNode { node_type: Function { name: \"INDEX\", args: [ASTNode { node_type: Reference { original: \"Schedule_Offset\", reference: NamedRange(\"Schedule_Offset\") }, source_token: None, contains_volatile: false }, ASTNode { node_type: Function { name: \"MATCH\", args: [ASTNode { node_type: Reference { original: \"$G29\", reference: Cell { sheet: None, row: 29, col: 7, row_abs: false, col_abs: true } }, source_token: None, contains_volatile: false }, ASTNode { node_type: Reference { original: \"Schedule_Offset_R\", reference: NamedRange(\"Schedule_Offset_R\") }, source_token: None, contains_volatile: false }, ASTNode { node_type: Literal(Number(0.0)), source_token: None, contains_volatile: false }] }, source_token: None, contains_volatile: false }, ASTNode { node_type: Function { name: \"IF\", args: [ASTNode { node_type: BinaryOp { op: \"=\", left: ASTNode { node_type: Reference { original: \"$J$11\", reference: Cell { sheet: None, row: 11, col: 10, row_abs: true, col_abs: true } }, source_token: None, contains_volatile: false }, right: ASTNode { node_type: Literal(Text(\"CC\")), source_token: None, contains_volatile: false } }, source_token: None, contains_volatile: false }, ASTNode { node_type: Function { name: \"MATCH\", args: [ASTNode { node_type: Literal(Text(\"CC Offset (Months)\")), source_token: None, contains_volatile: false }, ASTNode { node_type: Reference { original: \"Schedule_Offset_C\", reference: NamedRange(\"Schedule_Offset_C\") }, source_token: None, contains_volatile: false }, ASTNode { node_type: Literal(Number(0.0)), source_token: None, contains_volatile: false }] }, source_token: None, contains_volatile: false }, ASTNode { node_type: Function { name: \"MATCH\", args: [ASTNode { node_type: Literal(Text(\"SC Offset (Months)\")), source_token: None, contains_volatile: false }, ASTNode { node_type: Reference { original: \"Schedule_Offset_C\", reference: NamedRange(\"Schedule_Offset_C\") }, source_token: None, contains_volatile: false }, ASTNode { node_type: Literal(Number(0.0)), source_token: None, contains_volatile: false }] }, source_token: None, contains_volatile: false }] }, source_token: None, contains_volatile: false }] }, source_token: None, contains_volatile: false }, ASTNode { node_type: Literal(Text(\"\")), source_token: None, contains_volatile: false }] }, source_token: None, contains_volatile: false }, ASTNode { node_type: Literal(Text(\"\")), source_token: None, contains_volatile: false }] }, source_token: None, contains_volatile: false }"
+          ],
+          "member_indices": [
+            4,
+            14
+          ]
+        },
+        {
+          "addresses": [
+            "CashFlow Engine!J8",
+            "CashFlow Inputs!J23"
+          ],
+          "direction": "CashFlow Engine -> CashFlow Inputs",
+          "formulas": [
+            "ASTNode { node_type: Function { name: \"INDEX\", args: [ASTNode { node_type: Reference { original: \"Cash_Flow_Inputs\", reference: NamedRange(\"Cash_Flow_Inputs\") }, source_token: None, contains_volatile: false }, ASTNode { node_type: Function { name: \"MATCH\", args: [ASTNode { node_type: Reference { original: \"$C8\", reference: Cell { sheet: None, row: 8, col: 3, row_abs: false, col_abs: true } }, source_token: None, contains_volatile: false }, ASTNode { node_type: Reference { original: \"Cash_Flow_Inputs_R\", reference: NamedRange(\"Cash_Flow_Inputs_R\") }, source_token: None, contains_volatile: false }, ASTNode { node_type: Literal(Number(0.0)), source_token: None, contains_volatile: false }] }, source_token: None, contains_volatile: false }, ASTNode { node_type: Function { name: \"MATCH\", args: [ASTNode { node_type: Reference { original: \"$J$6\", reference: Cell { sheet: None, row: 6, col: 10, row_abs: true, col_abs: true } }, source_token: None, contains_volatile: false }, ASTNode { node_type: Reference { original: \"Cash_Flow_Inputs_C\", reference: NamedRange(\"Cash_Flow_Inputs_C\") }, source_token: None, contains_volatile: false }, ASTNode { node_type: Literal(Number(0.0)), source_token: None, contains_volatile: false }] }, source_token: None, contains_volatile: false }] }, source_token: None, contains_volatile: false }",
+            "ASTNode { node_type: Function { name: \"EDATE\", args: [ASTNode { node_type: Reference { original: \"J24\", reference: Cell { sheet: None, row: 24, col: 10, row_abs: false, col_abs: false } }, source_token: None, contains_volatile: false }, ASTNode { node_type: BinaryOp { op: \"-\", left: ASTNode { node_type: Function { name: \"MIN\", args: [ASTNode { node_type: Reference { original: \"'CashFlow Engine'!K29:K112\", reference: Range { sheet: Some(\"CashFlow Engine\"), start_row: Some(29), start_col: Some(11), end_row: Some(112), end_col: Some(11), start_row_abs: false, start_col_abs: false, end_row_abs: false, end_col_abs: false } }, source_token: None, contains_volatile: false }] }, source_token: None, contains_volatile: false }, right: ASTNode { node_type: Literal(Number(12.0)), source_token: None, contains_volatile: false } }, source_token: None, contains_volatile: false }] }, source_token: None, contains_volatile: false }"
+          ],
+          "member_indices": [
+            5,
+            4
+          ]
+        },
+        {
+          "addresses": [
+            "cash_flow_inputs",
+            "CashFlow Inputs!J23",
+            "CashFlow Engine!K29",
+            "CashFlow Engine!J11",
+            "cash_flow_inputs"
+          ],
+          "direction": "complete_cycle",
+          "edge_masks": [
+            2,
+            2,
+            1,
+            16
+          ],
+          "formulas": [
+            null,
+            "ASTNode { node_type: Function { name: \"EDATE\", args: [ASTNode { node_type: Reference { original: \"J24\", reference: Cell { sheet: None, row: 24, col: 10, row_abs: false, col_abs: false } }, source_token: None, contains_volatile: false }, ASTNode { node_type: BinaryOp { op: \"-\", left: ASTNode { node_type: Function { name: \"MIN\", args: [ASTNode { node_type: Reference { original: \"'CashFlow Engine'!K29:K112\", reference: Range { sheet: Some(\"CashFlow Engine\"), start_row: Some(29), start_col: Some(11), end_row: Some(112), end_col: Some(11), start_row_abs: false, start_col_abs: false, end_row_abs: false, end_col_abs: false } }, source_token: None, contains_volatile: false }] }, source_token: None, contains_volatile: false }, right: ASTNode { node_type: Literal(Number(12.0)), source_token: None, contains_volatile: false } }, source_token: None, contains_volatile: false }] }, source_token: None, contains_volatile: false }",
+            "ASTNode { node_type: Function { name: \"IF\", args: [ASTNode { node_type: BinaryOp { op: \"=\", left: ASTNode { node_type: Reference { original: \"$I29\", reference: Cell { sheet: None, row: 29, col: 9, row_abs: false, col_abs: true } }, source_token: None, contains_volatile: false }, right: ASTNode { node_type: Literal(Text(\"Yes\")), source_token: None, contains_volatile: false } }, source_token: None, contains_volatile: false }, ASTNode { node_type: Function { name: \"IFERROR\", args: [ASTNode { node_type: Function { name: \"INDEX\", args: [ASTNode { node_type: Reference { original: \"Schedule_Offset\", reference: NamedRange(\"Schedule_Offset\") }, source_token: None, contains_volatile: false }, ASTNode { node_type: Function { name: \"MATCH\", args: [ASTNode { node_type: Reference { original: \"$G29\", reference: Cell { sheet: None, row: 29, col: 7, row_abs: false, col_abs: true } }, source_token: None, contains_volatile: false }, ASTNode { node_type: Reference { original: \"Schedule_Offset_R\", reference: NamedRange(\"Schedule_Offset_R\") }, source_token: None, contains_volatile: false }, ASTNode { node_type: Literal(Number(0.0)), source_token: None, contains_volatile: false }] }, source_token: None, contains_volatile: false }, ASTNode { node_type: Function { name: \"IF\", args: [ASTNode { node_type: BinaryOp { op: \"=\", left: ASTNode { node_type: Reference { original: \"$J$11\", reference: Cell { sheet: None, row: 11, col: 10, row_abs: true, col_abs: true } }, source_token: None, contains_volatile: false }, right: ASTNode { node_type: Literal(Text(\"CC\")), source_token: None, contains_volatile: false } }, source_token: None, contains_volatile: false }, ASTNode { node_type: Function { name: \"MATCH\", args: [ASTNode { node_type: Literal(Text(\"CC Offset (Months)\")), source_token: None, contains_volatile: false }, ASTNode { node_type: Reference { original: \"Schedule_Offset_C\", reference: NamedRange(\"Schedule_Offset_C\") }, source_token: None, contains_volatile: false }, ASTNode { node_type: Literal(Number(0.0)), source_token: None, contains_volatile: false }] }, source_token: None, contains_volatile: false }, ASTNode { node_type: Function { name: \"MATCH\", args: [ASTNode { node_type: Literal(Text(\"SC Offset (Months)\")), source_token: None, contains_volatile: false }, ASTNode { node_type: Reference { original: \"Schedule_Offset_C\", reference: NamedRange(\"Schedule_Offset_C\") }, source_token: None, contains_volatile: false }, ASTNode { node_type: Literal(Number(0.0)), source_token: None, contains_volatile: false }] }, source_token: None, contains_volatile: false }] }, source_token: None, contains_volatile: false }] }, source_token: None, contains_volatile: false }, ASTNode { node_type: Literal(Text(\"\")), source_token: None, contains_volatile: false }] }, source_token: None, contains_volatile: false }, ASTNode { node_type: Literal(Text(\"\")), source_token: None, contains_volatile: false }] }, source_token: None, contains_volatile: false }",
+            "ASTNode { node_type: Function { name: \"INDEX\", args: [ASTNode { node_type: Reference { original: \"Cash_Flow_Inputs\", reference: NamedRange(\"Cash_Flow_Inputs\") }, source_token: None, contains_volatile: false }, ASTNode { node_type: Function { name: \"MATCH\", args: [ASTNode { node_type: Reference { original: \"$C11\", reference: Cell { sheet: None, row: 11, col: 3, row_abs: false, col_abs: true } }, source_token: None, contains_volatile: false }, ASTNode { node_type: Reference { original: \"Cash_Flow_Inputs_R\", reference: NamedRange(\"Cash_Flow_Inputs_R\") }, source_token: None, contains_volatile: false }, ASTNode { node_type: Literal(Number(0.0)), source_token: None, contains_volatile: false }] }, source_token: None, contains_volatile: false }, ASTNode { node_type: Function { name: \"MATCH\", args: [ASTNode { node_type: Reference { original: \"$J$6\", reference: Cell { sheet: None, row: 6, col: 10, row_abs: true, col_abs: true } }, source_token: None, contains_volatile: false }, ASTNode { node_type: Reference { original: \"Cash_Flow_Inputs_C\", reference: NamedRange(\"Cash_Flow_Inputs_C\") }, source_token: None, contains_volatile: false }, ASTNode { node_type: Literal(Number(0.0)), source_token: None, contains_volatile: false }] }, source_token: None, contains_volatile: false }] }, source_token: None, contains_volatile: false }",
+            null
+          ],
+          "member_indices": [
+            0,
+            4,
+            14,
+            7,
+            0
+          ]
+        }
+      ]
+    },
+    "runtime_observed_scc": {
+      "added_edges": 1,
+      "cashflow_engine_members": 525,
+      "cashflow_inputs_members": 3613,
+      "cross_sheet_cycle": true,
+      "cyclic_scc_count": 1,
+      "edge_count": 2072267,
+      "largest_scc": 4142,
+      "main_component_mismatch_members": 3679,
+      "original_static_members_retained": 4138,
+      "removed_edges": 4131,
+      "selected_source_count": 1,
+      "variant": "runtime_observed_index_selected_target_only",
+      "witnesses": [
+        {
+          "addresses": [
+            "CashFlow Inputs!J23",
+            "CashFlow Engine!K65"
+          ],
+          "direction": "CashFlow Inputs -> CashFlow Engine",
+          "formulas": [
+            "ASTNode { node_type: Function { name: \"EDATE\", args: [ASTNode { node_type: Reference { original: \"J24\", reference: Cell { sheet: None, row: 24, col: 10, row_abs: false, col_abs: false } }, source_token: None, contains_volatile: false }, ASTNode { node_type: BinaryOp { op: \"-\", left: ASTNode { node_type: Function { name: \"MIN\", args: [ASTNode { node_type: Reference { original: \"'CashFlow Engine'!K29:K112\", reference: Range { sheet: Some(\"CashFlow Engine\"), start_row: Some(29), start_col: Some(11), end_row: Some(112), end_col: Some(11), start_row_abs: false, start_col_abs: false, end_row_abs: false, end_col_abs: false } }, source_token: None, contains_volatile: false }] }, source_token: None, contains_volatile: false }, right: ASTNode { node_type: Literal(Number(12.0)), source_token: None, contains_volatile: false } }, source_token: None, contains_volatile: false }] }, source_token: None, contains_volatile: false }",
+            "ASTNode { node_type: Function { name: \"IF\", args: [ASTNode { node_type: BinaryOp { op: \"=\", left: ASTNode { node_type: Reference { original: \"I65\", reference: Cell { sheet: None, row: 65, col: 9, row_abs: false, col_abs: false } }, source_token: None, contains_volatile: false }, right: ASTNode { node_type: Literal(Text(\"Yes\")), source_token: None, contains_volatile: false } }, source_token: None, contains_volatile: false }, ASTNode { node_type: BinaryOp { op: \"-\", left: ASTNode { node_type: Reference { original: \"K64\", reference: Cell { sheet: None, row: 64, col: 11, row_abs: false, col_abs: false } }, source_token: None, contains_volatile: false }, right: ASTNode { node_type: Literal(Number(1.0)), source_token: None, contains_volatile: false } }, source_token: None, contains_volatile: false }, ASTNode { node_type: Literal(Text(\"\")), source_token: None, contains_volatile: false }] }, source_token: None, contains_volatile: false }"
+          ],
+          "member_indices": [
+            0,
+            4452
+          ]
+        },
+        {
+          "addresses": [
+            "CashFlow Engine!J8",
+            "CashFlow Inputs!J23"
+          ],
+          "direction": "CashFlow Engine -> CashFlow Inputs",
+          "formulas": [
+            "ASTNode { node_type: Function { name: \"INDEX\", args: [ASTNode { node_type: Reference { original: \"Cash_Flow_Inputs\", reference: NamedRange(\"Cash_Flow_Inputs\") }, source_token: None, contains_volatile: false }, ASTNode { node_type: Function { name: \"MATCH\", args: [ASTNode { node_type: Reference { original: \"$C8\", reference: Cell { sheet: None, row: 8, col: 3, row_abs: false, col_abs: true } }, source_token: None, contains_volatile: false }, ASTNode { node_type: Reference { original: \"Cash_Flow_Inputs_R\", reference: NamedRange(\"Cash_Flow_Inputs_R\") }, source_token: None, contains_volatile: false }, ASTNode { node_type: Literal(Number(0.0)), source_token: None, contains_volatile: false }] }, source_token: None, contains_volatile: false }, ASTNode { node_type: Function { name: \"MATCH\", args: [ASTNode { node_type: Reference { original: \"$J$6\", reference: Cell { sheet: None, row: 6, col: 10, row_abs: true, col_abs: true } }, source_token: None, contains_volatile: false }, ASTNode { node_type: Reference { original: \"Cash_Flow_Inputs_C\", reference: NamedRange(\"Cash_Flow_Inputs_C\") }, source_token: None, contains_volatile: false }, ASTNode { node_type: Literal(Number(0.0)), source_token: None, contains_volatile: false }] }, source_token: None, contains_volatile: false }] }, source_token: None, contains_volatile: false }",
+            "ASTNode { node_type: Function { name: \"EDATE\", args: [ASTNode { node_type: Reference { original: \"J24\", reference: Cell { sheet: None, row: 24, col: 10, row_abs: false, col_abs: false } }, source_token: None, contains_volatile: false }, ASTNode { node_type: BinaryOp { op: \"-\", left: ASTNode { node_type: Function { name: \"MIN\", args: [ASTNode { node_type: Reference { original: \"'CashFlow Engine'!K29:K112\", reference: Range { sheet: Some(\"CashFlow Engine\"), start_row: Some(29), start_col: Some(11), end_row: Some(112), end_col: Some(11), start_row_abs: false, start_col_abs: false, end_row_abs: false, end_col_abs: false } }, source_token: None, contains_volatile: false }] }, source_token: None, contains_volatile: false }, right: ASTNode { node_type: Literal(Number(12.0)), source_token: None, contains_volatile: false } }, source_token: None, contains_volatile: false }] }, source_token: None, contains_volatile: false }"
+          ],
+          "member_indices": [
+            4130,
+            0
+          ]
+        },
+        {
+          "addresses": [
+            "CashFlow Inputs!J23",
+            "CashFlow Engine!K65",
+            "CashFlow Engine!I65",
+            "CashFlow Engine!J11",
+            "CashFlow Inputs!J23"
+          ],
+          "direction": "complete_cycle",
+          "edge_masks": [
+            2,
+            1,
+            1,
+            16
+          ],
+          "formulas": [
+            "ASTNode { node_type: Function { name: \"EDATE\", args: [ASTNode { node_type: Reference { original: \"J24\", reference: Cell { sheet: None, row: 24, col: 10, row_abs: false, col_abs: false } }, source_token: None, contains_volatile: false }, ASTNode { node_type: BinaryOp { op: \"-\", left: ASTNode { node_type: Function { name: \"MIN\", args: [ASTNode { node_type: Reference { original: \"'CashFlow Engine'!K29:K112\", reference: Range { sheet: Some(\"CashFlow Engine\"), start_row: Some(29), start_col: Some(11), end_row: Some(112), end_col: Some(11), start_row_abs: false, start_col_abs: false, end_row_abs: false, end_col_abs: false } }, source_token: None, contains_volatile: false }] }, source_token: None, contains_volatile: false }, right: ASTNode { node_type: Literal(Number(12.0)), source_token: None, contains_volatile: false } }, source_token: None, contains_volatile: false }] }, source_token: None, contains_volatile: false }",
+            "ASTNode { node_type: Function { name: \"IF\", args: [ASTNode { node_type: BinaryOp { op: \"=\", left: ASTNode { node_type: Reference { original: \"I65\", reference: Cell { sheet: None, row: 65, col: 9, row_abs: false, col_abs: false } }, source_token: None, contains_volatile: false }, right: ASTNode { node_type: Literal(Text(\"Yes\")), source_token: None, contains_volatile: false } }, source_token: None, contains_volatile: false }, ASTNode { node_type: BinaryOp { op: \"-\", left: ASTNode { node_type: Reference { original: \"K64\", reference: Cell { sheet: None, row: 64, col: 11, row_abs: false, col_abs: false } }, source_token: None, contains_volatile: false }, right: ASTNode { node_type: Literal(Number(1.0)), source_token: None, contains_volatile: false } }, source_token: None, contains_volatile: false }, ASTNode { node_type: Literal(Text(\"\")), source_token: None, contains_volatile: false }] }, source_token: None, contains_volatile: false }",
+            "ASTNode { node_type: Function { name: \"IF\", args: [ASTNode { node_type: Function { name: \"AND\", args: [ASTNode { node_type: BinaryOp { op: \"=\", left: ASTNode { node_type: Reference { original: \"$J$11\", reference: Cell { sheet: None, row: 11, col: 10, row_abs: true, col_abs: true } }, source_token: None, contains_volatile: false }, right: ASTNode { node_type: Literal(Text(\"CC\")), source_token: None, contains_volatile: false } }, source_token: None, contains_volatile: false }, ASTNode { node_type: BinaryOp { op: \">\", left: ASTNode { node_type: Reference { original: \"$J$14\", reference: Cell { sheet: None, row: 14, col: 10, row_abs: true, col_abs: true } }, source_token: None, contains_volatile: false }, right: ASTNode { node_type: Literal(Number(4.0)), source_token: None, contains_volatile: false } }, source_token: None, contains_volatile: false }] }, source_token: None, contains_volatile: false }, ASTNode { node_type: Literal(Text(\"Yes\")), source_token: None, contains_volatile: false }, ASTNode { node_type: Literal(Text(\"No\")), source_token: None, contains_volatile: false }] }, source_token: None, contains_volatile: false }",
+            "ASTNode { node_type: Function { name: \"INDEX\", args: [ASTNode { node_type: Reference { original: \"Cash_Flow_Inputs\", reference: NamedRange(\"Cash_Flow_Inputs\") }, source_token: None, contains_volatile: false }, ASTNode { node_type: Function { name: \"MATCH\", args: [ASTNode { node_type: Reference { original: \"$C11\", reference: Cell { sheet: None, row: 11, col: 3, row_abs: false, col_abs: true } }, source_token: None, contains_volatile: false }, ASTNode { node_type: Reference { original: \"Cash_Flow_Inputs_R\", reference: NamedRange(\"Cash_Flow_Inputs_R\") }, source_token: None, contains_volatile: false }, ASTNode { node_type: Literal(Number(0.0)), source_token: None, contains_volatile: false }] }, source_token: None, contains_volatile: false }, ASTNode { node_type: Function { name: \"MATCH\", args: [ASTNode { node_type: Reference { original: \"$J$6\", reference: Cell { sheet: None, row: 6, col: 10, row_abs: true, col_abs: true } }, source_token: None, contains_volatile: false }, ASTNode { node_type: Reference { original: \"Cash_Flow_Inputs_C\", reference: NamedRange(\"Cash_Flow_Inputs_C\") }, source_token: None, contains_volatile: false }, ASTNode { node_type: Literal(Number(0.0)), source_token: None, contains_volatile: false }] }, source_token: None, contains_volatile: false }] }, source_token: None, contains_volatile: false }",
+            "ASTNode { node_type: Function { name: \"EDATE\", args: [ASTNode { node_type: Reference { original: \"J24\", reference: Cell { sheet: None, row: 24, col: 10, row_abs: false, col_abs: false } }, source_token: None, contains_volatile: false }, ASTNode { node_type: BinaryOp { op: \"-\", left: ASTNode { node_type: Function { name: \"MIN\", args: [ASTNode { node_type: Reference { original: \"'CashFlow Engine'!K29:K112\", reference: Range { sheet: Some(\"CashFlow Engine\"), start_row: Some(29), start_col: Some(11), end_row: Some(112), end_col: Some(11), start_row_abs: false, start_col_abs: false, end_row_abs: false, end_col_abs: false } }, source_token: None, contains_volatile: false }] }, source_token: None, contains_volatile: false }, right: ASTNode { node_type: Literal(Number(12.0)), source_token: None, contains_volatile: false } }, source_token: None, contains_volatile: false }] }, source_token: None, contains_volatile: false }"
+          ],
+          "member_indices": [
+            0,
+            4452,
+            4451,
+            4132,
+            0
+          ]
+        }
+      ]
+    },
+    "cross_sheet_cycle_remains": true,
+    "level_c_topology_change_proven": false
+  },
+  "level_c_conclusion": {
+    "status": "no_specific_semantic_defect_proven_causal",
+    "central_counterfactual": "LIKELY_YES",
+    "reason": "The narrow conditional value correction changes parity without topology; the Excel-selected INDEX target replacement removes the broad J8 dependency surface but leaves the 4,829/4,142 cycle essentially unchanged. Broad mismatch removal remains graph causality only, not a semantic correction."
+  },
+  "notes": [
+    "No production semantic patch was applied.",
+    "The INDEX experiment is explicitly Excel-assisted Level B because INDEX here returns a value and Excel's invalidation dependency surface is not fully observable.",
+    "The K65 correction is a narrow value-semantic correction; its branch references do not materially maintain the large SCC."
+  ]
+}

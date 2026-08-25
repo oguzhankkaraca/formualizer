@@ -1,0 +1,93 @@
+{
+    "schema":  "formualizer.excel-reference-targets/v1",
+    "workbook":  "C:\\Users\\OXK0A0A\\Downloads\\Fossil_EstimatingTemplate_2026-08_21_A.xlsx",
+    "input":  {
+                  "sheet":  "Inputs",
+                  "address":  "F7",
+                  "value":  300
+              },
+    "iteration":  true,
+    "results":  [
+                    {
+                        "sheet":  "CashFlow Engine",
+                        "address":  "J8",
+                        "formula":  "=INDEX(Cash_Flow_Inputs,MATCH($C8,Cash_Flow_Inputs_R,0),MATCH($J$6,Cash_Flow_Inputs_C,0))",
+                        "excel_value2":  45992,
+                        "excel_text":  "12/1/2025",
+                        "reference_formula":  "=CELL(\"address\",INDEX(Cash_Flow_Inputs,MATCH($C8,Cash_Flow_Inputs_R,0),MATCH($J$6,Cash_Flow_Inputs_C,0)))",
+                        "selected_reference":  "\u0027[Fossil_EstimatingTemplate_2026-08_21_A.xlsx]CashFlow Inputs\u0027!$J$23",
+                        "error":  null
+                    },
+                    {
+                        "sheet":  "CashFlow Engine",
+                        "address":  "J9",
+                        "formula":  "=INDEX(Cash_Flow_Inputs,MATCH($C9,Cash_Flow_Inputs_R,0),MATCH($J$6,Cash_Flow_Inputs_C,0))",
+                        "excel_value2":  48366,
+                        "excel_text":  "6/1/2032",
+                        "reference_formula":  "=CELL(\"address\",INDEX(Cash_Flow_Inputs,MATCH($C9,Cash_Flow_Inputs_R,0),MATCH($J$6,Cash_Flow_Inputs_C,0)))",
+                        "selected_reference":  "\u0027[Fossil_EstimatingTemplate_2026-08_21_A.xlsx]CashFlow Inputs\u0027!$J$24",
+                        "error":  null
+                    },
+                    {
+                        "sheet":  "CashFlow Engine",
+                        "address":  "J11",
+                        "formula":  "=INDEX(Cash_Flow_Inputs,MATCH($C11,Cash_Flow_Inputs_R,0),MATCH($J$6,Cash_Flow_Inputs_C,0))",
+                        "excel_value2":  "SC",
+                        "excel_text":  "SC",
+                        "reference_formula":  "=CELL(\"address\",INDEX(Cash_Flow_Inputs,MATCH($C11,Cash_Flow_Inputs_R,0),MATCH($J$6,Cash_Flow_Inputs_C,0)))",
+                        "selected_reference":  "\u0027[Fossil_EstimatingTemplate_2026-08_21_A.xlsx]CashFlow Inputs\u0027!$J$9",
+                        "error":  null
+                    },
+                    {
+                        "sheet":  "CashFlow Engine",
+                        "address":  "J13",
+                        "formula":  "=INDEX(Cash_Flow_Inputs,MATCH($C13,Cash_Flow_Inputs_R,0),MATCH($J$6,Cash_Flow_Inputs_C,0))",
+                        "excel_value2":  1,
+                        "excel_text":  "1",
+                        "reference_formula":  "=CELL(\"address\",INDEX(Cash_Flow_Inputs,MATCH($C13,Cash_Flow_Inputs_R,0),MATCH($J$6,Cash_Flow_Inputs_C,0)))",
+                        "selected_reference":  "\u0027[Fossil_EstimatingTemplate_2026-08_21_A.xlsx]CashFlow Inputs\u0027!$J$11",
+                        "error":  null
+                    },
+                    {
+                        "sheet":  "CashFlow Engine",
+                        "address":  "J14",
+                        "formula":  "=INDEX(Cash_Flow_Inputs,MATCH($C14,Cash_Flow_Inputs_R,0),MATCH($J$6,Cash_Flow_Inputs_C,0))",
+                        "excel_value2":  0,
+                        "excel_text":  "0",
+                        "reference_formula":  "=CELL(\"address\",INDEX(Cash_Flow_Inputs,MATCH($C14,Cash_Flow_Inputs_R,0),MATCH($J$6,Cash_Flow_Inputs_C,0)))",
+                        "selected_reference":  "\u0027[Fossil_EstimatingTemplate_2026-08_21_A.xlsx]CashFlow Inputs\u0027!$J$12",
+                        "error":  null
+                    },
+                    {
+                        "sheet":  "CashFlow Engine",
+                        "address":  "J15",
+                        "formula":  "=INDEX(Cash_Flow_Inputs,MATCH($C15,Cash_Flow_Inputs_R,0),MATCH($J$6,Cash_Flow_Inputs_C,0))",
+                        "excel_value2":  0,
+                        "excel_text":  "0",
+                        "reference_formula":  "=CELL(\"address\",INDEX(Cash_Flow_Inputs,MATCH($C15,Cash_Flow_Inputs_R,0),MATCH($J$6,Cash_Flow_Inputs_C,0)))",
+                        "selected_reference":  "\u0027[Fossil_EstimatingTemplate_2026-08_21_A.xlsx]CashFlow Inputs\u0027!$J$13",
+                        "error":  null
+                    },
+                    {
+                        "sheet":  "CashFlow Engine",
+                        "address":  "J16",
+                        "formula":  "=INDEX(Cash_Flow_Inputs,MATCH($C16,Cash_Flow_Inputs_R,0),MATCH($J$6,Cash_Flow_Inputs_C,0))",
+                        "excel_value2":  1,
+                        "excel_text":  "1",
+                        "reference_formula":  "=CELL(\"address\",INDEX(Cash_Flow_Inputs,MATCH($C16,Cash_Flow_Inputs_R,0),MATCH($J$6,Cash_Flow_Inputs_C,0)))",
+                        "selected_reference":  "\u0027[Fossil_EstimatingTemplate_2026-08_21_A.xlsx]CashFlow Inputs\u0027!$J$14",
+                        "error":  null
+                    },
+                    {
+                        "sheet":  "CashFlow Engine",
+                        "address":  "J21",
+                        "formula":  "=INDEX(Cash_Flow_Inputs,MATCH($C21,Cash_Flow_Inputs_R,0),MATCH($J$6,Cash_Flow_Inputs_C,0))",
+                        "excel_value2":  "CTG_Large_Frame_PMT",
+                        "excel_text":  "CTG_Large_Frame_PMT",
+                        "reference_formula":  "=CELL(\"address\",INDEX(Cash_Flow_Inputs,MATCH($C21,Cash_Flow_Inputs_R,0),MATCH($J$6,Cash_Flow_Inputs_C,0)))",
+                        "selected_reference":  "\u0027[Fossil_EstimatingTemplate_2026-08_21_A.xlsx]CashFlow Inputs\u0027!$J$19",
+                        "error":  null
+                    }
+                ],
+    "note":  "CELL(address,INDEX(...)) is Excel-observed selected-reference evidence; it does not enumerate Excel\u0027s full dependency graph."
+}

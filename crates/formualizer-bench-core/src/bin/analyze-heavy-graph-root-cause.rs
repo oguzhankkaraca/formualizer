@@ -9,6 +9,7 @@ const EDGE_DUMP: &str = r"docs/issue-solutions/data/heavy-scc-edge-dump.tsv";
 const STATIC_EDGE_DUMP: &str = r"docs/issue-solutions/data/heavy-static-scc-edge-dump.tsv";
 const MISMATCHES: &str =
     r"docs/issue-solutions/data/heavy-formualizer-excel-mismatch-inventory.json";
+const REFERENCE_TARGETS: &str = r"docs/issue-solutions/data/excel-reference-targets.json";
 const OUTPUT: &str = r"docs/issue-solutions/data/heavy-graph-root-cause.json";
 
 const STATIC_FAMILIES: [&str; 8] = [
@@ -251,7 +252,75 @@ fn witnesses(members: &[Member], edges: &[Edge]) -> Vec<Value> {
             }
         }
     }
+    for edge in edges.iter().take(256) {
+        if let Some(return_path) = path_between(members.len(), edges, edge.target, |node| {
+            node == edge.source
+        }) {
+            let mut cycle = vec![edge.source];
+            cycle.extend(return_path);
+            let edge_masks = cycle
+                .windows(2)
+                .map(|pair| {
+                    edges
+                        .iter()
+                        .find(|candidate| {
+                            candidate.source == pair[0] && candidate.target == pair[1]
+                        })
+                        .map_or(0, |candidate| candidate.mask)
+                })
+                .collect::<Vec<_>>();
+            out.push(json!({
+                "direction": "complete_cycle",
+                "member_indices": cycle,
+                "addresses": cycle.iter().map(|&i| members[i].address.clone()).collect::<Vec<_>>(),
+                "formulas": cycle.iter().map(|&i| if members[i].formula_debug.is_empty() { Value::Null } else { Value::String(members[i].formula_debug.clone()) }).collect::<Vec<_>>(),
+                "edge_masks": edge_masks,
+            }));
+            break;
+        }
+    }
     out
+}
+
+fn targeted_index_variant(
+    prefix: &str,
+    base: &[Edge],
+    target_map: &HashMap<usize, usize>,
+    members: &[Member],
+    original_static: &HashSet<String>,
+    mismatches: &HashSet<String>,
+) -> Value {
+    let mut kept: Vec<Edge> = base
+        .iter()
+        .copied()
+        .filter(|edge| !target_map.contains_key(&edge.source))
+        .collect();
+    for (&source, &target) in target_map {
+        kept.push(Edge {
+            source,
+            target,
+            mask: 1,
+        });
+    }
+    let replaced_edge_count = base
+        .iter()
+        .filter(|edge| target_map.contains_key(&edge.source))
+        .count();
+    let mut result = metrics(members, &kept, original_static, mismatches);
+    if let Value::Object(ref mut object) = result {
+        object.insert(
+            "variant".into(),
+            Value::String(format!("{prefix}_index_selected_target_only")),
+        );
+        object.insert("removed_edges".into(), Value::from(replaced_edge_count));
+        object.insert("added_edges".into(), Value::from(target_map.len()));
+        object.insert("witnesses".into(), Value::Array(witnesses(members, &kept)));
+        object.insert(
+            "selected_source_count".into(),
+            Value::from(target_map.len()),
+        );
+    }
+    result
 }
 
 fn variants(
@@ -367,6 +436,8 @@ fn main() -> Result<()> {
         r"docs/issue-solutions/data/fossil-static-edge-origin-breakdown.json",
     )?)?;
     let mismatch_inventory: Value = serde_json::from_str(&fs::read_to_string(MISMATCHES)?)?;
+    let excel_reference_targets: Value =
+        serde_json::from_str(&fs::read_to_string(REFERENCE_TARGETS)?)?;
     let original_static: HashSet<String> =
         baseline["steps"][0]["main_passes"][0]["changed_member_addresses"]
             .as_array()
@@ -422,13 +493,14 @@ fn main() -> Result<()> {
         .collect();
 
     let dump = fs::read_to_string(EDGE_DUMP).with_context(|| format!("read {EDGE_DUMP}"))?;
-    let mut members = Vec::new();
+    let mut runtime_members = Vec::new();
+    let mut static_members = Vec::new();
     let mut static_pairs: Vec<(usize, usize, u16)> = Vec::new();
     let mut runtime_edges = Vec::new();
     for line in dump.lines().skip(1) {
         let fields: Vec<&str> = line.split('\t').collect();
         match fields.first().copied() {
-            Some("M") if fields.len() >= 7 => members.push(Member {
+            Some("M") if fields.len() >= 7 => runtime_members.push(Member {
                 member_index: fields[1].parse()?,
                 address: fields[3].into(),
                 normalized: normalize_address(fields[3]),
@@ -449,16 +521,29 @@ fn main() -> Result<()> {
         fs::read_to_string(STATIC_EDGE_DUMP).with_context(|| format!("read {STATIC_EDGE_DUMP}"))?;
     for line in static_dump.lines().skip(1) {
         let fields: Vec<&str> = line.split('\t').collect();
-        if fields.first().copied() == Some("S") && fields.len() >= 3 {
-            let mask = fields
-                .get(3)
-                .and_then(|field| field.parse().ok())
-                .unwrap_or(1);
-            static_pairs.push((fields[1].parse()?, fields[2].parse()?, mask));
+        match fields.first().copied() {
+            Some("M") if fields.len() >= 7 => static_members.push(Member {
+                member_index: fields[1].parse()?,
+                address: fields[3].into(),
+                normalized: normalize_address(fields[3]),
+                sheet: sheet_of(fields[3]),
+                dynamic: fields[4] == "true",
+                volatile: fields[5] == "true",
+                formula_debug: fields[6].into(),
+            }),
+            Some("S") if fields.len() >= 3 => {
+                let mask = fields
+                    .get(3)
+                    .and_then(|field| field.parse().ok())
+                    .unwrap_or(1);
+                static_pairs.push((fields[1].parse()?, fields[2].parse()?, mask));
+            }
+            _ => {}
         }
     }
-    members.sort_by_key(|member| member.member_index);
-    if members.is_empty() {
+    runtime_members.sort_by_key(|member| member.member_index);
+    static_members.sort_by_key(|member| member.member_index);
+    if runtime_members.is_empty() || static_members.is_empty() {
         anyhow::bail!("edge dump has no members")
     }
     let mut static_edges = Vec::new();
@@ -477,55 +562,115 @@ fn main() -> Result<()> {
             edge.mask |= mask;
         }
     }
-    let address_to_index: std::collections::HashMap<String, usize> = members
+    let runtime_address_to_index: HashMap<String, usize> = runtime_members
         .iter()
         .enumerate()
         .map(|(i, member)| (member.normalized.clone(), i))
         .collect();
-    let mismatch_indices: HashSet<usize> = mismatches
+    let static_address_to_index: HashMap<String, usize> = static_members
         .iter()
-        .filter_map(|address| address_to_index.get(address).copied())
+        .enumerate()
+        .map(|(i, member)| (member.normalized.clone(), i))
         .collect();
-    let unsupported_indices: HashSet<usize> = unsupported
-        .iter()
-        .filter_map(|address| address_to_index.get(address).copied())
-        .collect();
-    let numeric_error_indices: HashSet<usize> = numeric_errors
-        .iter()
-        .filter_map(|address| address_to_index.get(address).copied())
-        .collect();
-    let conditional_indices: HashSet<usize> = conditional
-        .iter()
-        .filter_map(|address| address_to_index.get(address).copied())
-        .collect();
+    let index_targets = |address_to_index: &HashMap<String, usize>| {
+        let mut targets = HashMap::new();
+        for result in excel_reference_targets["results"]
+            .as_array()
+            .unwrap_or(&vec![])
+        {
+            let Some(source_sheet) = result["sheet"].as_str() else {
+                continue;
+            };
+            let Some(source_address) = result["address"].as_str() else {
+                continue;
+            };
+            let Some(selected) = result["selected_reference"].as_str() else {
+                continue;
+            };
+            let Some(close_bracket) = selected.rfind(']') else {
+                continue;
+            };
+            let selected = selected[close_bracket + 1..].trim_matches('\'');
+            let source = normalize_address(&format!("{source_sheet}!{source_address}"));
+            let target = normalize_address(selected);
+            if let (Some(&source), Some(&target)) =
+                (address_to_index.get(&source), address_to_index.get(&target))
+            {
+                targets.insert(source, target);
+            }
+        }
+        targets
+    };
+    let static_index_targets = index_targets(&static_address_to_index);
+    let runtime_index_targets = index_targets(&runtime_address_to_index);
+    let index_set = |addresses: &HashSet<String>, address_to_index: &HashMap<String, usize>| {
+        addresses
+            .iter()
+            .filter_map(|address| address_to_index.get(address).copied())
+            .collect::<HashSet<_>>()
+    };
+    let static_mismatch_indices = index_set(&mismatches, &static_address_to_index);
+    let static_unsupported_indices = index_set(&unsupported, &static_address_to_index);
+    let static_numeric_error_indices = index_set(&numeric_errors, &static_address_to_index);
+    let static_conditional_indices = index_set(&conditional, &static_address_to_index);
+    let runtime_mismatch_indices = index_set(&mismatches, &runtime_address_to_index);
+    let runtime_unsupported_indices = index_set(&unsupported, &runtime_address_to_index);
+    let runtime_numeric_error_indices = index_set(&numeric_errors, &runtime_address_to_index);
+    let runtime_conditional_indices = index_set(&conditional, &runtime_address_to_index);
     let static_variants = variants(
         "static_graph",
         &static_edges,
         STATIC_FAMILIES.len(),
         &STATIC_FAMILIES,
-        &members,
+        &static_members,
         &original_static,
         &mismatches,
-        &mismatch_indices,
-        &unsupported_indices,
-        &numeric_error_indices,
-        &conditional_indices,
+        &static_mismatch_indices,
+        &static_unsupported_indices,
+        &static_numeric_error_indices,
+        &static_conditional_indices,
     );
     let runtime_variants = variants(
         "runtime_observed",
         &runtime_edges,
         RUNTIME_FAMILIES.len(),
         &RUNTIME_FAMILIES,
-        &members,
+        &runtime_members,
         &original_static,
         &mismatches,
-        &mismatch_indices,
-        &unsupported_indices,
-        &numeric_error_indices,
-        &conditional_indices,
+        &runtime_mismatch_indices,
+        &runtime_unsupported_indices,
+        &runtime_numeric_error_indices,
+        &runtime_conditional_indices,
     );
-    let static_base = metrics(&members, &static_edges, &original_static, &mismatches);
-    let runtime_base = metrics(&members, &runtime_edges, &original_static, &mismatches);
+    let static_index_counterfactual = targeted_index_variant(
+        "static_graph",
+        &static_edges,
+        &static_index_targets,
+        &static_members,
+        &original_static,
+        &mismatches,
+    );
+    let runtime_index_counterfactual = targeted_index_variant(
+        "runtime_observed",
+        &runtime_edges,
+        &runtime_index_targets,
+        &runtime_members,
+        &original_static,
+        &mismatches,
+    );
+    let static_base = metrics(
+        &static_members,
+        &static_edges,
+        &original_static,
+        &mismatches,
+    );
+    let runtime_base = metrics(
+        &runtime_members,
+        &runtime_edges,
+        &original_static,
+        &mismatches,
+    );
     let static_dump_origin_counts: HashMap<String, usize> = STATIC_FAMILIES
         .iter()
         .enumerate()
@@ -553,7 +698,7 @@ fn main() -> Result<()> {
         })
         .collect();
     let mut member_summary = Vec::new();
-    for member in &members {
+    for member in &runtime_members {
         member_summary.push(json!({"address": member.address, "normalized_address": member.normalized, "dynamic": member.dynamic, "volatile": member.volatile, "formula_debug": if member.formula_debug.is_empty() { Value::Null } else { Value::String(member.formula_debug.clone()) }}));
     }
     let result = json!({
@@ -563,16 +708,16 @@ fn main() -> Result<()> {
         "baseline": {"static_graph": static_base, "runtime_observed_graph": runtime_base, "prior_static_scc_artifact": {"largest_scc": baseline["static_scc_probe"]["largest_scc_size"], "cyclic_scc_count": baseline["static_scc_probe"]["cyclic_scc_count"], "runtime_live_members": runtime_topology["runtime_live_cycle_member_count"], "static_origin_counts": static_origins["origin_counts"]}},
         "edge_taxonomy": {"static_labels": STATIC_FAMILIES, "runtime_labels": RUNTIME_FAMILIES, "static_dump_origin_counts": static_dump_origin_counts, "runtime_observed_origin_counts": runtime_dump_origin_counts},
         "main_scc_internal_edge_counts": {"static_internal_edge_count": static_edges.len(), "runtime_observed_internal_edge_count": runtime_edges.len(), "prior_static_internal_live_edge_count": static_origins["static_internal_live_edge_count"], "prior_static_origin_counts": static_origins["origin_counts"]},
-        "cycle_witnesses": {"static_graph": witnesses(&members, &static_edges), "runtime_observed_graph": witnesses(&members, &runtime_edges)},
+        "cycle_witnesses": {"static_graph": witnesses(&static_members, &static_edges), "runtime_observed_graph": witnesses(&runtime_members, &runtime_edges)},
         "semantic_mismatches_in_main_scc": {"count": mismatch_items.len(), "category_counts": mismatch_inventory["main_scc_mismatch_counts"], "items": mismatch_items, "runtime_live_membership": "unknown except explicit prior samples"},
         "mismatch_ablations": static_variants.iter().chain(runtime_variants.iter()).filter(|variant| variant["variant"].as_str().is_some_and(|name| name.contains("mismatch") || name.contains("unsupported"))).cloned().collect::<Vec<_>>(),
         "dependency_family_ablations": static_variants.iter().chain(runtime_variants.iter()).filter(|variant| variant["variant"].as_str().is_some_and(|name| name.contains("without_") || name.contains("direct_exact"))).cloned().collect::<Vec<_>>(),
         "cross_ablations": static_variants.iter().chain(runtime_variants.iter()).filter(|variant| variant["variant"].as_str().is_some_and(|name| name.contains('+'))).cloned().collect::<Vec<_>>(),
-        "graph_variants": {"static_graph": static_variants, "runtime_observed_graph": runtime_variants},
-        "remaining_feedback_backbone": {"static": witnesses(&members, &static_edges), "runtime_observed": witnesses(&members, &runtime_edges)},
-        "excel_assisted_reference_evidence": {"status": "none available", "reason": "Excel returned zero Heavy circular seeds and no trace paths."},
-        "excel_assisted_graph": {"status": "not constructed", "uncertain_references_retained": true},
-        "targeted_semantic_corrections": {"status": "none", "reason": "No isolated Level C correction was justified."},
+        "graph_variants": {"static_graph": static_variants, "runtime_observed_graph": runtime_variants, "excel_index_selected_target_counterfactual": {"static": static_index_counterfactual, "runtime_observed": runtime_index_counterfactual}},
+        "remaining_feedback_backbone": {"static": witnesses(&static_members, &static_edges), "runtime_observed": witnesses(&runtime_members, &runtime_edges)},
+        "excel_assisted_reference_evidence": {"status": "selected INDEX targets available", "source": REFERENCE_TARGETS, "heavy_circular_seed_status": "none", "selected_index_source_count": static_index_targets.len(), "note": "Exact selected targets narrow the diagnostic dependency model; this is Excel-assisted Level B evidence, not proof that Excel uses only those invalidation edges."},
+        "excel_assisted_graph": {"status": "not constructed from Excel seeds", "uncertain_references_retained": true},
+        "targeted_semantic_corrections": {"level_c_status": "none_proven", "conditional": {"status": "no isolated branch/reference mismatch correction performed"}, "index_reference": {"status": "Level B counterfactual only", "static": static_index_counterfactual, "runtime_observed": runtime_index_counterfactual}},
         "root_cause_classification": {"primary": "UNRESOLVED_INTERACTION_LIKELY", "best_supported_hypothesis": "H3/H2 over H1", "confidence": "medium", "reason": "Excel exposes no Heavy circular seed/path; Formualizer graph and semantic mismatch evidence are both substantial, but no isolated correction proves causality."},
         "engine_v2_implications": {"recommendation": ["precise Excel-compatible formula/reference semantics", "demand-driven runtime reference discovery", "runtime cycle discovery after actual feedback", "retained workspace only as a later proven-safe optimization"], "static_scc_primary": false},
         "members": member_summary,

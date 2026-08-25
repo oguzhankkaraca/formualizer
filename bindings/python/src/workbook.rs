@@ -1299,6 +1299,16 @@ impl PyWorkbook {
         out.set_item("dirty_root_sources", &telemetry.dirty_root_sources)?;
         out.set_item("dirty_root_samples", &telemetry.dirty_root_samples)?;
         out.set_item(
+            "dirty_provenance_counts",
+            &telemetry.dirty_provenance_counts,
+        )?;
+        out.set_item(
+            "dirty_provenance_samples",
+            &telemetry.dirty_provenance_samples,
+        )?;
+        out.set_item("user_edit_root_count", telemetry.user_edit_root_count)?;
+        out.set_item("user_edit_root_samples", &telemetry.user_edit_root_samples)?;
+        out.set_item(
             "iterative_state_value_count",
             telemetry.iterative_state_value_count,
         )?;

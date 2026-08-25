@@ -1068,11 +1068,17 @@ pub struct Engine<R> {
     diagnostic_early_scc_states: FxHashMap<u64, DiagnosticEarlySccState>,
     diagnostic_exact_scc_reuse_enabled: bool,
     diagnostic_exact_scc_states: FxHashMap<u64, DiagnosticExactSccState>,
+    diagnostic_disable_iterative_redirty: bool,
+    diagnostic_disable_volatile_redirty: bool,
     last_scc_early_termination: Vec<SccEarlyTerminationRecord>,
     last_scc_exact_reuse: Vec<SccExactReuseRecord>,
     scc_dirty_attribution_baseline: Option<FxHashSet<VertexId>>,
     next_dirty_root_seeds: Vec<(&'static str, Vec<VertexId>)>,
     request_dirty_root_seeds: Vec<(&'static str, Vec<VertexId>)>,
+    next_dirty_provenance: FxHashMap<VertexId, u8>,
+    request_dirty_provenance: FxHashMap<VertexId, u8>,
+    pending_user_dirty_roots: FxHashSet<VertexId>,
+    request_user_dirty_roots: FxHashSet<VertexId>,
     request_naturally_dirty: Option<FxHashSet<VertexId>>,
     request_dirty_count: usize,
     formula_timing_enabled: bool,
@@ -2088,6 +2094,10 @@ pub struct SccDirtyTelemetry {
     pub scc_cells_added_solely_by_iterative_policy: usize,
     pub dirty_root_sources: Vec<(String, usize)>,
     pub dirty_root_samples: Vec<(String, Vec<String>)>,
+    pub dirty_provenance_counts: Vec<(String, usize)>,
+    pub dirty_provenance_samples: Vec<(String, Vec<String>)>,
+    pub user_edit_root_count: usize,
+    pub user_edit_root_samples: Vec<String>,
     pub iterative_state_value_count: usize,
     pub request_snapshot_id: u64,
     pub topology_epoch: u64,
@@ -2210,6 +2220,41 @@ fn diagnostic_early_termination_enabled() -> bool {
     #[cfg(not(target_arch = "wasm32"))]
     {
         std::env::var_os("FZ_DIAGNOSTIC_EARLY_SCC_TERMINATION").is_some()
+    }
+}
+
+fn diagnostic_disable_iterative_redirty() -> bool {
+    #[cfg(target_arch = "wasm32")]
+    {
+        false
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        std::env::var_os("FZ_DIAGNOSTIC_DISABLE_ITERATIVE_REDIRTY").is_some()
+    }
+}
+
+fn dirty_provenance_label(flags: u8) -> &'static str {
+    match flags {
+        1 => "natural_only",
+        2 => "volatile_only",
+        3 => "natural_and_volatile",
+        4 => "iterative_only",
+        5 => "natural_and_iterative",
+        6 => "volatile_and_iterative",
+        7 => "natural_volatile_and_iterative",
+        _ => "unknown",
+    }
+}
+
+fn diagnostic_disable_volatile_redirty() -> bool {
+    #[cfg(target_arch = "wasm32")]
+    {
+        false
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        std::env::var_os("FZ_DIAGNOSTIC_DISABLE_VOLATILE_REDIRTY").is_some()
     }
 }
 
@@ -3431,11 +3476,17 @@ where
             diagnostic_early_scc_states: FxHashMap::default(),
             diagnostic_exact_scc_reuse_enabled: diagnostic_exact_scc_reuse_enabled(),
             diagnostic_exact_scc_states: FxHashMap::default(),
+            diagnostic_disable_iterative_redirty: diagnostic_disable_iterative_redirty(),
+            diagnostic_disable_volatile_redirty: diagnostic_disable_volatile_redirty(),
             last_scc_early_termination: Vec::new(),
             last_scc_exact_reuse: Vec::new(),
             scc_dirty_attribution_baseline: None,
             next_dirty_root_seeds: Vec::new(),
             request_dirty_root_seeds: Vec::new(),
+            next_dirty_provenance: FxHashMap::default(),
+            request_dirty_provenance: FxHashMap::default(),
+            pending_user_dirty_roots: FxHashSet::default(),
+            request_user_dirty_roots: FxHashSet::default(),
             request_naturally_dirty: None,
             request_dirty_count: 0,
             formula_timing_enabled: false,
@@ -3613,11 +3664,17 @@ where
             diagnostic_early_scc_states: FxHashMap::default(),
             diagnostic_exact_scc_reuse_enabled: diagnostic_exact_scc_reuse_enabled(),
             diagnostic_exact_scc_states: FxHashMap::default(),
+            diagnostic_disable_iterative_redirty: diagnostic_disable_iterative_redirty(),
+            diagnostic_disable_volatile_redirty: diagnostic_disable_volatile_redirty(),
             last_scc_early_termination: Vec::new(),
             last_scc_exact_reuse: Vec::new(),
             scc_dirty_attribution_baseline: None,
             next_dirty_root_seeds: Vec::new(),
             request_dirty_root_seeds: Vec::new(),
+            next_dirty_provenance: FxHashMap::default(),
+            request_dirty_provenance: FxHashMap::default(),
+            pending_user_dirty_roots: FxHashSet::default(),
+            request_user_dirty_roots: FxHashSet::default(),
             request_naturally_dirty: None,
             request_dirty_count: 0,
             formula_timing_enabled: false,
@@ -4447,6 +4504,8 @@ where
         self.last_recalc_telemetry = RecalcTelemetry::default();
         self.last_scc_coordinate_index_build_ns = 0;
         self.request_dirty_root_seeds = std::mem::take(&mut self.next_dirty_root_seeds);
+        self.request_dirty_provenance = std::mem::take(&mut self.next_dirty_provenance);
+        self.request_user_dirty_roots = std::mem::take(&mut self.pending_user_dirty_roots);
         if self.scc_iteration_trace_enabled {
             self.last_scc_iteration_trace.clear();
         }
@@ -4561,8 +4620,15 @@ where
                 .into_iter()
                 .collect::<FxHashSet<VertexId>>()
         });
-        self.last_recalc_telemetry.volatile_vertices_redirtied = self.graph.volatile_vertex_count();
-        self.graph.redirty_volatiles();
+        let volatile_redirty_enabled = !self.diagnostic_disable_volatile_redirty;
+        self.last_recalc_telemetry.volatile_vertices_redirtied = if volatile_redirty_enabled {
+            self.graph.volatile_vertex_count()
+        } else {
+            0
+        };
+        if volatile_redirty_enabled {
+            self.graph.redirty_volatiles();
+        }
         let after_volatile = self.scc_dirty_telemetry_enabled.then(|| {
             self.graph
                 .get_evaluation_vertices()
@@ -4572,16 +4638,29 @@ where
         let pending = std::mem::take(&mut self.pending_iterative_redirty);
         let state_refresh = std::mem::take(&mut self.pending_iterative_state_refresh);
         let pending_sccs = std::mem::take(&mut self.pending_iterative_scc_redirty);
-        let mut iterative_seed_ids = pending.clone();
+        let iterative_redirty_enabled = !self.diagnostic_disable_iterative_redirty;
+        let mut iterative_seed_ids = if iterative_redirty_enabled {
+            pending.clone()
+        } else {
+            Vec::new()
+        };
         iterative_seed_ids.sort_unstable_by_key(|vertex| vertex.0);
         iterative_seed_ids.dedup();
-        let mut volatile_seed_ids = self.graph.volatile_vertex_ids();
+        let mut volatile_seed_ids = if volatile_redirty_enabled {
+            self.graph.volatile_vertex_ids()
+        } else {
+            Vec::new()
+        };
         volatile_seed_ids.sort_unstable_by_key(|vertex| vertex.0);
         self.next_dirty_root_seeds = vec![
             ("volatile_redirty", volatile_seed_ids),
             ("iterative_scc_redirty", iterative_seed_ids),
         ];
-        self.last_recalc_telemetry.iterative_vertices_redirtied = pending.len();
+        self.last_recalc_telemetry.iterative_vertices_redirtied = if iterative_redirty_enabled {
+            pending.len()
+        } else {
+            0
+        };
         // Refresh the §4-persistence snapshot: these final values survive
         // structural edits that clear the computed overlay (the only value
         // home in canonical mode) so the next SCC task can re-seed from them
@@ -4610,12 +4689,15 @@ where
         );
         self.iterative_state_values
             .retain(|vertex, _| active_iterative_members.contains(vertex));
-        let dirty_root_sources = self
+        let mut dirty_root_sources = self
             .request_dirty_root_seeds
             .iter()
             .map(|(source, vertices)| ((*source).to_string(), vertices.len()))
             .collect::<Vec<_>>();
-        let dirty_root_samples = self
+        if !self.request_user_dirty_roots.is_empty() {
+            dirty_root_sources.push(("user_edit".to_string(), self.request_user_dirty_roots.len()));
+        }
+        let mut dirty_root_samples = self
             .request_dirty_root_seeds
             .iter()
             .map(|(source, vertices)| {
@@ -4629,6 +4711,22 @@ where
                 )
             })
             .collect::<Vec<_>>();
+        if !self.request_user_dirty_roots.is_empty() {
+            let mut vertices = self
+                .request_user_dirty_roots
+                .iter()
+                .copied()
+                .collect::<Vec<_>>();
+            vertices.sort_unstable_by_key(|vertex| vertex.0);
+            dirty_root_samples.push((
+                "user_edit".to_string(),
+                vertices
+                    .iter()
+                    .take(32)
+                    .map(|vertex| self.diagnostic_vertex_address(*vertex))
+                    .collect(),
+            ));
+        }
         let iterative_state_value_count = self.iterative_state_values.len();
         let volatile_root_set = self
             .request_dirty_root_seeds
@@ -4642,7 +4740,7 @@ where
             .find(|(source, _)| *source == "iterative_scc_redirty")
             .map(|(_, vertices)| vertices.iter().copied().collect::<FxHashSet<_>>())
             .unwrap_or_default();
-        if !pending.is_empty() {
+        if iterative_redirty_enabled && !pending.is_empty() {
             self.graph.redirty_iterative_members(&pending);
         }
         self.last_recalc_telemetry.scc_units_reusable_after_recalc =
@@ -4668,6 +4766,78 @@ where
         let after_volatile = after_volatile.expect("enabled telemetry has a volatile dirty set");
         let after_iterative: FxHashSet<VertexId> =
             self.graph.get_evaluation_vertices().into_iter().collect();
+        let pending_set: FxHashSet<VertexId> = pending.iter().copied().collect();
+        let mut iterative_closure: FxHashSet<VertexId> = after_iterative
+            .difference(&after_volatile)
+            .copied()
+            .collect();
+        if iterative_redirty_enabled {
+            iterative_closure.extend(pending_set.iter().copied());
+        }
+        let volatile_closure = if volatile_redirty_enabled {
+            after_volatile.clone()
+        } else {
+            FxHashSet::default()
+        };
+        let mut next_dirty_provenance = FxHashMap::default();
+        let mut all_dirty = naturally_dirty.clone();
+        all_dirty.extend(volatile_closure.iter().copied());
+        all_dirty.extend(after_iterative.iter().copied());
+        for vertex in all_dirty {
+            let mut flags = 0;
+            if naturally_dirty.contains(&vertex) {
+                flags |= 1;
+            }
+            if volatile_closure.contains(&vertex) {
+                flags |= 2;
+            }
+            if iterative_closure.contains(&vertex) {
+                flags |= 4;
+            }
+            next_dirty_provenance.insert(vertex, flags);
+        }
+        self.next_dirty_provenance = next_dirty_provenance;
+        let mut provenance_counts = FxHashMap::<&'static str, usize>::default();
+        let mut provenance_members = FxHashMap::<&'static str, Vec<VertexId>>::default();
+        for (&vertex, &flags) in &self.request_dirty_provenance {
+            let label = dirty_provenance_label(flags);
+            *provenance_counts.entry(label).or_default() += 1;
+            provenance_members.entry(label).or_default().push(vertex);
+        }
+        let provenance_order = [
+            "natural_only",
+            "volatile_only",
+            "iterative_only",
+            "natural_and_volatile",
+            "natural_and_iterative",
+            "volatile_and_iterative",
+            "natural_volatile_and_iterative",
+        ];
+        let dirty_provenance_counts = provenance_order
+            .iter()
+            .filter_map(|label| {
+                provenance_counts
+                    .get(label)
+                    .copied()
+                    .map(|count| ((*label).to_string(), count))
+            })
+            .collect::<Vec<_>>();
+        let dirty_provenance_samples = provenance_order
+            .iter()
+            .filter_map(|label| {
+                provenance_members.get_mut(label).map(|vertices| {
+                    vertices.sort_unstable_by_key(|vertex| vertex.0);
+                    (
+                        (*label).to_string(),
+                        vertices
+                            .iter()
+                            .take(32)
+                            .map(|vertex| self.diagnostic_vertex_address(*vertex))
+                            .collect(),
+                    )
+                })
+            })
+            .collect::<Vec<_>>();
         let mut per_scc = Vec::with_capacity(pending_sccs.len());
         for scc in pending_sccs {
             let naturally_dirty_member_count = scc
@@ -4812,6 +4982,16 @@ where
                 .sum(),
             dirty_root_sources,
             dirty_root_samples,
+            dirty_provenance_counts,
+            dirty_provenance_samples,
+            user_edit_root_count: self.request_user_dirty_roots.len(),
+            user_edit_root_samples: self
+                .request_user_dirty_roots
+                .iter()
+                .copied()
+                .take(32)
+                .map(|vertex| self.diagnostic_vertex_address(vertex))
+                .collect(),
             iterative_state_value_count,
             request_snapshot_id: self.data_snapshot_id(),
             topology_epoch: self.topology_epoch,
@@ -18157,6 +18337,9 @@ where
         )
         .map_err(Self::editor_error_to_excel)?;
         self.graph.set_cell_value(sheet, row, col, value.clone())?;
+        if let Some(vertex) = self.graph.get_vertex_id_for_address(&cell_ref) {
+            self.pending_user_dirty_roots.insert(*vertex);
+        }
         self.clear_cell_format_state(sheet, cell_ref);
         self.record_formula_plane_changed_cell(sheet, row, col);
         if !sheet_existed || replaced_formula {

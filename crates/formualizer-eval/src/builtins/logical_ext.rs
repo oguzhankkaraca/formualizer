@@ -300,7 +300,14 @@ impl Function for IfErrorFn {
     // SHORT_CIRCUIT: dispatch must not eagerly evaluate the fallback arm —
     // the eval body below evaluates arg0 first and touches arg1 only when
     // arg0 produced an error (same defect class as the IF fix in #118).
-    func_caps!(PURE, SHORT_CIRCUIT, MAY_SPILL);
+    func_caps!(
+        PURE,
+        SHORT_CIRCUIT,
+        MAY_SPILL,
+        V2_READS_OBSERVED,
+        V2_SCALAR_OUTPUT_FROM_SCALAR_ARGS,
+        V2_REFERENCE_SHAPE_OBSERVED
+    );
     fn name(&self) -> &'static str {
         "IFERROR"
     }
@@ -390,7 +397,7 @@ impl Function for IfNaFn {
 
     // SHORT_CIRCUIT: the fallback arm is evaluated only when arg0 is #N/A;
     // all other values/errors pass through without touching arg1.
-    func_caps!(PURE, SHORT_CIRCUIT, MAY_SPILL);
+    func_caps!(PURE, SHORT_CIRCUIT, MAY_SPILL, V2_RESULT_SHAPE_OBSERVED);
     fn name(&self) -> &'static str {
         "IFNA"
     }
@@ -469,7 +476,7 @@ pub struct IfsFn; // IFS(cond1, val1, cond2, val2, ...)
 /// Variadic: true
 /// Signature: IFS(arg1...: any@scalar)
 /// Arg schema: arg1{kinds=any,required=true,shape=scalar,by_ref=false,coercion=None,max=None,repeating=None,default=false}
-/// Caps: PURE, RETURNS_REFERENCE, SHORT_CIRCUIT
+/// Caps: PURE, RETURNS_REFERENCE, MAY_SPILL, SHORT_CIRCUIT, V2_READS_OBSERVED, V2_REFERENCE_SHAPE_OBSERVED, V2_RESULT_SHAPE_OBSERVED
 /// [formualizer-docgen:schema:end]
 impl Function for IfsFn {
     fn propagate_format(
@@ -479,7 +486,15 @@ impl Function for IfsFn {
         result.format_id()
     }
 
-    func_caps!(PURE, SHORT_CIRCUIT, RETURNS_REFERENCE, MAY_SPILL);
+    func_caps!(
+        PURE,
+        SHORT_CIRCUIT,
+        RETURNS_REFERENCE,
+        MAY_SPILL,
+        V2_READS_OBSERVED,
+        V2_REFERENCE_SHAPE_OBSERVED,
+        V2_RESULT_SHAPE_OBSERVED
+    );
     fn name(&self) -> &'static str {
         "IFS"
     }
@@ -657,7 +672,7 @@ impl Function for SwitchFn {
         result.format_id()
     }
 
-    func_caps!(PURE, SHORT_CIRCUIT, MAY_SPILL);
+    func_caps!(PURE, SHORT_CIRCUIT, MAY_SPILL, V2_RESULT_SHAPE_OBSERVED);
     fn name(&self) -> &'static str {
         "SWITCH"
     }

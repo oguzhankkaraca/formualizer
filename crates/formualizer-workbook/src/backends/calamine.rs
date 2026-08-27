@@ -11,6 +11,7 @@ use std::fs::File;
 use std::io::{BufRead, BufReader, Cursor, Read, Seek};
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Instant;
 
 use calamine::{
     Data, DataRef, Range, Reader, Xlsx, XlsxFormulaMetadata, open_workbook, open_workbook_from_rs,
@@ -207,6 +208,17 @@ impl DebugTimer {
         #[cfg(not(target_arch = "wasm32"))]
         {
             self.started.elapsed().as_millis()
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            0
+        }
+    }
+
+    fn elapsed_nanos(&self) -> u128 {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.started.elapsed().as_nanos()
         }
         #[cfg(target_arch = "wasm32")]
         {
@@ -1774,6 +1786,16 @@ where
             .ok()
             .is_some_and(|v| v != "0");
         let t0 = DebugTimer::start();
+        let range_stats_before = engine.range_dependency_stats();
+        let mut formula_ingest_ns = 0u64;
+        let mut name_parse_ns = 0u64;
+        let mut defined_name_observed = 0u64;
+        let mut defined_name_formula_count = 0u64;
+        let mut defined_name_duplicate_count = 0u64;
+        let mut name_load_report = None;
+        let table_ingest_ns;
+        let table_count = self.tables_by_sheet.values().map(Vec::len).sum::<usize>() as u64;
+        let mut sheet_index_finalization_ns = 0u64;
         let names = self.sheet_names()?;
         if debug {
             eprintln!("[fz][load] calamine: {} sheets", names.len());
@@ -1792,6 +1814,7 @@ where
         #[cfg(feature = "tracing")]
         drop(_span_sheets);
 
+        let table_started = Instant::now();
         for (sheet, tables) in &self.tables_by_sheet {
             let sheet_id = engine.sheet_id(sheet).ok_or_else(|| {
                 calamine::Error::Io(std::io::Error::other(format!(
@@ -1831,6 +1854,7 @@ where
                     })?;
             }
         }
+        table_ingest_ns = u64::try_from(table_started.elapsed().as_nanos()).unwrap_or(u64::MAX);
 
         let prev_index_mode = engine.config.sheet_index_mode;
         engine.set_sheet_index_mode(formualizer_eval::engine::SheetIndexMode::Lazy);
@@ -2008,6 +2032,7 @@ where
                 }
             }
 
+            let formula_ingest_started = Instant::now();
             if !engine.config.defer_graph_building && !eager_formula_batches.is_empty() {
                 engine
                     .source_formula_ingress()
@@ -2020,13 +2045,17 @@ where
                     .finish_prepared(eager_direct_batches)
                     .map_err(|e| calamine::Error::Io(std::io::Error::other(e.to_string())))?;
             }
+            formula_ingest_ns =
+                u64::try_from(formula_ingest_started.elapsed().as_nanos()).unwrap_or(u64::MAX);
 
             {
                 use rustc_hash::FxHashSet;
 
                 let defined = self.defined_names()?;
+                defined_name_observed = defined.len() as u64;
                 let mut seen: FxHashSet<(DefinedNameScope, Option<String>, String)> =
                     FxHashSet::default();
+                let mut definitions = Vec::with_capacity(defined.len());
 
                 for dn in defined {
                     let key = (
@@ -2035,6 +2064,8 @@ where
                         dn.name.to_lowercase(),
                     );
                     if !seen.insert(key) {
+                        defined_name_duplicate_count =
+                            defined_name_duplicate_count.saturating_add(1);
                         continue;
                     }
 
@@ -2087,6 +2118,9 @@ where
                         }
                         DefinedNameDefinition::Literal { value } => NamedDefinition::Literal(value),
                         DefinedNameDefinition::Formula { formula } => {
+                            defined_name_formula_count =
+                                defined_name_formula_count.saturating_add(1);
+                            let started = Instant::now();
                             let ast =
                                 formualizer_parse::parser::parse(&formula).unwrap_or_else(|_| {
                                     ASTNode::new(
@@ -2096,6 +2130,9 @@ where
                                         None,
                                     )
                                 });
+                            name_parse_ns = name_parse_ns.saturating_add(
+                                u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX),
+                            );
                             NamedDefinition::Formula {
                                 ast,
                                 dependencies: Vec::new(),
@@ -2103,41 +2140,88 @@ where
                             }
                         }
                     };
-
-                    if let Err(error) = engine.define_name(&dn.name, definition, scope) {
-                        let skippable = error.kind == ExcelErrorKind::Name
-                            && error.message.as_deref().is_some_and(|message| {
-                                message.starts_with("Invalid name:")
-                                    || message.starts_with("Name collision under normalization:")
-                                    || message
-                                        .starts_with("Name collision under normalization in sheet:")
-                            });
-                        if skippable {
-                            if debug {
-                                eprintln!(
-                                    "[fz][load] skipped unsupported defined name '{}': {}",
-                                    dn.name, error
-                                );
-                            }
-                        } else {
-                            return Err(calamine::Error::Io(std::io::Error::other(
-                                error.to_string(),
-                            )));
-                        }
-                    }
+                    definitions.push((dn.name, definition, scope));
                 }
+
+                let report = engine.define_names_for_load(definitions).map_err(|error| {
+                    calamine::Error::Io(std::io::Error::other(error.to_string()))
+                })?;
+                name_load_report = Some(report);
             }
 
+            let finalization_started = Instant::now();
+            for n in &names {
+                engine.finalize_sheet_index(n);
+            }
+            sheet_index_finalization_ns =
+                u64::try_from(finalization_started.elapsed().as_nanos()).unwrap_or(u64::MAX);
+
+            let range_stats = engine.range_dependency_stats();
+            let name_report = name_load_report.unwrap_or_default();
+            let ns_to_u64 = |value: u128| u64::try_from(value).unwrap_or(u64::MAX);
+            let range_dependency_count = range_stats
+                .dependency_count
+                .saturating_sub(range_stats_before.dependency_count);
+            let all_unbounded_count = range_stats
+                .all_unbounded_count
+                .saturating_sub(range_stats_before.all_unbounded_count);
+            let all_unbounded_index_insertions = range_stats
+                .all_unbounded_index_insertions
+                .saturating_sub(range_stats_before.all_unbounded_index_insertions);
+            let all_unbounded_elapsed_ns = ns_to_u64(
+                range_stats
+                    .all_unbounded_elapsed_ns
+                    .saturating_sub(range_stats_before.all_unbounded_elapsed_ns),
+            );
+            let range_dependency_publication_ns = ns_to_u64(
+                range_stats
+                    .publication_ns
+                    .saturating_sub(range_stats_before.publication_ns),
+            );
+            let load_total_ns = ns_to_u64(t0.elapsed_nanos());
+
             if debug {
+                eprintln!(
+                    "[fz][load] formula_ingest={} ms range_dependencies={} all_unbounded={} all_unbounded_index_insertions={} range_publication={} ms all_unbounded={} ms",
+                    formula_ingest_ns as f64 / 1_000_000.0,
+                    range_dependency_count,
+                    all_unbounded_count,
+                    all_unbounded_index_insertions,
+                    range_dependency_publication_ns as f64 / 1_000_000.0,
+                    all_unbounded_elapsed_ns as f64 / 1_000_000.0,
+                );
+                eprintln!(
+                    "[fz][load] names observed={} formula={} accepted={} skipped={} parse={} ms dependency_calls={} dependency={} ms publication={} ms pending_resolution={} ms pending_links={} symbol_vertices={} index_updates={} revision_events={} revision_updates={}",
+                    defined_name_observed,
+                    defined_name_formula_count,
+                    name_report.accepted,
+                    name_report
+                        .skipped
+                        .saturating_add(defined_name_duplicate_count),
+                    name_parse_ns as f64 / 1_000_000.0,
+                    name_report.formula_dependency_extraction_calls,
+                    name_report.formula_dependency_extraction_ns as f64 / 1_000_000.0,
+                    name_report.publication_ns as f64 / 1_000_000.0,
+                    name_report.pending_name_resolution_ns as f64 / 1_000_000.0,
+                    name_report.pending_name_resolution_links,
+                    name_report.symbol_vertex_allocations,
+                    name_report.name_index_insertions,
+                    name_report.symbol_revision_bumps,
+                    name_report.symbol_revision_updates,
+                );
+                eprintln!(
+                    "[fz][load] tables={} table_ingest={} ms sheet_index_finalization={} ms total={} ms",
+                    table_count,
+                    table_ingest_ns as f64 / 1_000_000.0,
+                    sheet_index_finalization_ns as f64 / 1_000_000.0,
+                    load_total_ns as f64 / 1_000_000.0,
+                );
                 eprintln!(
                     "[fz][load] done: values={}, formulas={}, total={} ms",
                     total_values,
                     total_formulas,
-                    t0.elapsed_millis(),
+                    load_total_ns as f64 / 1_000_000.0,
                 );
-            }
-            for n in &names {
-                engine.finalize_sheet_index(n);
             }
 
             self.load_stats = AdapterLoadStats {
@@ -2146,6 +2230,43 @@ where
                 value_slots_handed_to_engine: Some(total_values as u64),
                 formula_cells_handed_to_engine: Some(total_formula_handed_to_engine as u64),
                 shared_formula_tags_observed: Some(total_shared_formula_tags as u64),
+                formula_ingest_ns: Some(formula_ingest_ns),
+                range_dependencies_observed: Some(range_dependency_count),
+                all_unbounded_range_dependencies: Some(all_unbounded_count),
+                all_unbounded_range_index_insertions: Some(all_unbounded_index_insertions),
+                all_unbounded_range_elapsed_ns: Some(all_unbounded_elapsed_ns),
+                range_dependency_publication_ns: Some(range_dependency_publication_ns),
+                defined_names_observed: Some(defined_name_observed),
+                defined_name_formula_count: Some(defined_name_formula_count),
+                defined_names_accepted: Some(name_report.accepted),
+                defined_names_skipped: Some(
+                    name_report
+                        .skipped
+                        .saturating_add(defined_name_duplicate_count),
+                ),
+                defined_name_parse_ns: Some(name_parse_ns),
+                defined_name_dependency_extraction_calls: Some(
+                    name_report.formula_dependency_extraction_calls,
+                ),
+                defined_name_dependency_ns: Some(ns_to_u64(
+                    name_report.formula_dependency_extraction_ns,
+                )),
+                defined_name_publication_ns: Some(ns_to_u64(name_report.publication_ns)),
+                defined_name_pending_resolution_ns: Some(ns_to_u64(
+                    name_report.pending_name_resolution_ns,
+                )),
+                defined_name_pending_resolution_links: Some(
+                    name_report.pending_name_resolution_links,
+                ),
+                defined_name_symbol_vertex_allocations: Some(name_report.symbol_vertex_allocations),
+                defined_name_index_insertions: Some(name_report.name_index_insertions),
+                defined_name_symbol_revision_bumps: Some(name_report.symbol_revision_bumps),
+                defined_name_symbol_revision_updates: Some(name_report.symbol_revision_updates),
+                table_count: Some(table_count),
+                table_ingest_ns: Some(table_ingest_ns),
+                sheet_index_finalization_count: Some(names.len() as u64),
+                sheet_index_finalization_ns: Some(sheet_index_finalization_ns),
+                load_total_ns: Some(load_total_ns),
             };
             Ok(())
         })();

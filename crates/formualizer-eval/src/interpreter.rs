@@ -165,6 +165,10 @@ impl<'a> Interpreter<'a> {
         self.current_sheet
     }
 
+    pub(crate) fn current_cell(&self) -> Option<crate::CellRef> {
+        self.current_cell
+    }
+
     pub fn local_env(&self) -> &LocalEnv {
         &self.local_env
     }

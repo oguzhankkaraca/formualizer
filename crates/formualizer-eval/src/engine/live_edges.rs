@@ -876,6 +876,15 @@ impl<'a, R: EvaluationContext> EvaluationContext for RecordingContext<'a, R> {
         Ok(view)
     }
 
+    fn record_selected_reference(&self, reference: &ReferenceType, current_sheet: &str) {
+        self.engine
+            .record_selected_reference(reference, current_sheet)
+    }
+
+    fn record_reference_observation(&self, observation: &crate::traits::ReferenceObservation) {
+        self.engine.record_reference_observation(observation)
+    }
+
     fn resolve_cell_reference_value(
         &self,
         sheet: Option<&str>,
@@ -981,6 +990,13 @@ impl<'a, R: EvaluationContext> EvaluationContext for RecordingContext<'a, R> {
     }
     fn data_snapshot_id(&self) -> u64 {
         self.engine.data_snapshot_id()
+    }
+    fn reference_generation(
+        &self,
+        reference: &ReferenceType,
+        current_sheet: &str,
+    ) -> Option<crate::traits::ReferenceGeneration> {
+        self.engine.reference_generation(reference, current_sheet)
     }
     fn backend_caps(&self) -> crate::traits::BackendCaps {
         self.engine.backend_caps()

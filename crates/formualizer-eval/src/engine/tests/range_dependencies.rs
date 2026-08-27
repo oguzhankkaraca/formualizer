@@ -1196,22 +1196,30 @@ fn all_unbounded_open_rect_key_covers_whole_sheet() {
         sheet,
     );
 
-    // Structural: every edited cell probes its own column stripe, so full
-    // column coverage is what makes the dependent reachable from anywhere.
-    for col0 in [0u32, 7, 16_383] {
-        let key = StripeKey {
-            sheet_id: sheet,
-            stripe_type: StripeType::Column,
-            index: col0,
-        };
-        assert!(
-            graph
-                .stripe_to_dependents()
-                .get(&key)
-                .is_some_and(|deps| deps.contains(&dependent)),
-            "column stripe {col0} must include the whole-sheet dependent"
-        );
-    }
+    let key = StripeKey {
+        sheet_id: sheet,
+        stripe_type: StripeType::WholeSheet,
+        index: 0,
+    };
+    assert!(
+        graph
+            .stripe_to_dependents()
+            .get(&key)
+            .is_some_and(|deps| deps.contains(&dependent)),
+        "whole-sheet sentinel must include the dependent"
+    );
+    assert_eq!(
+        graph
+            .stripe_to_dependents()
+            .keys()
+            .filter(|key| key.sheet_id == sheet && key.stripe_type == StripeType::Column)
+            .count(),
+        0,
+        "whole-sheet registration must not expand all columns"
+    );
+    let stats = graph.range_dependency_stats();
+    assert_eq!(stats.all_unbounded_count, 1);
+    assert_eq!(stats.all_unbounded_index_insertions, 1);
 
     // Behavioral: an edit far from row 1 must dirty the dependent.
     graph.clear_dirty_flags(&[dependent]);

@@ -15,6 +15,7 @@ members = [
   "crates/formualizer",
   "crates/formualizer-bench-core",
   "crates/formualizer-testkit",
+  "crates/formualizer-engine-v2-poc",
   "crates/xtask",
 ]
 

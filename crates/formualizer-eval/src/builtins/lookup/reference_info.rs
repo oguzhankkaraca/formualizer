@@ -72,7 +72,7 @@ impl Function for RowFn {
         0
     }
 
-    func_caps!(PURE);
+    func_caps!(PURE, V2_CONTEXT_OBSERVED);
 
     fn semantic_contract(&self, arity: usize) -> Option<FunctionSemanticContract> {
         let mut contract = FunctionSemanticContract::trusted_builtin_default(None);
@@ -362,7 +362,7 @@ impl Function for ColumnFn {
         0
     }
 
-    func_caps!(PURE);
+    func_caps!(PURE, V2_CONTEXT_OBSERVED);
 
     fn semantic_contract(&self, arity: usize) -> Option<FunctionSemanticContract> {
         let mut contract = FunctionSemanticContract::trusted_builtin_default(None);

@@ -75,7 +75,7 @@ impl Function for MinFn {
         result.format_id()
     }
 
-    func_caps!(PURE, REDUCTION, NUMERIC_ONLY);
+    func_caps!(PURE, REDUCTION, NUMERIC_ONLY, V2_READS_OBSERVED);
     fn name(&self) -> &'static str {
         "MIN"
     }
@@ -103,18 +103,18 @@ impl Function for MinFn {
             match resolve_aggregate_argument(a, ctx)? {
                 AggregateArgument::Range(view) => {
                     // Propagate errors from range first
-                    for res in view.errors_slices() {
-                        let (_, _, err_cols) = res?;
-                        for col in err_cols {
-                            if col.null_count() < col.len() {
-                                for i in 0..col.len() {
-                                    if !col.is_null(i) {
-                                        return Ok(crate::traits::CalcValue::Scalar(
-                                            LiteralValue::Error(ExcelError::new(
-                                                crate::arrow_store::unmap_error_code(col.value(i)),
-                                            )),
-                                        ));
-                                    }
+                    let error_scan = view.without_read_observer();
+                    for res in error_scan.errors_slices() {
+                        let (row_start, _, err_cols) = res?;
+                        for (col_index, col) in err_cols.into_iter().enumerate() {
+                            for i in 0..col.len() {
+                                view.observe_cell_read(row_start + i, col_index);
+                                if !col.is_null(i) {
+                                    return Ok(crate::traits::CalcValue::Scalar(
+                                        LiteralValue::Error(ExcelError::new(
+                                            crate::arrow_store::unmap_error_code(col.value(i)),
+                                        )),
+                                    ));
                                 }
                             }
                         }
@@ -255,18 +255,18 @@ impl Function for MaxFn {
             match resolve_aggregate_argument(a, ctx)? {
                 AggregateArgument::Range(view) => {
                     // Propagate errors from range first
-                    for res in view.errors_slices() {
-                        let (_, _, err_cols) = res?;
-                        for col in err_cols {
-                            if col.null_count() < col.len() {
-                                for i in 0..col.len() {
-                                    if !col.is_null(i) {
-                                        return Ok(crate::traits::CalcValue::Scalar(
-                                            LiteralValue::Error(ExcelError::new(
-                                                crate::arrow_store::unmap_error_code(col.value(i)),
-                                            )),
-                                        ));
-                                    }
+                    let error_scan = view.without_read_observer();
+                    for res in error_scan.errors_slices() {
+                        let (row_start, _, err_cols) = res?;
+                        for (col_index, col) in err_cols.into_iter().enumerate() {
+                            for i in 0..col.len() {
+                                view.observe_cell_read(row_start + i, col_index);
+                                if !col.is_null(i) {
+                                    return Ok(crate::traits::CalcValue::Scalar(
+                                        LiteralValue::Error(ExcelError::new(
+                                            crate::arrow_store::unmap_error_code(col.value(i)),
+                                        )),
+                                    ));
                                 }
                             }
                         }

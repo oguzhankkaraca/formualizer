@@ -2,6 +2,7 @@ use super::*;
 use crate::engine::used_extent::{ExtentPolicy, OpenRangeBounds, resolve_used_extent};
 use formualizer_common::LiteralValue;
 use formualizer_parse::parser::{ASTNode, ASTNodeType, ReferenceType};
+use std::time::Instant;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum RangeSelfUse {
@@ -692,6 +693,11 @@ impl DependencyGraph {
         let keys = [
             StripeKey {
                 sheet_id,
+                stripe_type: StripeType::WholeSheet,
+                index: 0,
+            },
+            StripeKey {
+                sheet_id,
                 stripe_type: StripeType::Column,
                 index: col0,
             },
@@ -1051,6 +1057,11 @@ impl DependencyGraph {
         if ranges.is_empty() {
             return;
         }
+        let publication_started = Instant::now();
+        self.range_dependency_stats.dependency_count = self
+            .range_dependency_stats
+            .dependency_count
+            .saturating_add(ranges.len() as u64);
 
         self.formula_to_range_deps
             .insert(dependent, ranges.to_vec());
@@ -1068,6 +1079,9 @@ impl DependencyGraph {
             let e_row = range.end_row.map(|b| b.index);
             let s_col = range.start_col.map(|b| b.index);
             let e_col = range.end_col.map(|b| b.index);
+            let all_unbounded =
+                s_row.is_none() && e_row.is_none() && s_col.is_none() && e_col.is_none();
+            let all_unbounded_started = all_unbounded.then(Instant::now);
 
             // #120: a compressed range whose region covers this formula's own
             // cell is a self-reference. Record a self-loop so SCC detection
@@ -1084,11 +1098,21 @@ impl DependencyGraph {
             // classification below would treat it as both column- and
             // row-striped, fall through both branches, and collapse it to a
             // single row-0 stripe, hiding edits anywhere else from this
-            // dependent. Register full column coverage instead; the precision
+            // dependent. Register a bounded whole-sheet sentinel instead; the precision
             // check against `formula_to_range_deps` already treats the missing
             // bounds as unbounded.
-            if s_row.is_none() && e_row.is_none() && s_col.is_none() && e_col.is_none() {
-                self.register_whole_sheet_stripes(dependent, sheet_id);
+            if all_unbounded {
+                self.range_dependency_stats.all_unbounded_count = self
+                    .range_dependency_stats
+                    .all_unbounded_count
+                    .saturating_add(1);
+                self.register_whole_sheet_sentinel(dependent, sheet_id);
+                if let Some(started) = all_unbounded_started {
+                    self.range_dependency_stats.all_unbounded_elapsed_ns = self
+                        .range_dependency_stats
+                        .all_unbounded_elapsed_ns
+                        .saturating_add(started.elapsed().as_nanos());
+                }
                 continue;
             }
 
@@ -1224,26 +1248,27 @@ impl DependencyGraph {
                 }
             }
         }
+        self.range_dependency_stats.publication_ns = self
+            .range_dependency_stats
+            .publication_ns
+            .saturating_add(publication_started.elapsed().as_nanos());
     }
 
-    /// Register stripes covering every cell of a sheet, for a dependent whose
-    /// range is unbounded on both axes (#376). Dirty-propagation lookups probe
-    /// the column stripe of every edited cell, so covering all columns
-    /// guarantees any edit on the sheet reaches the precision check.
-    fn register_whole_sheet_stripes(&mut self, dependent: VertexId, sheet_id: SheetId) {
-        /// Excel sheet column capacity (column XFD), as a 0-based exclusive bound.
-        const SHEET_MAX_COLS: u32 = 16_384;
-        for col in 0..SHEET_MAX_COLS {
-            let key = StripeKey {
-                sheet_id,
-                stripe_type: StripeType::Column,
-                index: col,
-            };
-            self.stripe_to_dependents
-                .entry(key)
-                .or_default()
-                .insert(dependent);
-        }
+    /// Register one bounded index entry for a sheet-wide dependency.
+    fn register_whole_sheet_sentinel(&mut self, dependent: VertexId, sheet_id: SheetId) {
+        let key = StripeKey {
+            sheet_id,
+            stripe_type: StripeType::WholeSheet,
+            index: 0,
+        };
+        self.range_dependency_stats.all_unbounded_index_insertions = self
+            .range_dependency_stats
+            .all_unbounded_index_insertions
+            .saturating_add(1);
+        self.stripe_to_dependents
+            .entry(key)
+            .or_default()
+            .insert(dependent);
     }
 
     /// Fast-path: add range dependencies using compact RangeKey.
@@ -1257,6 +1282,7 @@ impl DependencyGraph {
         if keys.is_empty() {
             return;
         }
+        let publication_started = Instant::now();
 
         let mut shared_ranges: Vec<SharedRangeRef<'static>> = Vec::with_capacity(keys.len());
         for k in keys {
@@ -1312,6 +1338,10 @@ impl DependencyGraph {
         if shared_ranges.is_empty() {
             return;
         }
+        self.range_dependency_stats.dependency_count = self
+            .range_dependency_stats
+            .dependency_count
+            .saturating_add(shared_ranges.len() as u64);
 
         self.formula_to_range_deps
             .insert(dependent, shared_ranges.clone());
@@ -1327,6 +1357,9 @@ impl DependencyGraph {
             let e_row = range.end_row.map(|b| b.index);
             let s_col = range.start_col.map(|b| b.index);
             let e_col = range.end_col.map(|b| b.index);
+            let all_unbounded =
+                s_row.is_none() && e_row.is_none() && s_col.is_none() && e_col.is_none();
+            let all_unbounded_started = all_unbounded.then(Instant::now);
 
             // #120: see add_range_dependent_edges — compressed range covering
             // the formula's own cell records a self-loop for SCC detection.
@@ -1341,11 +1374,21 @@ impl DependencyGraph {
             // classification below would treat it as both column- and
             // row-striped, fall through both branches, and collapse it to a
             // single row-0 stripe, hiding edits anywhere else from this
-            // dependent. Register full column coverage instead; the precision
+            // dependent. Register a bounded whole-sheet sentinel instead; the precision
             // check against `formula_to_range_deps` already treats the missing
             // bounds as unbounded.
-            if s_row.is_none() && e_row.is_none() && s_col.is_none() && e_col.is_none() {
-                self.register_whole_sheet_stripes(dependent, sheet_id);
+            if all_unbounded {
+                self.range_dependency_stats.all_unbounded_count = self
+                    .range_dependency_stats
+                    .all_unbounded_count
+                    .saturating_add(1);
+                self.register_whole_sheet_sentinel(dependent, sheet_id);
+                if let Some(started) = all_unbounded_started {
+                    self.range_dependency_stats.all_unbounded_elapsed_ns = self
+                        .range_dependency_stats
+                        .all_unbounded_elapsed_ns
+                        .saturating_add(started.elapsed().as_nanos());
+                }
                 continue;
             }
 
@@ -1441,5 +1484,9 @@ impl DependencyGraph {
                 }
             }
         }
+        self.range_dependency_stats.publication_ns = self
+            .range_dependency_stats
+            .publication_ns
+            .saturating_add(publication_started.elapsed().as_nanos());
     }
 }

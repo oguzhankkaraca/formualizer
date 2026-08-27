@@ -1551,6 +1551,7 @@ fn write_function_id_key(id: &CanonicalFunctionId, out: &mut String) {
         namespace: id.namespace.clone(),
         canonical_name: id.canonical_name.clone(),
         generation: id.semantic_generation,
+        trusted_builtin: false,
         caps: FnCaps::from_bits_retain(id.semantic_flags),
         contract,
         argument_by_ref: id.argument_by_ref.clone(),

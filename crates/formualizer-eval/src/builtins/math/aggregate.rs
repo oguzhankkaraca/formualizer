@@ -65,7 +65,14 @@ pub struct SumFn;
 /// Caps: PURE, REDUCTION, NUMERIC_ONLY, STREAM_OK, PARALLEL_ARGS
 /// [formualizer-docgen:schema:end]
 impl Function for SumFn {
-    func_caps!(PURE, REDUCTION, NUMERIC_ONLY, STREAM_OK, PARALLEL_ARGS);
+    func_caps!(
+        PURE,
+        REDUCTION,
+        NUMERIC_ONLY,
+        STREAM_OK,
+        PARALLEL_ARGS,
+        V2_READS_OBSERVED
+    );
 
     fn name(&self) -> &'static str {
         "SUM"
@@ -93,18 +100,18 @@ impl Function for SumFn {
             match resolve_aggregate_argument(arg, ctx)? {
                 AggregateArgument::Range(view) => {
                     // Propagate errors from range first
-                    for res in view.errors_slices() {
-                        let (_, _, err_cols) = res?;
-                        for col in err_cols {
-                            if col.null_count() < col.len() {
-                                for i in 0..col.len() {
-                                    if !col.is_null(i) {
-                                        return Ok(crate::traits::CalcValue::Scalar(
-                                            LiteralValue::Error(ExcelError::new(
-                                                crate::arrow_store::unmap_error_code(col.value(i)),
-                                            )),
-                                        ));
-                                    }
+                    let error_scan = view.without_read_observer();
+                    for res in error_scan.errors_slices() {
+                        let (row_start, _, err_cols) = res?;
+                        for (col_index, col) in err_cols.into_iter().enumerate() {
+                            for i in 0..col.len() {
+                                view.observe_cell_read(row_start + i, col_index);
+                                if !col.is_null(i) {
+                                    return Ok(crate::traits::CalcValue::Scalar(
+                                        LiteralValue::Error(ExcelError::new(
+                                            crate::arrow_store::unmap_error_code(col.value(i)),
+                                        )),
+                                    ));
                                 }
                             }
                         }
@@ -1742,10 +1749,18 @@ pub struct AggregateFn;
 /// Variadic: true
 /// Signature: AGGREGATE(arg1...: number@range)
 /// Arg schema: arg1{kinds=number,required=true,shape=range,by_ref=false,coercion=NumberLenientText,max=None,repeating=None,default=false}
-/// Caps: VOLATILE, REDUCTION, NUMERIC_ONLY, STREAM_OK
+/// Caps: PURE, VOLATILE, REDUCTION, NUMERIC_ONLY, STREAM_OK, V2_READS_OBSERVED, V2_VOLATILITY_OBSERVED
 /// [formualizer-docgen:schema:end]
 impl Function for AggregateFn {
-    func_caps!(VOLATILE, REDUCTION, NUMERIC_ONLY, STREAM_OK);
+    func_caps!(
+        PURE,
+        VOLATILE,
+        REDUCTION,
+        NUMERIC_ONLY,
+        STREAM_OK,
+        V2_READS_OBSERVED,
+        V2_VOLATILITY_OBSERVED
+    );
 
     fn name(&self) -> &'static str {
         "AGGREGATE"

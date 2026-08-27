@@ -1,0 +1,18 @@
+[package]
+name = "formualizer-engine-v2-poc"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Bounded, isolated Engine V2 architecture proof of concept"
+
+[dependencies]
+formualizer-common = { workspace = true }
+formualizer-parse = { workspace = true }
+chrono = { workspace = true }
+formualizer-workbook = { path = "../formualizer-workbook", version = "0.8.4", default-features = false, features = [
+    "calamine",
+] }
+serde_json = { workspace = true }
+zip = { version = "7.2.0", default-features = false, features = ["deflate"] }
+
+[dev-dependencies]

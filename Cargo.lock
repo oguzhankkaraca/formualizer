@@ -1464,6 +1464,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "formualizer-engine-v2-poc"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "formualizer-common",
+ "formualizer-parse",
+ "formualizer-workbook",
+ "serde_json",
+ "zip 7.2.0",
+]
+
+[[package]]
 name = "formualizer-eval"
 version = "0.8.4"
 dependencies = [

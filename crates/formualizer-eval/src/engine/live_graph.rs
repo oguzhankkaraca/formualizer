@@ -29,6 +29,7 @@ pub(crate) struct LiveGraphAnalysis {
     /// Members of one cyclic SCC appear contiguously (their internal order is
     /// deterministic but otherwise meaningless).
     pub topo: Vec<u32>,
+    pub cyclic_components: Vec<Vec<u32>>,
 }
 
 impl LiveGraphAnalysis {
@@ -70,6 +71,7 @@ pub(crate) fn analyze_live_graph(n: usize, edges: &[(u32, u32)]) -> LiveGraphAna
 
     let mut in_cycle = vec![false; n];
     let mut cycle_count = 0usize;
+    let mut cyclic_components = Vec::new();
     // Tarjan emits an SCC only after all SCCs it depends on were emitted, so
     // emission order == live-topological order (dependencies first).
     let mut topo: Vec<u32> = Vec::with_capacity(n);
@@ -120,9 +122,11 @@ pub(crate) fn analyze_live_graph(n: usize, edges: &[(u32, u32)]) -> LiveGraphAna
                     let cyclic = members.len() > 1 || adj(vu).iter().any(|&(_, w)| w == v); // self-loop
                     if cyclic {
                         cycle_count += 1;
-                        for &m in topo[scc_start..].iter() {
+                        let component = topo[scc_start..].to_vec();
+                        for &m in &component {
                             in_cycle[m as usize] = true;
                         }
+                        cyclic_components.push(component);
                     }
                 }
                 frames.pop();
@@ -138,6 +142,7 @@ pub(crate) fn analyze_live_graph(n: usize, edges: &[(u32, u32)]) -> LiveGraphAna
         in_cycle,
         cycle_count,
         topo,
+        cyclic_components,
     }
 }
 

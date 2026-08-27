@@ -13,6 +13,7 @@ use formualizer_common::{ExcelError, LiteralValue};
 use formualizer_parse::parser::{ReferenceType, TableReference};
 use rustc_hash::FxHashSet;
 use std::sync::Mutex;
+use std::time::Instant;
 
 use crate::interpreter::Interpreter;
 
@@ -332,49 +333,129 @@ impl RangeVirtualDepProvider {
         engine: &Engine<R>,
         v: VertexId,
     ) -> Vec<VertexId> {
+        Self::get_virtual_deps_internal(engine, v, None)
+    }
+
+    pub(crate) fn get_virtual_deps_with_stats<R: EvaluationContext>(
+        engine: &Engine<R>,
+        v: VertexId,
+        stats: &mut crate::engine::v2::V2VirtualDemandAttribution,
+    ) -> Vec<VertexId> {
+        Self::get_virtual_deps_internal(engine, v, Some(stats))
+    }
+
+    fn get_virtual_deps_internal<R: EvaluationContext>(
+        engine: &Engine<R>,
+        v: VertexId,
+        mut stats: Option<&mut crate::engine::v2::V2VirtualDemandAttribution>,
+    ) -> Vec<VertexId> {
         let mut deps = Vec::new();
-        if let Some(ranges) = engine.graph.get_range_dependencies(v) {
-            let current_sheet_id = engine.graph.get_vertex_sheet_id(v);
-            for r in ranges {
-                let sheet_id = match r.sheet {
-                    formualizer_common::SheetLocator::Id(id) => id,
-                    _ => current_sheet_id,
-                };
-                let sheet_name = engine.graph.sheet_name(sheet_id);
+        if let Some(stats) = stats.as_deref_mut() {
+            stats.temporary_vec_allocations = stats.temporary_vec_allocations.saturating_add(1);
+            stats.range_source_lookups = stats.range_source_lookups.saturating_add(1);
+        }
+        let source_started = stats.is_some().then(Instant::now);
+        let ranges = engine.graph.get_range_dependencies(v);
+        if let (Some(stats), Some(started)) = (stats.as_deref_mut(), source_started) {
+            stats.source_lookup_ns = stats
+                .source_lookup_ns
+                .saturating_add(started.elapsed().as_nanos());
+        }
+        let Some(ranges) = ranges else {
+            return deps;
+        };
+        if let Some(stats) = stats.as_deref_mut() {
+            stats.range_sources_with_dependencies =
+                stats.range_sources_with_dependencies.saturating_add(1);
+            stats.range_dependency_records =
+                stats.range_dependency_records.saturating_add(ranges.len());
+        }
+        let current_sheet_id = engine.graph.get_vertex_sheet_id(v);
+        for r in ranges {
+            let sheet_id = match r.sheet {
+                formualizer_common::SheetLocator::Id(id) => id,
+                _ => current_sheet_id,
+            };
+            let sheet_name = engine.graph.sheet_name(sheet_id);
+            if let Some(stats) = stats.as_deref_mut() {
+                stats.sheet_identity_resolutions =
+                    stats.sheet_identity_resolutions.saturating_add(1);
+                stats.range_expansions = stats.range_expansions.saturating_add(1);
+            }
 
-                let Some(extent) = Self::resolve_range(engine, sheet_name, r) else {
-                    continue;
-                };
-                let sr = extent.start_row;
-                let sc = extent.start_column;
-                let er = extent.end_row;
-                let ec = extent.end_column;
+            let resolution_started = stats.is_some().then(Instant::now);
+            let extent = Self::resolve_range(engine, sheet_name, r);
+            if let (Some(stats), Some(started)) = (stats.as_deref_mut(), resolution_started) {
+                stats.range_resolution_ns = stats
+                    .range_resolution_ns
+                    .saturating_add(started.elapsed().as_nanos());
+            }
+            let Some(extent) = extent else {
+                continue;
+            };
+            let sr0 = extent.start_row.saturating_sub(1);
+            let er0 = extent.end_row.saturating_sub(1);
+            let sc0 = extent.start_column.saturating_sub(1);
+            let ec0 = extent.end_column.saturating_sub(1);
 
-                if let Some(index) = engine.graph.sheet_index(sheet_id) {
-                    let sr0 = sr.saturating_sub(1);
-                    let er0 = er.saturating_sub(1);
-                    let sc0 = sc.saturating_sub(1);
-                    let ec0 = ec.saturating_sub(1);
-                    for u in index.vertices_in_col_range(sc0, ec0) {
-                        let Some(pc) = engine.graph.vertex_grid_addr(u) else {
-                            continue;
-                        };
-                        let row0 = pc.row();
-                        if row0 < sr0 || row0 > er0 {
-                            continue;
-                        }
-                        match engine.graph.get_vertex_kind(u) {
-                            VertexKind::FormulaScalar | VertexKind::FormulaArray => {
-                                if (engine.graph.is_dirty(u) || engine.graph.is_volatile(u))
-                                    && u != v
-                                {
-                                    deps.push(u);
-                                }
-                            }
-                            _ => {}
-                        }
+            let Some(index) = engine.graph.sheet_index(sheet_id) else {
+                continue;
+            };
+            if let Some(stats) = stats.as_deref_mut() {
+                let expansion_started = Instant::now();
+                let mut coordinates_examined = 0usize;
+                let mut vertex_grid_lookups = 0usize;
+                let mut formula_owner_graph_lookups = 0usize;
+                index.visit_vertices_in_col_range(sc0, ec0, |u| {
+                    coordinates_examined = coordinates_examined.saturating_add(1);
+                    vertex_grid_lookups = vertex_grid_lookups.saturating_add(1);
+                    let Some(pc) = engine.graph.vertex_grid_addr(u) else {
+                        return;
+                    };
+                    let row0 = pc.row();
+                    if row0 < sr0 || row0 > er0 {
+                        return;
                     }
-                }
+                    formula_owner_graph_lookups = formula_owner_graph_lookups.saturating_add(1);
+                    if matches!(
+                        engine.graph.get_vertex_kind(u),
+                        VertexKind::FormulaScalar | VertexKind::FormulaArray
+                    ) && (engine.graph.is_dirty(u) || engine.graph.is_volatile(u))
+                        && u != v
+                    {
+                        deps.push(u);
+                    }
+                });
+                stats.coordinates_examined = stats
+                    .coordinates_examined
+                    .saturating_add(coordinates_examined);
+                stats.vertex_grid_lookups = stats
+                    .vertex_grid_lookups
+                    .saturating_add(vertex_grid_lookups);
+                stats.formula_owner_graph_lookups = stats
+                    .formula_owner_graph_lookups
+                    .saturating_add(formula_owner_graph_lookups);
+                stats.expansion_materialization_ns = stats
+                    .expansion_materialization_ns
+                    .saturating_add(expansion_started.elapsed().as_nanos());
+            } else {
+                index.visit_vertices_in_col_range(sc0, ec0, |u| {
+                    let Some(pc) = engine.graph.vertex_grid_addr(u) else {
+                        return;
+                    };
+                    let row0 = pc.row();
+                    if row0 < sr0 || row0 > er0 {
+                        return;
+                    }
+                    if matches!(
+                        engine.graph.get_vertex_kind(u),
+                        VertexKind::FormulaScalar | VertexKind::FormulaArray
+                    ) && (engine.graph.is_dirty(u) || engine.graph.is_volatile(u))
+                        && u != v
+                    {
+                        deps.push(u);
+                    }
+                });
             }
         }
         deps
@@ -396,20 +477,79 @@ impl<'a, R: EvaluationContext> VirtualDepBuilder<'a, R> {
         rustc_hash::FxHashMap<VertexId, Vec<VertexId>>,
         Vec<VertexId>,
     ) {
+        self.build_internal(candidates, None)
+    }
+
+    pub(crate) fn build_with_stats(
+        &self,
+        candidates: &[VertexId],
+        stats: &mut crate::engine::v2::V2VirtualDemandAttribution,
+    ) -> (
+        rustc_hash::FxHashMap<VertexId, Vec<VertexId>>,
+        Vec<VertexId>,
+    ) {
+        self.build_internal(candidates, Some(stats))
+    }
+
+    fn build_internal(
+        &self,
+        candidates: &[VertexId],
+        mut stats: Option<&mut crate::engine::v2::V2VirtualDemandAttribution>,
+    ) -> (
+        rustc_hash::FxHashMap<VertexId, Vec<VertexId>>,
+        Vec<VertexId>,
+    ) {
         let mut vdeps: rustc_hash::FxHashMap<VertexId, Vec<VertexId>> =
             rustc_hash::FxHashMap::default();
-        let augmented_vertices: Vec<VertexId> = Vec::new(); // Will be populated in Phase 3
+        let augmented_vertices: Vec<VertexId> = Vec::new();
+        if let Some(stats) = stats.as_deref_mut() {
+            stats.temporary_map_allocations = stats.temporary_map_allocations.saturating_add(1);
+            stats.temporary_vec_allocations = stats.temporary_vec_allocations.saturating_add(1);
+            stats.expansion_calls = stats.expansion_calls.saturating_add(candidates.len());
+        }
 
         for &v in candidates {
-            let mut deps = RangeVirtualDepProvider::get_virtual_deps(self.engine, v);
-            let dynamic_deps = DynamicRefVirtualDepProvider::get_virtual_deps(self.engine, v);
+            let mut deps = if let Some(stats) = stats.as_deref_mut() {
+                RangeVirtualDepProvider::get_virtual_deps_with_stats(self.engine, v, stats)
+            } else {
+                RangeVirtualDepProvider::get_virtual_deps(self.engine, v)
+            };
+            let dynamic_deps = if let Some(stats) = stats.as_deref_mut() {
+                DynamicRefVirtualDepProvider::get_virtual_deps_with_stats(self.engine, v, stats)
+            } else {
+                DynamicRefVirtualDepProvider::get_virtual_deps(self.engine, v)
+            };
 
+            let raw_edges = deps.len().saturating_add(dynamic_deps.len());
             deps.extend(dynamic_deps);
+            let dedup_started = stats.is_some().then(Instant::now);
             deps.sort_unstable();
             deps.dedup();
+            if let Some(stats) = stats.as_deref_mut() {
+                stats.raw_edges_emitted = stats.raw_edges_emitted.saturating_add(raw_edges);
+                stats.unique_source_target_pairs =
+                    stats.unique_source_target_pairs.saturating_add(deps.len());
+                stats.duplicate_source_target_pairs = stats
+                    .duplicate_source_target_pairs
+                    .saturating_add(raw_edges.saturating_sub(deps.len()));
+                if let Some(started) = dedup_started {
+                    stats.builder_dedup_ns = stats
+                        .builder_dedup_ns
+                        .saturating_add(started.elapsed().as_nanos());
+                }
+            }
 
             if !deps.is_empty() {
+                let map_started = stats.is_some().then(Instant::now);
                 vdeps.insert(v, deps);
+                if let Some(stats) = stats.as_deref_mut() {
+                    stats.sources_with_edges = stats.sources_with_edges.saturating_add(1);
+                    if let Some(started) = map_started {
+                        stats.builder_map_ns = stats
+                            .builder_map_ns
+                            .saturating_add(started.elapsed().as_nanos());
+                    }
+                }
             }
         }
 
@@ -473,6 +613,30 @@ impl DynamicRefVirtualDepProvider {
         v: VertexId,
     ) -> Vec<VertexId> {
         Self::collect(engine, v).0
+    }
+
+    pub(crate) fn get_virtual_deps_with_stats<R: EvaluationContext>(
+        engine: &Engine<R>,
+        v: VertexId,
+        stats: &mut crate::engine::v2::V2VirtualDemandAttribution,
+    ) -> Vec<VertexId> {
+        stats.dynamic_source_checks = stats.dynamic_source_checks.saturating_add(1);
+        stats.temporary_vec_allocations = stats.temporary_vec_allocations.saturating_add(1);
+        let source_started = Instant::now();
+        let dynamic = engine.graph.is_dynamic(v);
+        stats.source_lookup_ns = stats
+            .source_lookup_ns
+            .saturating_add(source_started.elapsed().as_nanos());
+        if !dynamic {
+            return Vec::new();
+        }
+        stats.dynamic_expansion_calls = stats.dynamic_expansion_calls.saturating_add(1);
+        let evaluation_started = Instant::now();
+        let deps = Self::collect(engine, v).0;
+        stats.dynamic_evaluation_ns = stats
+            .dynamic_evaluation_ns
+            .saturating_add(evaluation_started.elapsed().as_nanos());
+        deps
     }
 
     pub(crate) fn get_virtual_regions<R: EvaluationContext>(

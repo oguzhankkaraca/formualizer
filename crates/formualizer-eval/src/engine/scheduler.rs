@@ -80,12 +80,10 @@ impl<'a> Scheduler<'a> {
         let (cycles, acyclic_sccs) = self.separate_cycles(sccs);
 
         // 3. Topologically sort acyclic components into layers
-        if self.graph.dynamic_topo_enabled() {
-            // Dynamic-topo (PK) branch: pk_layers_for orders only the acyclic
-            // subset, so we cannot interleave Cycle units by condensation
-            // position here. Stay conservative on this experimental path and
-            // emit ALL Cycle units first (matching today's stamp-cycles-first
-            // semantics), then the pk layers as Layer units.
+        if self.graph.dynamic_topo_enabled() && cycles.is_empty() {
+            // Dynamic-topo (PK) remains the cycle-free fast path. When cycles
+            // exist, the shared condensation builder below preserves external
+            // dependency -> cycle -> dependent ordering.
             let subset: Vec<VertexId> = acyclic_sccs.into_iter().flatten().collect();
             let layers = if subset.is_empty() {
                 Vec::new()

@@ -493,12 +493,14 @@ fn find_exact_number_in_view(
     n: f64,
     vertical: bool,
 ) -> Result<Option<usize>, ExcelError> {
+    let scan_view = view.without_read_observer();
     if vertical {
-        for res in view.numbers_slices() {
+        for res in scan_view.numbers_slices() {
             let (row_start, _row_len, cols) = res?;
             if !cols.is_empty() {
                 let arr = &cols[0];
                 for i in 0..arr.len() {
+                    view.observe_cell_read(row_start + i, 0);
                     if !arr.is_null(i) && (arr.value(i) - n).abs() < 1e-12 {
                         return Ok(Some(row_start + i));
                     }
@@ -507,9 +509,10 @@ fn find_exact_number_in_view(
         }
     } else {
         // Horizontal: check columns in the first row segment
-        for res in view.numbers_slices() {
+        for res in scan_view.numbers_slices() {
             let (_row_start, _row_len, cols) = res?;
             for (c, arr) in cols.iter().enumerate() {
+                view.observe_cell_read(0, c);
                 if !arr.is_null(0) && (arr.value(0) - n).abs() < 1e-12 {
                     return Ok(Some(c));
                 }
@@ -541,12 +544,14 @@ fn find_exact_text_in_view(
     // (some load paths materialize them), so a lane hit is only a match
     // when the underlying cell value really is text: Excel exact lookups
     // never match a text needle against a number/boolean/date cell.
+    let scan_view = view.without_read_observer();
     if vertical {
-        for res in view.lowered_text_slices() {
+        for res in scan_view.lowered_text_slices() {
             let (row_start, _row_len, cols) = res?;
             if !cols.is_empty() {
                 let arr = &cols[0];
                 for i in 0..arr.len() {
+                    view.observe_cell_read(row_start + i, 0);
                     if !arr.is_null(i) {
                         let val = arr.value(i);
                         let hit = if let Some(pattern) = &compiled_wildcard {
@@ -562,9 +567,10 @@ fn find_exact_text_in_view(
             }
         }
     } else {
-        for res in view.lowered_text_slices() {
+        for res in scan_view.lowered_text_slices() {
             let (_row_start, _row_len, cols) = res?;
             for (c, arr) in cols.iter().enumerate() {
+                view.observe_cell_read(0, c);
                 if !arr.is_null(0) {
                     let val = arr.value(0);
                     let hit = if let Some(pattern) = &compiled_wildcard {
@@ -587,12 +593,14 @@ fn find_exact_boolean_in_view(
     b: bool,
     vertical: bool,
 ) -> Result<Option<usize>, ExcelError> {
+    let scan_view = view.without_read_observer();
     if vertical {
-        for res in view.booleans_slices() {
+        for res in scan_view.booleans_slices() {
             let (row_start, _row_len, cols) = res?;
             if !cols.is_empty() {
                 let arr = &cols[0];
                 for i in 0..arr.len() {
+                    view.observe_cell_read(row_start + i, 0);
                     if !arr.is_null(i) && arr.value(i) == b {
                         return Ok(Some(row_start + i));
                     }
@@ -600,9 +608,10 @@ fn find_exact_boolean_in_view(
             }
         }
     } else {
-        for res in view.booleans_slices() {
+        for res in scan_view.booleans_slices() {
             let (_row_start, _row_len, cols) = res?;
             for (c, arr) in cols.iter().enumerate() {
+                view.observe_cell_read(0, c);
                 if !arr.is_null(0) && arr.value(0) == b {
                     return Ok(Some(c));
                 }
@@ -616,12 +625,14 @@ fn find_exact_empty_in_view(
     view: &RangeView<'_>,
     vertical: bool,
 ) -> Result<Option<usize>, ExcelError> {
+    let scan_view = view.without_read_observer();
     if vertical {
-        for res in view.type_tags_slices() {
+        for res in scan_view.type_tags_slices() {
             let (row_start, _row_len, cols) = res?;
             if !cols.is_empty() {
                 let arr = &cols[0];
                 for i in 0..arr.len() {
+                    view.observe_cell_read(row_start + i, 0);
                     if !arr.is_null(i) && arr.value(i) == crate::arrow_store::TypeTag::Empty as u8 {
                         return Ok(Some(row_start + i));
                     }
@@ -629,9 +640,10 @@ fn find_exact_empty_in_view(
             }
         }
     } else {
-        for res in view.type_tags_slices() {
+        for res in scan_view.type_tags_slices() {
             let (_row_start, _row_len, cols) = res?;
             for (c, arr) in cols.iter().enumerate() {
+                view.observe_cell_read(0, c);
                 if !arr.is_null(0) && arr.value(0) == crate::arrow_store::TypeTag::Empty as u8 {
                     return Ok(Some(c));
                 }

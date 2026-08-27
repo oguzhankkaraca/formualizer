@@ -793,6 +793,7 @@ impl RegistryPlanningSnapshot {
                         namespace: registration.canonical.0.clone(),
                         canonical_name: registration.canonical.1.clone(),
                         generation: registration.generation,
+                        trusted_builtin: registration.trusted_builtin,
                         caps,
                         contract,
                         argument_by_ref,
@@ -1016,6 +1017,7 @@ pub(crate) fn resolve_semantic_identity<P: crate::traits::FunctionProvider + ?Si
         namespace: resolved.namespace,
         canonical_name: resolved.canonical_name,
         generation: resolved.semantics.generation,
+        trusted_builtin: resolved.semantics.trusted_builtin,
         caps: runtime.caps(),
         contract,
         argument_by_ref,
@@ -1806,6 +1808,48 @@ mod tests {
     }
 
     #[test]
+    fn semantic_identity_exposes_generic_capability_classes() {
+        crate::builtins::load_builtins();
+        let provider = GlobalRegistryFunctionProvider;
+        assert_eq!(
+            resolve_semantic_identity(&provider, "", "ABS", 1)
+                .unwrap()
+                .capability_class(),
+            crate::function_contract::FunctionCapabilityClass::ArgumentStateSafe
+        );
+        assert_eq!(
+            resolve_semantic_identity(&provider, "", "ROW", 0)
+                .unwrap()
+                .capability_class(),
+            crate::function_contract::FunctionCapabilityClass::ContextDependent
+        );
+        assert_eq!(
+            resolve_semantic_identity(&provider, "", "INDEX", 2)
+                .unwrap()
+                .capability_class(),
+            crate::function_contract::FunctionCapabilityClass::StructuralReferenceShape
+        );
+        assert_eq!(
+            resolve_semantic_identity(&provider, "", "INDIRECT", 1)
+                .unwrap()
+                .capability_class(),
+            crate::function_contract::FunctionCapabilityClass::DynamicReference
+        );
+        assert_eq!(
+            resolve_semantic_identity(&provider, "", "AGGREGATE", 3)
+                .unwrap()
+                .capability_class(),
+            crate::function_contract::FunctionCapabilityClass::ArgumentStateSafe
+        );
+        assert_eq!(
+            resolve_semantic_identity(&provider, "", "LET", 3)
+                .unwrap()
+                .capability_class(),
+            crate::function_contract::FunctionCapabilityClass::StructuralReferenceShape
+        );
+    }
+
+    #[test]
     fn semantic_identity_encodes_effective_by_reference_roles_for_call_arity() {
         crate::builtins::load_builtins();
         let provider = GlobalRegistryFunctionProvider;
@@ -1944,12 +1988,15 @@ mod tests {
             );
         }
         for name in ["OFFSET", "INDIRECT"] {
+            let caps = get("", name).unwrap().caps();
+            assert!(caps.contains(FnCaps::DYNAMIC_DEPENDENCY), "{name}");
             assert!(
-                get("", name)
-                    .unwrap()
-                    .caps()
-                    .contains(FnCaps::DYNAMIC_DEPENDENCY),
-                "{name}"
+                caps.contains(FnCaps::V2_DYNAMIC_TARGET_OBSERVED),
+                "{name} dynamic host contract"
+            );
+            assert!(
+                caps.contains(FnCaps::V2_REFERENCE_SHAPE_OBSERVED),
+                "{name} shape host contract"
             );
         }
         for name in ["INDEX", "OFFSET", "INDIRECT", "CHOOSE"] {
@@ -2041,7 +2088,20 @@ mod tests {
                 .result,
             FunctionResultSemantics::MayReturnReferenceAndSpill
         );
+        assert!(
+            get("", "INDEX")
+                .unwrap()
+                .caps()
+                .contains(FnCaps::V2_REFERENCE_SHAPE_OBSERVED)
+        );
         for name in ["ROW", "COLUMN"] {
+            assert!(
+                get("", name)
+                    .unwrap()
+                    .caps()
+                    .contains(FnCaps::V2_CONTEXT_OBSERVED),
+                "{name} context host contract"
+            );
             let contract = resolve_for_arity("", name, 0)
                 .unwrap()
                 .semantics

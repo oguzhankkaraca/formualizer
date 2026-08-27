@@ -192,6 +192,7 @@ impl DependencyGraph {
         let vertex_id = self.store.allocate(addr, scope_sheet_id, 0x01);
         self.store.set_kind(vertex_id, kind);
         self.edges.add_vertex(addr, vertex_id.0);
+        self.note_symbol_vertex_allocation();
         vertex_id
     }
 
@@ -263,24 +264,45 @@ impl DependencyGraph {
     ) -> Result<(), ExcelError> {
         self.validate_define_name(name, scope)?;
 
-        let mut final_definition = definition;
-        // Extract dependencies if formula
-        if let NamedDefinition::Formula { ref ast, .. } = final_definition {
-            let (deps, range_deps, _, _, _) = self.extract_dependencies_with_pending_names(
+        let formula_dependencies = if let NamedDefinition::Formula { ref ast, .. } = definition {
+            let started = std::time::Instant::now();
+            let result = self.extract_dependencies_with_pending_names(
                 ast,
                 match scope {
                     NameScope::Sheet(id) => id,
                     NameScope::Workbook => self.default_sheet_id,
                 },
             )?;
-            final_definition = NamedDefinition::Formula {
-                ast: ast.clone(),
-                dependencies: deps,
-                range_deps,
-            };
-        }
+            self.name_definition_stats
+                .formula_dependency_extraction_calls = self
+                .name_definition_stats
+                .formula_dependency_extraction_calls
+                .saturating_add(1);
+            self.name_definition_stats.formula_dependency_extraction_ns = self
+                .name_definition_stats
+                .formula_dependency_extraction_ns
+                .saturating_add(started.elapsed().as_nanos());
+            Some(result)
+        } else {
+            None
+        };
 
-        // Allocate vertex only after dependency extraction succeeds
+        let final_definition = match &definition {
+            NamedDefinition::Formula { ast, .. } => {
+                let Some((dependencies, range_deps, _, _, _)) = formula_dependencies.as_ref()
+                else {
+                    unreachable!();
+                };
+                NamedDefinition::Formula {
+                    ast: ast.clone(),
+                    dependencies: dependencies.clone(),
+                    range_deps: range_deps.clone(),
+                }
+            }
+            _ => definition.clone(),
+        };
+
+        let publication_started = std::time::Instant::now();
         let vertex_id = self.allocate_name_vertex(scope);
 
         let named_range = NamedRange {
@@ -303,16 +325,12 @@ impl DependencyGraph {
                 VertexKind::NamedScalar
             },
         );
-
-        // Formula dependencies are re-extracted here to share registration with update/reindex paths.
-        let referenced_names =
-            self.rebuild_name_dependencies(vertex_id, &named_range.definition, scope)?;
-        if !referenced_names.is_empty() {
-            self.attach_vertex_to_names(vertex_id, &referenced_names);
-        }
+        let definition_for_rebuild = match &named_range.definition {
+            NamedDefinition::Formula { .. } => None,
+            _ => Some(named_range.definition.clone()),
+        };
 
         let key = name.to_string();
-
         match scope {
             NameScope::Workbook => {
                 self.named_ranges.insert(key.clone(), named_range);
@@ -326,10 +344,53 @@ impl DependencyGraph {
                     .insert((id, self.name_lookup_key(&key)), key.clone());
             }
         }
-
         self.name_vertex_lookup.insert(vertex_id, (scope, key));
-        self.resolve_pending_name_references(scope, name);
+        self.name_definition_stats.name_index_insertions = self
+            .name_definition_stats
+            .name_index_insertions
+            .saturating_add(3);
+
+        if let Some((dependencies, range_deps, _, referenced_names, pending_names)) =
+            formula_dependencies
+        {
+            if !dependencies.is_empty() {
+                self.add_dependent_edges(vertex_id, &dependencies);
+            }
+            self.register_name_cell_dependencies(vertex_id, &dependencies);
+            if !range_deps.is_empty() {
+                let sheet_id = match scope {
+                    NameScope::Sheet(id) => id,
+                    NameScope::Workbook => self.default_sheet_id,
+                };
+                self.add_range_dependent_edges(vertex_id, &range_deps, sheet_id);
+            }
+            if !referenced_names.is_empty() {
+                self.attach_vertex_to_names(vertex_id, &referenced_names);
+            }
+            let sheet_id = match scope {
+                NameScope::Sheet(id) => id,
+                NameScope::Workbook => self.default_sheet_id,
+            };
+            for pending_name in pending_names {
+                self.record_pending_name_reference(sheet_id, &pending_name, vertex_id);
+            }
+        } else {
+            let definition_for_rebuild = definition_for_rebuild.expect("non-formula definition");
+            let referenced_names =
+                self.rebuild_name_dependencies(vertex_id, &definition_for_rebuild, scope)?;
+            if !referenced_names.is_empty() {
+                self.attach_vertex_to_names(vertex_id, &referenced_names);
+            }
+        }
+
+        if self.symbol_revision_batch_depth == 0 {
+            self.resolve_pending_name_references(scope, name);
+        }
         self.bump_symbol_revision();
+        self.name_definition_stats.publication_ns = self
+            .name_definition_stats
+            .publication_ns
+            .saturating_add(publication_started.elapsed().as_nanos());
 
         Ok(())
     }
@@ -670,6 +731,17 @@ impl DependencyGraph {
         }
     }
 
+    fn clear_pending_name_reference_key(&mut self, formula_vertex: VertexId, key: &str) {
+        let mut remove_vertex = false;
+        if let Some(keys) = self.vertex_to_pending_names.get_mut(&formula_vertex) {
+            keys.remove(key);
+            remove_vertex = keys.is_empty();
+        }
+        if remove_vertex {
+            self.vertex_to_pending_names.remove(&formula_vertex);
+        }
+    }
+
     pub(super) fn resolve_pending_name_references(&mut self, scope: NameScope, name: &str) {
         let key = self.name_lookup_key(name);
         if let Some(entries) = self.pending_name_links.remove(&key) {
@@ -681,39 +753,82 @@ impl DependencyGraph {
                 if attach {
                     if let Some(ast) = self.get_formula(formula_vertex) {
                         self.rebuild_formula_dependencies(formula_vertex, &ast);
+                    } else if let Some(named_vertex) = self
+                        .canonical_name_in_scope(scope, name)
+                        .and_then(|canonical| match scope {
+                            NameScope::Workbook => self
+                                .named_ranges
+                                .get(&canonical)
+                                .map(|named_range| named_range.vertex),
+                            NameScope::Sheet(scope_sheet) => self
+                                .sheet_named_ranges
+                                .get(&(scope_sheet, canonical))
+                                .map(|named_range| named_range.vertex),
+                        })
+                    {
+                        self.add_dependent_edges(formula_vertex, &[named_vertex]);
+                        self.attach_vertex_to_names(formula_vertex, &[named_vertex]);
+                        self.clear_pending_name_reference_key(formula_vertex, &key);
                     } else {
-                        let named_definition = self
-                            .named_ranges
-                            .values()
-                            .find(|named_range| named_range.vertex == formula_vertex)
-                            .map(|named_range| (named_range.scope, named_range.definition.clone()))
-                            .or_else(|| {
-                                self.sheet_named_ranges
-                                    .values()
-                                    .find(|named_range| named_range.vertex == formula_vertex)
-                                    .map(|named_range| {
-                                        (named_range.scope, named_range.definition.clone())
-                                    })
-                            });
-                        if let Some((name_scope, definition)) = named_definition {
-                            if let Ok(referenced_names) = self.rebuild_name_dependencies(
-                                formula_vertex,
-                                &definition,
-                                name_scope,
-                            ) {
-                                if !referenced_names.is_empty() {
-                                    self.attach_vertex_to_names(formula_vertex, &referenced_names);
-                                }
-                            }
-                        } else {
-                            self.clear_pending_name_references(formula_vertex);
-                        }
+                        self.clear_pending_name_references(formula_vertex);
                     }
                 } else {
                     self.record_pending_name_reference(sheet_id, name, formula_vertex);
                 }
             }
         }
+    }
+
+    pub(crate) fn resolve_pending_name_references_for_load(&mut self) -> usize {
+        let mut resolved = std::collections::BTreeMap::<VertexId, Vec<VertexId>>::new();
+        let mut resolved_pending = Vec::new();
+        for (name, entries) in &self.pending_name_links {
+            for &(sheet_id, formula_vertex) in entries {
+                let Some(named_vertex) = self
+                    .resolve_name_entry(name, sheet_id)
+                    .map(|named_range| named_range.vertex)
+                else {
+                    continue;
+                };
+                resolved
+                    .entry(formula_vertex)
+                    .or_default()
+                    .push(named_vertex);
+                resolved_pending.push((name.clone(), sheet_id, formula_vertex));
+            }
+        }
+
+        let resolved_pending_count = resolved_pending.len();
+        self.edges.begin_batch();
+        for (formula_vertex, mut dependencies) in resolved {
+            dependencies.sort_unstable_by_key(|vertex| vertex.0);
+            dependencies.dedup();
+            let has_cycle = dependencies.iter().any(|name_vertex| {
+                let mut visited = FxHashSet::default();
+                self.name_depends_on_vertex(*name_vertex, formula_vertex, &mut visited)
+            });
+            if has_cycle {
+                self.mark_as_ref_error(formula_vertex);
+                continue;
+            }
+            self.ref_error_vertices.remove(&formula_vertex);
+            self.attach_vertex_to_names(formula_vertex, &dependencies);
+            self.add_dependent_edges_nobatch(formula_vertex, &dependencies);
+        }
+        self.edges.end_batch();
+
+        for (name, sheet_id, formula_vertex) in resolved_pending {
+            let mut remove_name = false;
+            if let Some(entries) = self.pending_name_links.get_mut(&name) {
+                entries.remove(&(sheet_id, formula_vertex));
+                remove_name = entries.is_empty();
+            }
+            if remove_name {
+                self.pending_name_links.remove(&name);
+            }
+            self.clear_pending_name_reference_key(formula_vertex, &name);
+        }
+        resolved_pending_count
     }
 
     pub(super) fn name_depends_on_vertex(

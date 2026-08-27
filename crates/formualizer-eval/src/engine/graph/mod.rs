@@ -133,6 +133,7 @@ pub enum StripeType {
     Row,
     Column,
     Block, // For dense, square-like ranges
+    WholeSheet,
 }
 
 /// Block stripe indexing mathematics
@@ -176,6 +177,28 @@ pub struct GraphBaselineStats {
     pub evaluation_vertex_count: usize,
     pub formula_ast_root_count: usize,
     pub formula_ast_node_count: usize,
+}
+
+/// Cumulative name-definition work counters used by workbook load instrumentation.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct NameDefinitionStats {
+    pub formula_dependency_extraction_calls: u64,
+    pub formula_dependency_extraction_ns: u128,
+    pub publication_ns: u128,
+    pub symbol_vertex_allocations: u64,
+    pub name_index_insertions: u64,
+    pub symbol_revision_bumps: u64,
+    pub symbol_revision_updates: u64,
+}
+
+/// Cumulative compressed-range publication counters used by load instrumentation.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RangeDependencyStats {
+    pub dependency_count: u64,
+    pub all_unbounded_count: u64,
+    pub all_unbounded_index_insertions: u64,
+    pub all_unbounded_elapsed_ns: u128,
+    pub publication_ns: u128,
 }
 
 /// SoA-based dependency graph implementation
@@ -246,6 +269,7 @@ pub struct DependencyGraph {
     /// Maps a stripe to formulas that depend on it via a compressed range.
     /// CRITICAL: VertexIds are deduplicated within each stripe to avoid quadratic blow-ups.
     stripe_to_dependents: FxHashMap<StripeKey, FxHashSet<VertexId>>,
+    range_dependency_stats: RangeDependencyStats,
 
     // Sheet-level sparse indexes for O(log n + k) range queries
     /// Maps sheet_id to its interval tree index for efficient row/column operations
@@ -319,6 +343,9 @@ pub struct DependencyGraph {
     topology_revision: u64,
     /// Monotonic name, table, and external-source binding revision.
     symbol_revision: u64,
+    name_definition_stats: NameDefinitionStats,
+    symbol_revision_batch_depth: u32,
+    symbol_revision_batch_dirty: bool,
 
     // Graph-owned FormulaPlane authority shell. Inert until a later runtime cut-over.
     formula_authority: FormulaAuthority,
@@ -1258,6 +1285,7 @@ impl DependencyGraph {
             ref_error_vertices: FxHashSet::default(),
             formula_to_range_deps: FxHashMap::default(),
             stripe_to_dependents: FxHashMap::default(),
+            range_dependency_stats: RangeDependencyStats::default(),
             sheet_indexes: FxHashMap::default(),
             sheet_reg,
             default_sheet_id,
@@ -1281,6 +1309,9 @@ impl DependencyGraph {
             config: config.clone(),
             topology_revision: 0,
             symbol_revision: 0,
+            name_definition_stats: NameDefinitionStats::default(),
+            symbol_revision_batch_depth: 0,
+            symbol_revision_batch_dirty: false,
             formula_authority: FormulaAuthority::default(),
             pk_order: None,
             spill_anchor_to_cells: FxHashMap::default(),
@@ -1560,8 +1591,54 @@ impl DependencyGraph {
         self.symbol_revision
     }
 
+    pub(crate) fn begin_symbol_revision_batch(&mut self) {
+        self.symbol_revision_batch_depth = self.symbol_revision_batch_depth.saturating_add(1);
+    }
+
+    pub(crate) fn end_symbol_revision_batch(&mut self) {
+        if self.symbol_revision_batch_depth == 0 {
+            return;
+        }
+        self.symbol_revision_batch_depth -= 1;
+        if self.symbol_revision_batch_depth == 0 && self.symbol_revision_batch_dirty {
+            self.symbol_revision = self.symbol_revision.wrapping_add(1);
+            self.name_definition_stats.symbol_revision_updates = self
+                .name_definition_stats
+                .symbol_revision_updates
+                .saturating_add(1);
+            self.symbol_revision_batch_dirty = false;
+        }
+    }
+
+    pub(crate) fn name_definition_stats(&self) -> NameDefinitionStats {
+        self.name_definition_stats
+    }
+
     pub(crate) fn bump_symbol_revision(&mut self) {
-        self.symbol_revision = self.symbol_revision.wrapping_add(1);
+        self.name_definition_stats.symbol_revision_bumps = self
+            .name_definition_stats
+            .symbol_revision_bumps
+            .saturating_add(1);
+        if self.symbol_revision_batch_depth != 0 {
+            self.symbol_revision_batch_dirty = true;
+        } else {
+            self.symbol_revision = self.symbol_revision.wrapping_add(1);
+            self.name_definition_stats.symbol_revision_updates = self
+                .name_definition_stats
+                .symbol_revision_updates
+                .saturating_add(1);
+        }
+    }
+
+    pub(crate) fn note_symbol_vertex_allocation(&mut self) {
+        self.name_definition_stats.symbol_vertex_allocations = self
+            .name_definition_stats
+            .symbol_vertex_allocations
+            .saturating_add(1);
+    }
+
+    pub(crate) fn range_dependency_stats(&self) -> RangeDependencyStats {
+        self.range_dependency_stats
     }
 
     pub(crate) fn authority_revisions(&self) -> (u64, u64, u64) {
@@ -3291,7 +3368,13 @@ impl DependencyGraph {
                 let row_stripes = (s_col.is_none() && e_col.is_none())
                     || (s_row.is_some() && e_row.is_some() && (s_col.is_none() || e_col.is_none()));
 
-                if col_stripes && !row_stripes {
+                if s_row.is_none() && e_row.is_none() && s_col.is_none() && e_col.is_none() {
+                    keys_to_clean.insert(StripeKey {
+                        sheet_id,
+                        stripe_type: StripeType::WholeSheet,
+                        index: 0,
+                    });
+                } else if col_stripes && !row_stripes {
                     let sc = s_col.unwrap_or(0);
                     let ec = e_col.unwrap_or(sc);
                     for col in sc..=ec {
@@ -3876,6 +3959,14 @@ impl DependencyGraph {
             return Vec::new();
         }
         let mut candidates: FxHashSet<VertexId> = FxHashSet::default();
+        let whole_sheet_key = StripeKey {
+            sheet_id,
+            stripe_type: StripeType::WholeSheet,
+            index: 0,
+        };
+        if let Some(deps) = self.stripe_to_dependents.get(&whole_sheet_key) {
+            candidates.extend(deps);
+        }
 
         for col in start_col..=end_col {
             let key = StripeKey {

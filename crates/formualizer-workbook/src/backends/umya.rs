@@ -1641,6 +1641,7 @@ where
             value_slots_handed_to_engine: Some(total_value_slots as u64),
             formula_cells_handed_to_engine: Some(total_formula_handed_to_engine as u64),
             shared_formula_tags_observed: None,
+            ..AdapterLoadStats::default()
         };
         if debug {
             eprintln!(

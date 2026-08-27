@@ -76,7 +76,7 @@ pub struct EdateFn;
 /// Caps: PURE
 /// [formualizer-docgen:schema:end]
 impl Function for EdateFn {
-    func_caps!(PURE);
+    func_caps!(PURE, V2_READS_OBSERVED);
 
     fn name(&self) -> &'static str {
         "EDATE"

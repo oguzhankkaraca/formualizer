@@ -97,7 +97,7 @@ fn materialize_arg<'b>(
 /// Caps: PURE
 /// [formualizer-docgen:schema:end]
 impl Function for HStackFn {
-    func_caps!(PURE, MAY_SPILL);
+    func_caps!(PURE, MAY_SPILL, V2_RESULT_SHAPE_OBSERVED);
     fn name(&self) -> &'static str {
         "HSTACK"
     }
@@ -258,7 +258,7 @@ enum HStackEntry<'a> {
 /// Caps: PURE
 /// [formualizer-docgen:schema:end]
 impl Function for VStackFn {
-    func_caps!(PURE, MAY_SPILL);
+    func_caps!(PURE, MAY_SPILL, V2_RESULT_SHAPE_OBSERVED);
     fn name(&self) -> &'static str {
         "VSTACK"
     }

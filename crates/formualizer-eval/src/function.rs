@@ -97,6 +97,27 @@ bitflags::bitflags! {
     const LOCAL_ENVIRONMENT = 0b0001_0000_0000_0000_0000;
     /// Function can produce a multi-cell dynamic-array result.
     const MAY_SPILL = 0b0010_0000_0000_0000_0000;
+    /// Function has been audited to expose every dependency-relevant read through
+    /// the production EvaluationContext/RangeView host seam.
+    const V2_READS_OBSERVED = 0b0100_0000_0000_0000_0000;
+    /// For this audited short-circuit function, scalar arguments guarantee a
+    /// scalar result shape.
+    const V2_SCALAR_OUTPUT_FROM_SCALAR_ARGS = 0b1000_0000_0000_0000_0000;
+    /// For this audited reference selector, statically positive selector
+    /// literals guarantee a single-cell reference result.
+    const V2_POSITIVE_SELECTORS_SCALAR_REFERENCE = 0b0001_0000_0000_0000_0000_0000;
+    /// The host supplies the formula placement context required by this call.
+    const V2_CONTEXT_OBSERVED = 0b0010_0000_0000_0000_0000_0000;
+    /// The host records the selected reference and its resulting shape.
+    const V2_REFERENCE_SHAPE_OBSERVED = 0b0100_0000_0000_0000_0000_0000;
+    /// The host records dynamic-array result shape through the spill/effect path.
+    const V2_RESULT_SHAPE_OBSERVED = 0b0001_0000_0000_0000_0000_0000_0000;
+    /// The interpreter records lexical binding reads and callable invocation effects.
+    const V2_LOCAL_ENVIRONMENT_OBSERVED = 0b0010_0000_0000_0000_0000_0000_0000;
+    /// The host owns the function's volatility generation and reevaluation trigger.
+    const V2_VOLATILITY_OBSERVED = 0b0100_0000_0000_0000_0000_0000_0000;
+    /// The host records dynamic targets and owns their invalidation generation.
+    const V2_DYNAMIC_TARGET_OBSERVED = 0b1000_0000_0000_0000_0000_0000;
     }
 }
 

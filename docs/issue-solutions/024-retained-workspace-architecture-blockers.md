@@ -7,9 +7,21 @@
 - **Gated durability:** `docs/issue-solutions/data/gated-durability.json`
 - **Historical cost attribution:** `docs/issue-solutions/data/retained-path-cost-attribution.json`
 - **Native mutation test:** `diagnostic_exact_reuse_fails_closed_for_real_mutations`
-- **Production/default behavior:** unchanged; retained reuse remains diagnostic-only and is currently fail-closed for Heavy.
+- **Production/default behavior:** V1 defaults remain unchanged; V2 remains opt-in, with Stage 3D retained-plan execution enabled only for targeted V2 requests.
 
-## Finding
+## Stage 3D follow-up
+
+The findings below describe the pre-Stage 3D diagnostic retained-workspace experiment. The current V2 path now has a bounded retained execution plan with fail-closed fallback:
+
+- admission reuses a retained exact-SCC workspace plan only when the prior state, runtime contract certificates, and reference generations are valid;
+- targeted warm execution evaluates dirty upstream members, the retained exact SCC components, and only affected downstream members;
+- after execution it verifies exact SCC membership and read topology, then reopens through the recorded conservative workspace solver if either changes;
+- unrelated data-snapshot changes are accepted only when the retained exact read set does not intersect the pending mutation;
+- semantic effects are recorded consistently for ordinary SCC and targeted formula evaluation, including spill-shape effects.
+
+The V2-only real Light sequence (`F6=300`, `F6=500`, unchanged) completed with matching target output. For the warm `F6=500` request, all 19 retained-plan candidates were accepted and runtime invalidations/reopens were `0/0`. The retained path avoided 19 full workspace discovery passes and reported 1,768 upstream, 1,557 exact-SCC, and 36 downstream formula evaluations. Formula-event count increased from the Stage 2 path's 4,395 to 4,850 because the retained exact-SCC solver performs its own settling passes; wall time nevertheless fell from 15.48 s to 10.08 s in these debug runs. A synthetic regression also verifies that a runtime edge change reopens the workspace rather than committing a stale plan.
+
+## Historical finding (pre-Stage 3D)
 
 The canonical semantic fixed-point result remains valid:
 

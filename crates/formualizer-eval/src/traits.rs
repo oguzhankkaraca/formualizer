@@ -25,6 +25,35 @@ pub struct ReferenceInfo {
     pub first_cell: Option<CellRef>,
 }
 
+/// Typed shape of a reference resolved by a function host.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Hash)]
+pub enum ReferenceShape {
+    Cell,
+    Range { rows: usize, cols: usize },
+    Error,
+}
+
+/// Generation evidence attached to a reference observation.
+#[derive(Clone, Copy, Debug, Default, Eq, Ord, PartialEq, PartialOrd, Hash)]
+pub struct ReferenceGeneration {
+    pub data_snapshot: u64,
+    pub topology: u64,
+    pub symbols: u64,
+    pub shape: u64,
+    pub effect: u64,
+    pub provider: Option<u64>,
+}
+
+/// Host-owned observation of a resolved reference target and its shape.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ReferenceObservation {
+    pub source: ReferenceType,
+    pub resolved: ReferenceType,
+    pub current_sheet: String,
+    pub shape: ReferenceShape,
+    pub generation: ReferenceGeneration,
+}
+
 /* ───────────────────────────── Range ───────────────────────────── */
 
 pub trait Range: Debug + Send + Sync {
@@ -628,7 +657,7 @@ impl<'a, 'b> ArgumentHandle<'a, 'b> {
                     .collect();
                 let ctx = DefaultFunctionContext::new_with_sheet(
                     self.interp.context,
-                    None,
+                    self.interp.current_cell(),
                     self.interp.current_sheet(),
                 );
                 Some(fun.resolve_reference_or_value(&handles, &ctx, &|| self.value()))
@@ -681,7 +710,7 @@ impl<'a, 'b> ArgumentHandle<'a, 'b> {
                     .collect();
                 let ctx = DefaultFunctionContext::new_with_sheet(
                     self.interp.context,
-                    None,
+                    self.interp.current_cell(),
                     self.interp.current_sheet(),
                 );
                 Some(fun.resolve_reference_or_value(&handles, &ctx, &|| self.value()))
@@ -830,6 +859,9 @@ impl<'a, 'b> ArgumentHandle<'a, 'b> {
     fn compute_resolved_argument(&self) -> Result<ResolvedArgument<'b>, ExcelError> {
         let value = match self.resolve_reference_or_value()? {
             crate::function::FunctionResolution::Reference(reference) => {
+                self.interp
+                    .context
+                    .record_selected_reference(&reference, self.interp.current_sheet());
                 return match self
                     .interp
                     .context
@@ -1265,7 +1297,11 @@ impl<'a, 'b> ArgumentHandle<'a, 'b> {
                     self.interp.reference_for_current_offset(reference)
                 }
                 ASTNodeType::Function { .. } | ASTNodeType::BinaryOp { .. } => {
-                    self.interp.evaluate_ast_as_reference(node)
+                    let reference = self.interp.evaluate_ast_as_reference(node)?;
+                    self.interp
+                        .context
+                        .record_selected_reference(&reference, self.interp.current_sheet());
+                    Ok(reference)
                 }
                 _ => Err(ExcelError::new(ExcelErrorKind::Ref)
                     .with_message("Argument is not a reference")),
@@ -1284,9 +1320,17 @@ impl<'a, 'b> ArgumentHandle<'a, 'b> {
                         self.reference_for_eval()
                     }
                     crate::engine::arena::AstNodeData::Function { .. }
-                    | crate::engine::arena::AstNodeData::BinaryOp { .. } => self
-                        .interp
-                        .evaluate_arena_ast_as_reference(*id, data_store, sheet_registry),
+                    | crate::engine::arena::AstNodeData::BinaryOp { .. } => {
+                        let reference = self.interp.evaluate_arena_ast_as_reference(
+                            *id,
+                            data_store,
+                            sheet_registry,
+                        )?;
+                        self.interp
+                            .context
+                            .record_selected_reference(&reference, self.interp.current_sheet());
+                        Ok(reference)
+                    }
                     _ => Err(ExcelError::new(ExcelErrorKind::Ref)
                         .with_message("Argument is not a reference")),
                 }
@@ -1682,6 +1726,11 @@ pub trait EvaluationContext: Resolver + FunctionProvider + SourceResolver {
         Err(ExcelError::new(ExcelErrorKind::NImpl))
     }
 
+    fn record_selected_reference(&self, _reference: &ReferenceType, _current_sheet: &str) {}
+
+    /// Record a typed reference result for dynamic/reference-shape functions.
+    fn record_reference_observation(&self, _observation: &ReferenceObservation) {}
+
     /// Resolve a single-cell reference as a scalar value.
     ///
     /// Default implementation preserves existing reference semantics by routing through
@@ -1862,6 +1911,24 @@ pub trait EvaluationContext: Resolver + FunctionProvider + SourceResolver {
         0
     }
 
+    /// Return generation evidence for a reference whose identity/shape may be retained.
+    fn reference_generation(
+        &self,
+        _reference: &ReferenceType,
+        _current_sheet: &str,
+    ) -> Option<ReferenceGeneration> {
+        None
+    }
+
+    /// Return generation evidence for a dynamically resolved target.
+    fn dynamic_target_generation(
+        &self,
+        reference: &ReferenceType,
+        current_sheet: &str,
+    ) -> Option<ReferenceGeneration> {
+        self.reference_generation(reference, current_sheet)
+    }
+
     /// Backend capability advertisement for IO/adapters.
     fn backend_caps(&self) -> BackendCaps {
         BackendCaps::default()
@@ -1992,6 +2059,11 @@ pub trait FunctionContext<'ctx> {
         _reference: &ReferenceType,
         _current_sheet: &str,
     ) -> Result<RangeView<'ctx>, ExcelError>;
+
+    fn record_selected_reference(&self, _reference: &ReferenceType) {}
+
+    /// Record a typed reference result for dynamic/reference-shape functions.
+    fn record_reference_observation(&self, _observation: &ReferenceObservation) {}
 
     // Flats removed
 
@@ -2152,6 +2224,15 @@ impl<'a> FunctionContext<'a> for DefaultFunctionContext<'a> {
         current_sheet: &str,
     ) -> Result<RangeView<'a>, ExcelError> {
         self.base.resolve_range_view(reference, current_sheet)
+    }
+
+    fn record_selected_reference(&self, reference: &ReferenceType) {
+        self.base
+            .record_selected_reference(reference, self.current_sheet)
+    }
+
+    fn record_reference_observation(&self, observation: &ReferenceObservation) {
+        self.base.record_reference_observation(observation)
     }
 
     // Flats removed

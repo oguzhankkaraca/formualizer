@@ -4,8 +4,9 @@ use crate::engine::CancelToken;
 use crate::stripes::NumericChunk;
 use arrow_array::Array;
 use arrow_schema::DataType;
-use formualizer_common::{CoercionPolicy, DateSystem, ExcelError, LiteralValue};
+use formualizer_common::{CoercionPolicy, DateSystem, ExcelError, LiteralValue, PackedSheetCell};
 use std::sync::Arc;
+use std::time::Instant;
 
 #[derive(Clone)]
 pub enum RangeBacking<'a> {
@@ -25,6 +26,8 @@ pub struct RangeView<'a> {
     rows: usize,
     cols: usize,
     cancel_token: Option<CancelToken>,
+    read_observer: Option<Arc<dyn crate::engine::v2::RangeReadObserver>>,
+    read_observer_sheet_id: Option<crate::SheetId>,
 }
 
 impl<'a> core::fmt::Debug for RangeView<'a> {
@@ -106,6 +109,11 @@ impl<'a> Iterator for RowChunkIterator<'a> {
             }
             let seg_len = ie - is + 1;
             let rel_off = is - start;
+            self.view.observe_range_segment(is, ie);
+            let materialization_sample_interval = self
+                .view
+                .range_materialization_attribution_sample_interval();
+            let materialization_started = materialization_sample_interval.map(|_| Instant::now());
 
             let mut cols = Vec::with_capacity(self.view.cols);
             for col_idx in self.view.sc..=self.view.ec {
@@ -172,6 +180,16 @@ impl<'a> Iterator for RowChunkIterator<'a> {
                     });
                 }
             }
+            if let (Some(materialization_started), Some(sample_interval)) =
+                (materialization_started, materialization_sample_interval)
+            {
+                self.view.record_range_materialization(
+                    materialization_started
+                        .elapsed()
+                        .as_nanos()
+                        .saturating_mul(sample_interval as u128),
+                );
+            }
             return Some(Ok(ChunkSlice {
                 row_start: is - self.view.sr,
                 row_len: seg_len,
@@ -201,6 +219,8 @@ impl<'a> RangeView<'a> {
             rows,
             cols,
             cancel_token: None,
+            read_observer: None,
+            read_observer_sheet_id: None,
         }
     }
 
@@ -213,6 +233,93 @@ impl<'a> RangeView<'a> {
     pub fn with_cancel_token(mut self, token: Option<CancelToken>) -> Self {
         self.cancel_token = token;
         self
+    }
+
+    pub(crate) fn with_read_observer(
+        mut self,
+        observer: Option<Arc<dyn crate::engine::v2::RangeReadObserver>>,
+        sheet_id: Option<crate::SheetId>,
+    ) -> Self {
+        self.read_observer = observer;
+        self.read_observer_sheet_id = sheet_id;
+        self
+    }
+
+    pub(crate) fn without_read_observer(&self) -> Self {
+        let mut view = self.clone();
+        view.read_observer = None;
+        view.read_observer_sheet_id = None;
+        view
+    }
+
+    pub(crate) fn observe_cell_read(&self, row: usize, col: usize) {
+        let Some(observer) = &self.read_observer else {
+            return;
+        };
+        if row >= self.rows || col >= self.cols {
+            return;
+        }
+        let abs_row = self.sr + row;
+        let abs_col = self.sc + col;
+        let sheet = self.sheet();
+        if abs_row >= sheet.nrows as usize || abs_col >= sheet.columns.len() {
+            return;
+        }
+        let chunk_starts = &sheet.chunk_starts;
+        let ch_idx = match chunk_starts.binary_search(&abs_row) {
+            Ok(index) => index,
+            Err(0) => 0,
+            Err(index) => index - 1,
+        };
+        if sheet.columns[abs_col].chunk(ch_idx).is_some()
+            && let Some(cell) = self.read_observer_sheet_id.and_then(|sheet_id| {
+                PackedSheetCell::try_new(sheet_id, abs_row as u32, abs_col as u32)
+            })
+        {
+            observer.cell_read(cell);
+        }
+    }
+
+    fn observe_cell_span(&self, row_start: usize, row_len: usize) {
+        if self.read_observer.is_none() {
+            return;
+        }
+        let row_end = row_start.saturating_add(row_len).min(self.rows);
+        for row in row_start.min(self.rows)..row_end {
+            for col in 0..self.cols {
+                self.observe_cell_read(row, col);
+            }
+        }
+    }
+
+    fn observe_range_segment(&self, start_row: usize, end_row: usize) {
+        let Some(observer) = &self.read_observer else {
+            return;
+        };
+        if start_row > end_row {
+            return;
+        }
+        observer.range_consumed(
+            self.sheet_name(),
+            start_row as u32,
+            self.sc as u32,
+            end_row as u32,
+            self.ec as u32,
+            (end_row - start_row + 1).saturating_mul(self.cols),
+            0,
+        );
+    }
+
+    fn record_range_materialization(&self, elapsed_ns: u128) {
+        if let Some(observer) = &self.read_observer {
+            observer.range_materialized(elapsed_ns);
+        }
+    }
+
+    fn range_materialization_attribution_sample_interval(&self) -> Option<u32> {
+        self.read_observer
+            .as_ref()
+            .and_then(|observer| observer.range_materialization_sample_interval())
     }
 
     #[inline]
@@ -264,6 +371,8 @@ impl<'a> RangeView<'a> {
                 rows: 0,
                 cols: 0,
                 cancel_token,
+                read_observer: None,
+                read_observer_sheet_id: None,
             });
         }
 
@@ -276,6 +385,8 @@ impl<'a> RangeView<'a> {
             rows: nrows,
             cols: ncols,
             cancel_token,
+            read_observer: None,
+            read_observer_sheet_id: None,
         })
     }
 
@@ -298,6 +409,8 @@ impl<'a> RangeView<'a> {
             rows,
             cols,
             cancel_token: self.cancel_token.clone(),
+            read_observer: self.read_observer.clone(),
+            read_observer_sheet_id: self.read_observer_sheet_id,
         }
     }
 
@@ -318,6 +431,8 @@ impl<'a> RangeView<'a> {
             rows,
             cols,
             cancel_token: self.cancel_token.clone(),
+            read_observer: self.read_observer.clone(),
+            read_observer_sheet_id: self.read_observer_sheet_id,
         }
     }
 
@@ -412,6 +527,13 @@ impl<'a> RangeView<'a> {
         let Some(ch) = col_ref.chunk(ch_idx) else {
             return LiteralValue::Empty;
         };
+        if let Some(observer) = &self.read_observer
+            && let Some(cell) = self.read_observer_sheet_id.and_then(|sheet_id| {
+                PackedSheetCell::try_new(sheet_id, abs_row as u32, abs_col as u32)
+            })
+        {
+            observer.cell_read(cell);
+        }
         let row_start = chunk_starts[ch_idx];
         let in_off = abs_row - row_start;
         // Overlay takes precedence: user edits over computed over base.
@@ -641,6 +763,7 @@ impl<'a> RangeView<'a> {
     {
         self.iter_row_chunks().map(move |res| {
             let cs = res?;
+            self.observe_cell_span(cs.row_start, cs.row_len);
             let mut out_cols: Vec<Arc<arrow_array::Float64Array>> =
                 Vec::with_capacity(cs.cols.len());
             let sheet = self.sheet();
@@ -699,6 +822,7 @@ impl<'a> RangeView<'a> {
     {
         self.iter_row_chunks().map(move |res| {
             let cs = res?;
+            self.observe_cell_span(cs.row_start, cs.row_len);
             let mut out_cols: Vec<Arc<arrow_array::BooleanArray>> =
                 Vec::with_capacity(cs.cols.len());
             let sheet = self.sheet();
@@ -757,6 +881,7 @@ impl<'a> RangeView<'a> {
     {
         self.iter_row_chunks().map(move |res| {
             let cs = res?;
+            self.observe_cell_span(cs.row_start, cs.row_len);
             let mut out_cols: Vec<arrow_array::ArrayRef> = Vec::with_capacity(cs.cols.len());
             let sheet = self.sheet();
             let chunk_starts = &sheet.chunk_starts;
@@ -806,6 +931,7 @@ impl<'a> RangeView<'a> {
     {
         self.iter_row_chunks().map(move |res| {
             let cs = res?;
+            self.observe_cell_span(cs.row_start, cs.row_len);
             let mut out_cols: Vec<Arc<arrow_array::StringArray>> =
                 Vec::with_capacity(cs.cols.len());
             let sheet = self.sheet();
@@ -856,6 +982,7 @@ impl<'a> RangeView<'a> {
     {
         self.iter_row_chunks().map(move |res| {
             let cs = res?;
+            self.observe_cell_span(cs.row_start, cs.row_len);
             let mut out_cols: Vec<Arc<arrow_array::UInt8Array>> = Vec::with_capacity(cs.cols.len());
             let sheet = self.sheet();
             let chunk_starts = &sheet.chunk_starts;
@@ -911,6 +1038,7 @@ impl<'a> RangeView<'a> {
     {
         self.iter_row_chunks().map(move |res| {
             let cs = res?;
+            self.observe_cell_span(cs.row_start, cs.row_len);
             let mut out_cols: Vec<Arc<arrow_array::UInt8Array>> = Vec::with_capacity(cs.cols.len());
             let sheet = self.sheet();
             let chunk_starts = &sheet.chunk_starts;
@@ -965,6 +1093,7 @@ impl<'a> RangeView<'a> {
         if self.rows == 0 || self.cols == 0 {
             return out;
         }
+        self.observe_cell_span(0, self.rows);
         let sheet = self.sheet();
         let chunk_starts = &sheet.chunk_starts;
         // Clamp to physically materialized sheet rows; this view may be logically larger (e.g. A:A).
@@ -1045,6 +1174,7 @@ impl<'a> RangeView<'a> {
         rel_start: usize,
         len: usize,
     ) -> Vec<Option<Arc<arrow_array::Float64Array>>> {
+        self.observe_cell_span(rel_start, len);
         let abs_start = self.sr + rel_start;
         let abs_end = abs_start + len;
         let sheet = self.sheet();
@@ -1157,6 +1287,7 @@ impl<'a> RangeView<'a> {
         rel_start: usize,
         len: usize,
     ) -> Vec<Option<Arc<arrow_array::StringArray>>> {
+        self.observe_cell_span(rel_start, len);
         let abs_start = self.sr + rel_start;
         let abs_end = abs_start + len;
         let sheet = self.sheet();

@@ -62,7 +62,7 @@ pub struct ChooseRowsFn;
 /// Variadic: false
 /// Signature: CHOOSE(arg1: number@scalar, arg2: any@scalar)
 /// Arg schema: arg1{kinds=number,required=true,shape=scalar,by_ref=false,coercion=NumberStrict,max=None,repeating=None,default=false}; arg2{kinds=any,required=true,shape=scalar,by_ref=false,coercion=None,max=None,repeating=Some(1),default=false}
-/// Caps: PURE, LOOKUP, RETURNS_REFERENCE, SHORT_CIRCUIT
+/// Caps: PURE, LOOKUP, RETURNS_REFERENCE, MAY_SPILL, SHORT_CIRCUIT, V2_READS_OBSERVED, V2_REFERENCE_SHAPE_OBSERVED, V2_RESULT_SHAPE_OBSERVED
 /// [formualizer-docgen:schema:end]
 impl Function for ChooseFn {
     fn propagate_format(
@@ -82,7 +82,16 @@ impl Function for ChooseFn {
 
     // SHORT_CIRCUIT: only the selected choice is evaluated; untaken choices
     // must not be materialized (see `Function::dispatch`).
-    func_caps!(PURE, LOOKUP, SHORT_CIRCUIT, RETURNS_REFERENCE, MAY_SPILL);
+    func_caps!(
+        PURE,
+        LOOKUP,
+        SHORT_CIRCUIT,
+        RETURNS_REFERENCE,
+        MAY_SPILL,
+        V2_READS_OBSERVED,
+        V2_REFERENCE_SHAPE_OBSERVED,
+        V2_RESULT_SHAPE_OBSERVED
+    );
 
     fn arg_schema(&self) -> &'static [ArgSchema] {
         use once_cell::sync::Lazy;
@@ -286,7 +295,7 @@ fn materialize_rows_2d<'b>(
 /// Caps: PURE, LOOKUP
 /// [formualizer-docgen:schema:end]
 impl Function for ChooseColsFn {
-    func_caps!(PURE, LOOKUP, MAY_SPILL);
+    func_caps!(PURE, LOOKUP, MAY_SPILL, V2_RESULT_SHAPE_OBSERVED);
     fn name(&self) -> &'static str {
         "CHOOSECOLS"
     }
@@ -442,7 +451,7 @@ impl Function for ChooseColsFn {
 /// Caps: PURE, LOOKUP
 /// [formualizer-docgen:schema:end]
 impl Function for ChooseRowsFn {
-    func_caps!(PURE, LOOKUP, MAY_SPILL);
+    func_caps!(PURE, LOOKUP, MAY_SPILL, V2_RESULT_SHAPE_OBSERVED);
     fn name(&self) -> &'static str {
         "CHOOSEROWS"
     }

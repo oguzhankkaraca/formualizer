@@ -294,6 +294,7 @@ impl IndexFn {
         ctx: &dyn FunctionContext<'b>,
         reference: &ReferenceType,
     ) -> Result<crate::traits::CalcValue<'b>, ExcelError> {
+        ctx.record_selected_reference(reference);
         let view = ctx.resolve_range_view(reference, ctx.current_sheet())?;
         let (rows, cols) = view.dims();
         if rows == 1 && cols == 1 {
@@ -421,7 +422,11 @@ impl IndexFn {
 /// [formualizer-docgen:schema:end]
 impl Function for IndexFn {
     fn caps(&self) -> FnCaps {
-        FnCaps::PURE | FnCaps::RETURNS_REFERENCE
+        FnCaps::PURE
+            | FnCaps::RETURNS_REFERENCE
+            | FnCaps::V2_READS_OBSERVED
+            | FnCaps::V2_POSITIVE_SELECTORS_SCALAR_REFERENCE
+            | FnCaps::V2_REFERENCE_SHAPE_OBSERVED
     }
     fn name(&self) -> &'static str {
         "INDEX"
@@ -669,7 +674,12 @@ pub struct OffsetFn;
 impl Function for OffsetFn {
     fn caps(&self) -> FnCaps {
         // OFFSET is volatile in Excel semantics and has runtime-dynamic dependencies.
-        FnCaps::PURE | FnCaps::RETURNS_REFERENCE | FnCaps::VOLATILE | FnCaps::DYNAMIC_DEPENDENCY
+        FnCaps::PURE
+            | FnCaps::RETURNS_REFERENCE
+            | FnCaps::VOLATILE
+            | FnCaps::DYNAMIC_DEPENDENCY
+            | FnCaps::V2_DYNAMIC_TARGET_OBSERVED
+            | FnCaps::V2_REFERENCE_SHAPE_OBSERVED
     }
     fn name(&self) -> &'static str {
         "OFFSET"
@@ -772,6 +782,7 @@ impl Function for OffsetFn {
     ) -> Result<crate::traits::CalcValue<'b>, ExcelError> {
         if let Some(Ok(r)) = self.eval_reference(args, ctx) {
             let current_sheet = ctx.current_sheet();
+            ctx.record_selected_reference(&r);
             match ctx.resolve_range_view(&r, current_sheet) {
                 Ok(rv) => {
                     let (rows, cols) = rv.dims();
@@ -874,7 +885,12 @@ pub struct IndirectFn;
 /// [formualizer-docgen:schema:end]
 impl Function for IndirectFn {
     fn caps(&self) -> FnCaps {
-        FnCaps::PURE | FnCaps::RETURNS_REFERENCE | FnCaps::VOLATILE | FnCaps::DYNAMIC_DEPENDENCY
+        FnCaps::PURE
+            | FnCaps::RETURNS_REFERENCE
+            | FnCaps::VOLATILE
+            | FnCaps::DYNAMIC_DEPENDENCY
+            | FnCaps::V2_DYNAMIC_TARGET_OBSERVED
+            | FnCaps::V2_REFERENCE_SHAPE_OBSERVED
     }
     fn name(&self) -> &'static str {
         "INDIRECT"
@@ -984,6 +1000,7 @@ impl Function for IndirectFn {
         match self.eval_reference(args, ctx) {
             Some(Ok(r)) => {
                 let current_sheet = ctx.current_sheet();
+                ctx.record_selected_reference(&r);
                 match ctx.resolve_range_view(&r, current_sheet) {
                     Ok(rv) => {
                         let (rows, cols) = rv.dims();

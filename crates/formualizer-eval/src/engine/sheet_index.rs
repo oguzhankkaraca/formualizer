@@ -240,6 +240,10 @@ impl SheetIndex {
             .collect()
     }
 
+    pub fn visit_vertices_in_col_range(&self, start: u32, end: u32, visitor: impl FnMut(VertexId)) {
+        self.visit_axis_range(&self.col_tree, start, end, visitor);
+    }
+
     /// Query all vertices in a rectangular range.
     ///
     /// Sheet indexes contain point intervals only, so exact-cell queries use two
@@ -438,6 +442,23 @@ mod tests {
         // Query rectangle (rows 3-5, cols 1-2) should get 3 × 2 = 6 vertices
         let rect_results = index.vertices_in_rect(3, 5, 1, 2);
         assert_eq!(rect_results.len(), 6);
+    }
+
+    #[test]
+    fn column_range_visitor_matches_materialized_query() {
+        let mut index = SheetIndex::new();
+        for row in 0..10 {
+            for col in 0..5 {
+                index.add_vertex(GridAddr::new(row, col), VertexId(1024 + row * 5 + col));
+            }
+        }
+
+        let mut materialized = index.vertices_in_col_range(1, 3);
+        let mut visited = Vec::new();
+        index.visit_vertices_in_col_range(1, 3, |vertex| visited.push(vertex));
+        materialized.sort_unstable();
+        visited.sort_unstable();
+        assert_eq!(visited, materialized);
     }
 
     #[test]

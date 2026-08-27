@@ -158,7 +158,7 @@ impl Function for MatchFn {
     fn min_args(&self) -> usize {
         2
     }
-    func_caps!(PURE, LOOKUP);
+    func_caps!(PURE, LOOKUP, V2_READS_OBSERVED);
     fn arg_schema(&self) -> &'static [ArgSchema] {
         use once_cell::sync::Lazy;
         static SCHEMA: Lazy<Vec<ArgSchema>> = Lazy::new(|| {
@@ -489,7 +489,7 @@ impl Function for VLookupFn {
     fn min_args(&self) -> usize {
         3
     }
-    func_caps!(PURE, LOOKUP);
+    func_caps!(PURE, LOOKUP, V2_READS_OBSERVED);
     fn arg_schema(&self) -> &'static [ArgSchema] {
         use once_cell::sync::Lazy;
         static SCHEMA: Lazy<Vec<ArgSchema>> = Lazy::new(|| {
@@ -614,6 +614,11 @@ impl Function for VLookupFn {
             match row_idx_opt {
                 Some(i) => {
                     let target_col_idx = (col_index - 1) as usize;
+                    ctx.record_selected_reference(&formualizer_parse::parser::ReferenceType::cell(
+                        Some(rv.sheet_name().to_string()),
+                        (rv.start_row() + i + 1) as u32,
+                        (rv.start_col() + target_col_idx + 1) as u32,
+                    ));
                     let v = rv.get_cell(i, target_col_idx);
                     // Excel treats a direct reference to an empty cell as 0.
                     // VLOOKUP/HLOOKUP return the referenced cell value, so match Excel by

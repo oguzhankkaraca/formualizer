@@ -139,7 +139,7 @@ pub struct XLookupFn;
 /// Caps: PURE, LOOKUP
 /// [formualizer-docgen:schema:end]
 impl Function for XLookupFn {
-    func_caps!(PURE, LOOKUP, MAY_SPILL);
+    func_caps!(PURE, LOOKUP, MAY_SPILL, V2_RESULT_SHAPE_OBSERVED);
     fn name(&self) -> &'static str {
         "XLOOKUP"
     }
@@ -527,7 +527,7 @@ pub struct XMatchFn;
 /// Caps: PURE, LOOKUP
 /// [formualizer-docgen:schema:end]
 impl Function for XMatchFn {
-    func_caps!(PURE, LOOKUP, MAY_SPILL);
+    func_caps!(PURE, LOOKUP, MAY_SPILL, V2_RESULT_SHAPE_OBSERVED);
     fn name(&self) -> &'static str {
         "XMATCH"
     }
@@ -866,7 +866,7 @@ pub struct SortFn;
 /// Caps: PURE
 /// [formualizer-docgen:schema:end]
 impl Function for SortFn {
-    func_caps!(PURE, MAY_SPILL);
+    func_caps!(PURE, MAY_SPILL, V2_RESULT_SHAPE_OBSERVED);
     fn name(&self) -> &'static str {
         "SORT"
     }
@@ -1104,7 +1104,7 @@ pub struct SortByFn;
 /// Caps: PURE
 /// [formualizer-docgen:schema:end]
 impl Function for SortByFn {
-    func_caps!(PURE, MAY_SPILL);
+    func_caps!(PURE, MAY_SPILL, V2_RESULT_SHAPE_OBSERVED);
     fn name(&self) -> &'static str {
         "SORTBY"
     }
@@ -1706,7 +1706,7 @@ pub struct GroupByFn;
 /// Caps: PURE
 /// [formualizer-docgen:schema:end]
 impl Function for GroupByFn {
-    func_caps!(PURE, MAY_SPILL);
+    func_caps!(PURE, MAY_SPILL, V2_RESULT_SHAPE_OBSERVED);
     fn name(&self) -> &'static str {
         "GROUPBY"
     }
@@ -2080,7 +2080,7 @@ pub struct PivotByFn;
 /// Caps: PURE
 /// [formualizer-docgen:schema:end]
 impl Function for PivotByFn {
-    func_caps!(PURE, MAY_SPILL);
+    func_caps!(PURE, MAY_SPILL, V2_RESULT_SHAPE_OBSERVED);
     fn name(&self) -> &'static str {
         "PIVOTBY"
     }
@@ -2551,7 +2551,7 @@ pub struct FilterFn;
 /// Caps: PURE
 /// [formualizer-docgen:schema:end]
 impl Function for FilterFn {
-    func_caps!(PURE, MAY_SPILL);
+    func_caps!(PURE, MAY_SPILL, V2_RESULT_SHAPE_OBSERVED);
     fn name(&self) -> &'static str {
         "FILTER"
     }
@@ -2729,7 +2729,7 @@ pub struct UniqueFn;
 /// Caps: PURE
 /// [formualizer-docgen:schema:end]
 impl Function for UniqueFn {
-    func_caps!(PURE, MAY_SPILL);
+    func_caps!(PURE, MAY_SPILL, V2_RESULT_SHAPE_OBSERVED);
     fn name(&self) -> &'static str {
         "UNIQUE"
     }
@@ -2908,7 +2908,7 @@ pub struct SequenceFn;
 /// Caps: PURE
 /// [formualizer-docgen:schema:end]
 impl Function for SequenceFn {
-    func_caps!(PURE, MAY_SPILL);
+    func_caps!(PURE, MAY_SPILL, V2_RESULT_SHAPE_OBSERVED);
     fn name(&self) -> &'static str {
         "SEQUENCE"
     }
@@ -3079,7 +3079,7 @@ pub struct TransposeFn;
 /// Caps: PURE
 /// [formualizer-docgen:schema:end]
 impl Function for TransposeFn {
-    func_caps!(PURE, MAY_SPILL);
+    func_caps!(PURE, MAY_SPILL, V2_RESULT_SHAPE_OBSERVED);
     fn name(&self) -> &'static str {
         "TRANSPOSE"
     }
@@ -3191,7 +3191,7 @@ pub struct TakeFn;
 /// Caps: PURE
 /// [formualizer-docgen:schema:end]
 impl Function for TakeFn {
-    func_caps!(PURE, MAY_SPILL);
+    func_caps!(PURE, MAY_SPILL, V2_RESULT_SHAPE_OBSERVED);
     fn name(&self) -> &'static str {
         "TAKE"
     }
@@ -3375,7 +3375,7 @@ pub struct DropFn;
 /// Caps: PURE
 /// [formualizer-docgen:schema:end]
 impl Function for DropFn {
-    func_caps!(PURE, MAY_SPILL);
+    func_caps!(PURE, MAY_SPILL, V2_RESULT_SHAPE_OBSERVED);
     fn name(&self) -> &'static str {
         "DROP"
     }

@@ -93,12 +93,91 @@ pub struct FunctionSemanticIdentity {
     pub(crate) namespace: String,
     pub(crate) canonical_name: String,
     pub(crate) generation: u64,
+    pub(crate) trusted_builtin: bool,
     pub(crate) caps: FnCaps,
     pub(crate) contract: FunctionSemanticContract,
     pub(crate) argument_by_ref: Vec<bool>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum FunctionCapabilityClass {
+    /// Dependency-relevant reads are limited to ordinary arguments and ranges.
+    ArgumentStateSafe,
+    /// The result depends on formula placement or supplied workbook context.
+    ContextDependent,
+    /// The function resolves a target reference at runtime.
+    DynamicReference,
+    /// The function can return a reference or change result shape.
+    StructuralReferenceShape,
+    /// Volatility, environment, or configuration affects the result.
+    VolatileOrEnvironmentDependent,
+    /// The contract is untrusted, incomplete, or otherwise not provable.
+    Unsupported,
+}
+
+impl FunctionCapabilityClass {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::ArgumentStateSafe => "argument_state_safe",
+            Self::ContextDependent => "context_dependent",
+            Self::DynamicReference => "dynamic_reference",
+            Self::StructuralReferenceShape => "structural_reference_shape",
+            Self::VolatileOrEnvironmentDependent => "volatile_or_environment_dependent",
+            Self::Unsupported => "unsupported",
+        }
+    }
+}
+
 impl FunctionSemanticIdentity {
+    pub fn capability_class(&self) -> FunctionCapabilityClass {
+        if !self.trusted_builtin
+            || matches!(
+                self.contract.dependency,
+                FunctionDependencySemantics::Unsupported
+            )
+            || matches!(self.contract.result, FunctionResultSemantics::Unknown)
+        {
+            return FunctionCapabilityClass::Unsupported;
+        }
+        if self.caps.contains(FnCaps::DYNAMIC_DEPENDENCY)
+            || self.contract.dependency == FunctionDependencySemantics::Dynamic
+        {
+            return FunctionCapabilityClass::DynamicReference;
+        }
+        if self.contract.context != FunctionContextDependence::None {
+            return FunctionCapabilityClass::ContextDependent;
+        }
+        let local_environment_observed = self.caps.contains(FnCaps::V2_LOCAL_ENVIRONMENT_OBSERVED);
+        let volatility_observed = self.caps.contains(FnCaps::V2_VOLATILITY_OBSERVED);
+        if (self.caps.contains(FnCaps::VOLATILE) && !volatility_observed)
+            || (self.caps.contains(FnCaps::LOCAL_ENVIRONMENT) && !local_environment_observed)
+            || (self.contract.environment != FunctionEnvironmentSemantics::None
+                && !(self.contract.environment == FunctionEnvironmentSemantics::LocalBindings
+                    && local_environment_observed))
+        {
+            return FunctionCapabilityClass::VolatileOrEnvironmentDependent;
+        }
+        if !self.caps.contains(FnCaps::PURE) {
+            return FunctionCapabilityClass::Unsupported;
+        }
+        if self.contract.result.may_return_reference() || self.contract.result.may_spill() {
+            return FunctionCapabilityClass::StructuralReferenceShape;
+        }
+        let environment_safe = self.contract.environment == FunctionEnvironmentSemantics::None
+            || (self.contract.environment == FunctionEnvironmentSemantics::LocalBindings
+                && local_environment_observed);
+        if self.contract.dependency == FunctionDependencySemantics::RecursiveSyntacticArgs
+            && environment_safe
+        {
+            return FunctionCapabilityClass::ArgumentStateSafe;
+        }
+        FunctionCapabilityClass::Unsupported
+    }
+
+    pub fn has_observed_reads_capability(&self) -> bool {
+        self.caps.contains(FnCaps::V2_READS_OBSERVED)
+    }
+
     pub(crate) fn encode(&self) -> Vec<u8> {
         let mut out = Vec::new();
         push_bytes(&mut out, self.namespace.as_bytes());
@@ -333,6 +412,80 @@ mod tests {
         ) -> Result<crate::traits::CalcValue<'b>, ExcelError> {
             unreachable!("contract tests never evaluate")
         }
+    }
+
+    fn identity_for_class(
+        trusted: bool,
+        caps: FnCaps,
+        contract: FunctionSemanticContract,
+    ) -> FunctionSemanticIdentity {
+        FunctionSemanticIdentity {
+            namespace: String::new(),
+            canonical_name: "TEST".to_string(),
+            generation: 1,
+            trusted_builtin: trusted,
+            caps,
+            contract,
+            argument_by_ref: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn capability_classes_are_derived_from_semantic_contract() {
+        let safe = identity_for_class(
+            true,
+            FnCaps::PURE,
+            FunctionSemanticContract::trusted_builtin_default(None),
+        );
+        assert_eq!(
+            safe.capability_class(),
+            FunctionCapabilityClass::ArgumentStateSafe
+        );
+        assert!(!safe.has_observed_reads_capability());
+
+        let mut context = FunctionSemanticContract::trusted_builtin_default(None);
+        context.context = FunctionContextDependence::PlacementDependent;
+        assert_eq!(
+            identity_for_class(true, FnCaps::PURE, context).capability_class(),
+            FunctionCapabilityClass::ContextDependent
+        );
+
+        let mut dynamic = FunctionSemanticContract::trusted_builtin_default(None);
+        dynamic.dependency = FunctionDependencySemantics::Dynamic;
+        assert_eq!(
+            identity_for_class(true, FnCaps::PURE | FnCaps::DYNAMIC_DEPENDENCY, dynamic)
+                .capability_class(),
+            FunctionCapabilityClass::DynamicReference
+        );
+
+        let shape = FunctionSemanticContract {
+            result: FunctionResultSemantics::MayReturnReference,
+            ..FunctionSemanticContract::trusted_builtin_default(None)
+        };
+        assert_eq!(
+            identity_for_class(true, FnCaps::PURE | FnCaps::RETURNS_REFERENCE, shape)
+                .capability_class(),
+            FunctionCapabilityClass::StructuralReferenceShape
+        );
+
+        let volatile = identity_for_class(
+            true,
+            FnCaps::PURE | FnCaps::VOLATILE,
+            FunctionSemanticContract::trusted_builtin_default(None),
+        );
+        assert_eq!(
+            volatile.capability_class(),
+            FunctionCapabilityClass::VolatileOrEnvironmentDependent
+        );
+        assert_eq!(
+            identity_for_class(
+                false,
+                FnCaps::PURE,
+                FunctionSemanticContract::trusted_builtin_default(None),
+            )
+            .capability_class(),
+            FunctionCapabilityClass::Unsupported
+        );
     }
 
     #[test]

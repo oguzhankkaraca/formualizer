@@ -111,10 +111,16 @@ fn parse_value_literal(value: LiteralValue, ctx: &dyn FunctionContext<'_>) -> Li
 /// Variadic: false
 /// Signature: VALUE(arg1: any@scalar)
 /// Arg schema: arg1{kinds=any,required=true,shape=scalar,by_ref=false,coercion=None,max=None,repeating=None,default=false}
-/// Caps: PURE, ELEMENTWISE, MAY_SPILL
+/// Caps: PURE, ELEMENTWISE, MAY_SPILL, V2_SCALAR_OUTPUT_FROM_SCALAR_ARGS, V2_RESULT_SHAPE_OBSERVED
 /// [formualizer-docgen:schema:end]
 impl Function for ValueFn {
-    func_caps!(PURE, ELEMENTWISE, MAY_SPILL);
+    func_caps!(
+        PURE,
+        ELEMENTWISE,
+        MAY_SPILL,
+        V2_SCALAR_OUTPUT_FROM_SCALAR_ARGS,
+        V2_RESULT_SHAPE_OBSERVED
+    );
     fn name(&self) -> &'static str {
         "VALUE"
     }

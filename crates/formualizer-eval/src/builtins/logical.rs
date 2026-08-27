@@ -442,7 +442,15 @@ impl Function for IfFn {
         result.format_id()
     }
 
-    func_caps!(PURE, SHORT_CIRCUIT, RETURNS_REFERENCE, MAY_SPILL);
+    func_caps!(
+        PURE,
+        SHORT_CIRCUIT,
+        RETURNS_REFERENCE,
+        MAY_SPILL,
+        V2_READS_OBSERVED,
+        V2_SCALAR_OUTPUT_FROM_SCALAR_ARGS,
+        V2_REFERENCE_SHAPE_OBSERVED
+    );
 
     fn name(&self) -> &'static str {
         "IF"

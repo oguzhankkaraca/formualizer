@@ -75,9 +75,13 @@ use crate::function::FnCaps;
 use crate::interpreter::Interpreter;
 use crate::reference::{CellRef, Coord, RangeRef};
 use crate::traits::FunctionProvider;
-use crate::traits::{EvaluationContext, ReferenceInfo, Resolver};
+use crate::traits::{
+    EvaluationContext, ReferenceGeneration, ReferenceInfo, ReferenceObservation, ReferenceShape,
+    Resolver,
+};
 use formualizer_common::{
-    CoordBuildHasher, LiteralValue, col_letters_from_1based, parse_a1_1based,
+    CoordBuildHasher, CoordHashMap, LiteralValue, PackedSheetCell, col_letters_from_1based,
+    parse_a1_1based,
 };
 use formualizer_parse::parser::ReferenceType;
 use formualizer_parse::{ASTNode, ASTNodeType, ExcelError, ExcelErrorKind};
@@ -914,6 +918,37 @@ impl ComputedWriteChunkPlan {
     }
 }
 
+#[derive(Clone, Debug, PartialEq)]
+struct V2ContractCacheKey {
+    topology_revision: u64,
+    symbol_revision: u64,
+    registry_epoch: u64,
+    provider_revision: Option<u64>,
+    date_system: DateSystem,
+    cycle: CycleConfig,
+    formula_plane_mode: FormulaPlaneMode,
+    active_spans: usize,
+    spill_counts: (usize, usize),
+}
+
+#[derive(Clone)]
+struct V2ContractCache {
+    key: V2ContractCacheKey,
+    eligible: bool,
+    snapshot: Option<crate::function_registry::RegistryPlanningSnapshot>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct V2RuntimeContractCertificateKey {
+    topology_revision: u64,
+    symbol_revision: u64,
+    registry_epoch: u64,
+    provider_revision: Option<u64>,
+    date_system: DateSystem,
+    active_spans: usize,
+    spill_shape_present: bool,
+}
+
 pub struct Engine<R> {
     pub(crate) graph: DependencyGraph,
     resolver: R,
@@ -926,6 +961,36 @@ pub struct Engine<R> {
     clock: crate::timezone::SnapshotClock,
     thread_pool: Option<Arc<rayon::ThreadPool>>,
     pub recalc_epoch: u64,
+    v2_enabled: bool,
+    v2_read_recorder: Arc<crate::engine::v2::V2ReadRecorder>,
+    v2_formula_owner_index: Mutex<Option<CoordHashMap<PackedSheetCell, VertexId>>>,
+    v2_state: crate::engine::v2::V2State,
+    v2_function_snapshot: Option<crate::function_registry::RegistryPlanningSnapshot>,
+    v2_contract_cache: Option<V2ContractCache>,
+    #[cfg(any(test, feature = "test-support"))]
+    v2_contract_scan_count: usize,
+    v2_run_active: bool,
+    #[cfg(test)]
+    v2_bump_symbol_after_evaluation: bool,
+    #[cfg(test)]
+    v2_cancel_before_workspace: bool,
+    last_v2_scoped_admission_ns: u128,
+    last_v2_admission_demand_ns: u128,
+    v2_force_requested_roots: bool,
+    v2_stage2_discovery_only: bool,
+    v2_stage2_skip_first_pass: bool,
+    v2_workspace_formula_evaluation_ns: u128,
+    v2_workspace_formula_evaluation_count: usize,
+    v2_workspace_formula_evaluation_ns_by_vertex: BTreeMap<VertexId, u128>,
+    v2_attribution_category: crate::engine::v2::V2FormulaAttributionCategory,
+    v2_attribution: crate::engine::v2::V2ExclusiveAttribution,
+    v2_demand_stats_active: std::sync::atomic::AtomicBool,
+    v2_demand_stats: std::sync::Mutex<crate::engine::v2::V2DemandStats>,
+    v2_pending_demand_closure: Option<crate::engine::v2::V2DemandClosure>,
+    v2_demand_closure_stats: crate::engine::v2::V2DemandClosureStats,
+    v2_runtime_contract_certificates: FxHashMap<VertexId, V2RuntimeContractCertificateKey>,
+    v2_runtime_contract_validation_active: bool,
+    v2_runtime_contract_stats: crate::engine::v2::V2RuntimeContractStats,
     snapshot_id: std::sync::atomic::AtomicU64,
     topology_epoch: u64,
     /// False after a structural axis operation. While #171 remains open we
@@ -1768,6 +1833,670 @@ pub struct EvalResult {
     pub elapsed: std::time::Duration,
 }
 
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[doc(hidden)]
+pub struct EngineV2AdmissionDiagnostics {
+    pub enabled: bool,
+    pub eligible: bool,
+    pub formula_count: usize,
+    pub function_request_count: usize,
+    pub function_classes: BTreeMap<String, usize>,
+    pub rejection_counts: BTreeMap<String, usize>,
+}
+
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[doc(hidden)]
+pub struct EngineV2FormulaEdgeExtractionAttribution {
+    pub scalar_events: usize,
+    pub scalar_event_coordinates_inspected: usize,
+    pub scalar_unique_coordinates_inspected: usize,
+    pub range_observations_inspected: usize,
+    pub range_coordinates_expanded: usize,
+    pub sheet_lookups_attempted: usize,
+    pub sheet_lookups_succeeded: usize,
+    pub dependency_owner_lookups_attempted: usize,
+    pub dependency_owner_lookup_hits: usize,
+    pub dependency_owner_lookup_misses: usize,
+    pub formula_membership_lookups: usize,
+    pub formula_vertex_resolutions: usize,
+    pub non_formula_vertex_resolutions: usize,
+    pub raw_formula_edge_candidates: usize,
+    pub formula_edge_insert_attempts: usize,
+    pub duplicate_formula_edge_candidates: usize,
+    pub unique_formula_edges: usize,
+    pub exact_cell_insert_attempts: usize,
+    pub exact_cells_produced: usize,
+    pub name_resolution_attempts: usize,
+    pub name_resolution_hits: usize,
+    pub table_resolution_attempts: usize,
+    pub table_resolution_hits: usize,
+    pub generation_revision_lookups: usize,
+    pub formula_owner_index_builds: usize,
+    pub formula_owner_index_entries: usize,
+    pub formula_owner_index_build_ns: u128,
+    pub scalar_event_scan_ns: u128,
+    pub scalar_exact_cell_edge_ns: u128,
+    pub name_resolution_ns: u128,
+    pub table_resolution_ns: u128,
+    pub other_ns: u128,
+}
+
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[doc(hidden)]
+pub struct EngineV2ReadFinalizationAttribution {
+    pub recorder_extraction_ns: u128,
+    pub cloning_copying_ns: u128,
+    pub sorting_ns: u128,
+    pub deduplication_ns: u128,
+    pub range_canonicalization_ns: u128,
+    pub formula_edge_extraction_ns: u128,
+    pub formula_edge: EngineV2FormulaEdgeExtractionAttribution,
+    pub reference_generation_canonicalization_ns: u128,
+    pub selected_reference_handling_ns: u128,
+    pub spill_shape_metadata_ns: u128,
+    pub semantic_effect_metadata_ns: u128,
+    pub summary_construction_ns: u128,
+    pub other_ns: u128,
+    pub raw_entries_before: usize,
+    pub unique_entries_after: usize,
+    pub duplicate_entries_removed: usize,
+    pub elements_copied: usize,
+}
+
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[doc(hidden)]
+pub struct EngineV2RecorderAttribution {
+    pub raw_events: [usize; 8],
+    pub sampled_elapsed_ns: [u128; 8],
+    pub unique_entries: [usize; 8],
+    pub effect_raw_events: [usize; 11],
+    pub effect_unique_entries: [usize; 11],
+    pub formula_edge_raw_events: usize,
+    pub formula_edge_unique_entries: usize,
+}
+
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[doc(hidden)]
+pub struct EngineV2FormulaAttribution {
+    pub invocations: usize,
+    pub exact_read_sets_produced: usize,
+    pub logical_range_positions: usize,
+    pub physical_cells_fetched: usize,
+    pub formula_execution_ns: u128,
+    pub interpreter_function_execution_ns: u128,
+    pub observation_recording_ns: u128,
+    pub range_read_materialization_ns: u128,
+    pub exact_read_canonicalization_ns: u128,
+    pub finalization_read_entries_p50: usize,
+    pub finalization_read_entries_p95: usize,
+    pub finalization_read_entries_max: usize,
+    pub finalization_time_p50_ns: u128,
+    pub finalization_time_p95_ns: u128,
+    pub finalization_time_max_ns: u128,
+    pub edge_scalar_events_p50: usize,
+    pub edge_scalar_events_p95: usize,
+    pub edge_scalar_events_max: usize,
+    pub edge_owner_lookups_p50: usize,
+    pub edge_owner_lookups_p95: usize,
+    pub edge_owner_lookups_max: usize,
+    pub edge_duplicate_events_p50: usize,
+    pub edge_duplicate_events_p95: usize,
+    pub edge_duplicate_events_max: usize,
+    pub edge_extraction_time_p50_ns: u128,
+    pub edge_extraction_time_p95_ns: u128,
+    pub edge_extraction_time_max_ns: u128,
+    pub edge_unique_edges_p50: usize,
+    pub edge_unique_edges_p95: usize,
+    pub edge_unique_edges_max: usize,
+    pub finalization_top_read_sets: Vec<(u64, usize, u128)>,
+    pub recorder: EngineV2RecorderAttribution,
+    pub finalization: EngineV2ReadFinalizationAttribution,
+}
+
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[doc(hidden)]
+pub struct EngineV2ExclusiveAttribution {
+    pub outside_workspace: EngineV2FormulaAttribution,
+    pub retained_dirty_upstream: EngineV2FormulaAttribution,
+    pub exact_scc: EngineV2FormulaAttribution,
+    pub downstream: EngineV2FormulaAttribution,
+    pub retained_state_scan_ns: u128,
+    pub demand_scheduling_ns: u128,
+    pub retained_plan_validation_ns: u128,
+    pub contract_validation_ns: u128,
+    pub adjacency_replacement_ns: u128,
+    pub cleanup_ns: u128,
+    pub exclusive_children_ns: u128,
+    pub explicit_residual_ns: u128,
+    pub kernel_elapsed_ns: u128,
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl EngineV2FormulaEdgeExtractionAttribution {
+    fn from_internal(attribution: crate::engine::v2::V2FormulaEdgeExtractionAttribution) -> Self {
+        Self {
+            scalar_events: attribution.scalar_events,
+            scalar_event_coordinates_inspected: attribution.scalar_event_coordinates_inspected,
+            scalar_unique_coordinates_inspected: attribution.scalar_unique_coordinates_inspected,
+            range_observations_inspected: attribution.range_observations_inspected,
+            range_coordinates_expanded: attribution.range_coordinates_expanded,
+            sheet_lookups_attempted: attribution.sheet_lookups_attempted,
+            sheet_lookups_succeeded: attribution.sheet_lookups_succeeded,
+            dependency_owner_lookups_attempted: attribution.dependency_owner_lookups_attempted,
+            dependency_owner_lookup_hits: attribution.dependency_owner_lookup_hits,
+            dependency_owner_lookup_misses: attribution.dependency_owner_lookup_misses,
+            formula_membership_lookups: attribution.formula_membership_lookups,
+            formula_vertex_resolutions: attribution.formula_vertex_resolutions,
+            non_formula_vertex_resolutions: attribution.non_formula_vertex_resolutions,
+            raw_formula_edge_candidates: attribution.raw_formula_edge_candidates,
+            formula_edge_insert_attempts: attribution.formula_edge_insert_attempts,
+            duplicate_formula_edge_candidates: attribution.duplicate_formula_edge_candidates,
+            unique_formula_edges: attribution.unique_formula_edges,
+            exact_cell_insert_attempts: attribution.exact_cell_insert_attempts,
+            exact_cells_produced: attribution.exact_cells_produced,
+            name_resolution_attempts: attribution.name_resolution_attempts,
+            name_resolution_hits: attribution.name_resolution_hits,
+            table_resolution_attempts: attribution.table_resolution_attempts,
+            table_resolution_hits: attribution.table_resolution_hits,
+            generation_revision_lookups: attribution.generation_revision_lookups,
+            formula_owner_index_builds: attribution.formula_owner_index_builds,
+            formula_owner_index_entries: attribution.formula_owner_index_entries,
+            formula_owner_index_build_ns: attribution.formula_owner_index_build_ns,
+            scalar_event_scan_ns: attribution.scalar_event_scan_ns,
+            scalar_exact_cell_edge_ns: attribution.scalar_exact_cell_edge_ns,
+            name_resolution_ns: attribution.name_resolution_ns,
+            table_resolution_ns: attribution.table_resolution_ns,
+            other_ns: attribution.other_ns,
+        }
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl EngineV2FormulaAttribution {
+    fn from_internal(attribution: &crate::engine::v2::V2FormulaAttribution) -> Self {
+        let mut read_entries = attribution
+            .finalization_samples
+            .iter()
+            .map(|(_, read_entries, _)| *read_entries as u128)
+            .collect::<Vec<_>>();
+        let mut finalization_times = attribution
+            .finalization_samples
+            .iter()
+            .map(|(_, _, elapsed_ns)| *elapsed_ns)
+            .collect::<Vec<_>>();
+        let mut edge_scalar_events = attribution
+            .formula_edge_samples
+            .iter()
+            .map(|(_, scalar_events, _, _, _)| *scalar_events as u128)
+            .collect::<Vec<_>>();
+        let mut edge_owner_lookups = attribution
+            .formula_edge_samples
+            .iter()
+            .map(|(_, _, owner_lookups, _, _)| *owner_lookups as u128)
+            .collect::<Vec<_>>();
+        let mut edge_duplicate_events = attribution
+            .formula_edge_samples
+            .iter()
+            .map(|(_, scalar_events, owner_lookups, _, _)| {
+                scalar_events.saturating_sub(*owner_lookups) as u128
+            })
+            .collect::<Vec<_>>();
+        let mut edge_extraction_times = attribution
+            .formula_edge_samples
+            .iter()
+            .map(|(_, _, _, elapsed_ns, _)| *elapsed_ns)
+            .collect::<Vec<_>>();
+        let mut edge_unique_edges = attribution
+            .formula_edge_samples
+            .iter()
+            .map(|(_, _, _, _, unique_edges)| *unique_edges as u128)
+            .collect::<Vec<_>>();
+        let mut top_read_sets = attribution.finalization_samples.clone();
+        top_read_sets.sort_unstable_by(|left, right| {
+            right
+                .2
+                .cmp(&left.2)
+                .then(right.1.cmp(&left.1))
+                .then(left.0.cmp(&right.0))
+        });
+        top_read_sets.truncate(10);
+        read_entries.sort_unstable();
+        finalization_times.sort_unstable();
+        edge_scalar_events.sort_unstable();
+        edge_owner_lookups.sort_unstable();
+        edge_duplicate_events.sort_unstable();
+        edge_extraction_times.sort_unstable();
+        edge_unique_edges.sort_unstable();
+        let percentile = |values: &[u128], percent: usize| {
+            values
+                .get(values.len().saturating_sub(1).saturating_mul(percent) / 100)
+                .copied()
+                .unwrap_or_default()
+        };
+        Self {
+            invocations: attribution.invocations,
+            exact_read_sets_produced: attribution.exact_read_sets_produced,
+            logical_range_positions: attribution.logical_range_positions,
+            physical_cells_fetched: attribution.physical_cells_fetched,
+            formula_execution_ns: attribution.formula_execution_ns,
+            interpreter_function_execution_ns: attribution
+                .formula_execution_ns
+                .saturating_sub(attribution.observation_recording_ns)
+                .saturating_sub(attribution.range_read_materialization_ns),
+            observation_recording_ns: attribution.observation_recording_ns,
+            range_read_materialization_ns: attribution.range_read_materialization_ns,
+            exact_read_canonicalization_ns: attribution.exact_read_canonicalization_ns,
+            finalization_read_entries_p50: percentile(&read_entries, 50) as usize,
+            finalization_read_entries_p95: percentile(&read_entries, 95) as usize,
+            finalization_read_entries_max: read_entries.iter().copied().max().unwrap_or_default()
+                as usize,
+            finalization_time_p50_ns: percentile(&finalization_times, 50),
+            finalization_time_p95_ns: percentile(&finalization_times, 95),
+            finalization_time_max_ns: finalization_times.iter().copied().max().unwrap_or_default(),
+            edge_scalar_events_p50: percentile(&edge_scalar_events, 50) as usize,
+            edge_scalar_events_p95: percentile(&edge_scalar_events, 95) as usize,
+            edge_scalar_events_max: edge_scalar_events.iter().copied().max().unwrap_or_default()
+                as usize,
+            edge_owner_lookups_p50: percentile(&edge_owner_lookups, 50) as usize,
+            edge_owner_lookups_p95: percentile(&edge_owner_lookups, 95) as usize,
+            edge_owner_lookups_max: edge_owner_lookups.iter().copied().max().unwrap_or_default()
+                as usize,
+            edge_duplicate_events_p50: percentile(&edge_duplicate_events, 50) as usize,
+            edge_duplicate_events_p95: percentile(&edge_duplicate_events, 95) as usize,
+            edge_duplicate_events_max: edge_duplicate_events
+                .iter()
+                .copied()
+                .max()
+                .unwrap_or_default() as usize,
+            edge_extraction_time_p50_ns: percentile(&edge_extraction_times, 50),
+            edge_extraction_time_p95_ns: percentile(&edge_extraction_times, 95),
+            edge_extraction_time_max_ns: edge_extraction_times
+                .iter()
+                .copied()
+                .max()
+                .unwrap_or_default(),
+            edge_unique_edges_p50: percentile(&edge_unique_edges, 50) as usize,
+            edge_unique_edges_p95: percentile(&edge_unique_edges, 95) as usize,
+            edge_unique_edges_max: edge_unique_edges.iter().copied().max().unwrap_or_default()
+                as usize,
+            finalization_top_read_sets: top_read_sets
+                .into_iter()
+                .map(|(vertex, read_entries, elapsed_ns)| {
+                    (vertex.0 as u64, read_entries, elapsed_ns)
+                })
+                .collect(),
+            recorder: EngineV2RecorderAttribution {
+                raw_events: attribution.recorder.raw_events,
+                sampled_elapsed_ns: attribution.recorder.sampled_elapsed_ns,
+                unique_entries: attribution.recorder.unique_entries,
+                effect_raw_events: attribution.recorder.effect_raw_events,
+                effect_unique_entries: attribution.recorder.effect_unique_entries,
+                formula_edge_raw_events: attribution.recorder.formula_edge_raw_events,
+                formula_edge_unique_entries: attribution.recorder.formula_edge_unique_entries,
+            },
+            finalization: EngineV2ReadFinalizationAttribution {
+                recorder_extraction_ns: attribution.finalization.recorder_extraction_ns,
+                cloning_copying_ns: attribution.finalization.cloning_copying_ns,
+                sorting_ns: attribution.finalization.sorting_ns,
+                deduplication_ns: attribution.finalization.deduplication_ns,
+                range_canonicalization_ns: attribution.finalization.range_canonicalization_ns,
+                formula_edge_extraction_ns: attribution.finalization.formula_edge_extraction_ns,
+                formula_edge: EngineV2FormulaEdgeExtractionAttribution::from_internal(
+                    attribution.finalization.formula_edge,
+                ),
+                reference_generation_canonicalization_ns: attribution
+                    .finalization
+                    .reference_generation_canonicalization_ns,
+                selected_reference_handling_ns: attribution
+                    .finalization
+                    .selected_reference_handling_ns,
+                spill_shape_metadata_ns: attribution.finalization.spill_shape_metadata_ns,
+                semantic_effect_metadata_ns: attribution.finalization.semantic_effect_metadata_ns,
+                summary_construction_ns: attribution.finalization.summary_construction_ns,
+                other_ns: attribution.finalization.other_ns,
+                raw_entries_before: attribution.finalization.raw_entries_before,
+                unique_entries_after: attribution.finalization.unique_entries_after,
+                duplicate_entries_removed: attribution.finalization.duplicate_entries_removed,
+                elements_copied: attribution.finalization.elements_copied,
+            },
+        }
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl EngineV2ExclusiveAttribution {
+    fn from_internal(
+        attribution: &crate::engine::v2::V2ExclusiveAttribution,
+        kernel_elapsed_ns: u128,
+    ) -> Self {
+        Self {
+            outside_workspace: EngineV2FormulaAttribution::from_internal(
+                &attribution.outside_workspace,
+            ),
+            retained_dirty_upstream: EngineV2FormulaAttribution::from_internal(
+                &attribution.retained_dirty_upstream,
+            ),
+            exact_scc: EngineV2FormulaAttribution::from_internal(&attribution.exact_scc),
+            downstream: EngineV2FormulaAttribution::from_internal(&attribution.downstream),
+            retained_state_scan_ns: attribution.retained_state_scan_ns,
+            demand_scheduling_ns: attribution.demand_scheduling_ns,
+            retained_plan_validation_ns: attribution.retained_plan_validation_ns,
+            contract_validation_ns: attribution.contract_validation_ns,
+            adjacency_replacement_ns: attribution.adjacency_replacement_ns,
+            cleanup_ns: attribution.cleanup_ns,
+            exclusive_children_ns: attribution.exclusive_children_ns(),
+            explicit_residual_ns: attribution.explicit_residual_ns,
+            kernel_elapsed_ns,
+        }
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[doc(hidden)]
+pub struct EngineV2VirtualDemandAttribution {
+    pub expansion_requests: usize,
+    pub expansion_calls: usize,
+    pub sources_with_edges: usize,
+    pub unique_sources: usize,
+    pub unique_targets: usize,
+    pub range_source_lookups: usize,
+    pub range_sources_with_dependencies: usize,
+    pub range_dependency_records: usize,
+    pub range_expansions: usize,
+    pub dynamic_source_checks: usize,
+    pub dynamic_expansion_calls: usize,
+    pub sheet_identity_resolutions: usize,
+    pub coordinates_examined: usize,
+    pub vertex_grid_lookups: usize,
+    pub formula_owner_graph_lookups: usize,
+    pub raw_edges_emitted: usize,
+    pub unique_source_target_pairs: usize,
+    pub duplicate_source_target_pairs: usize,
+    pub closure_membership_probes: usize,
+    pub closure_new_targets: usize,
+    pub stack_pushes: usize,
+    pub temporary_vec_allocations: usize,
+    pub temporary_map_allocations: usize,
+    pub source_lookup_ns: u128,
+    pub range_resolution_ns: u128,
+    pub expansion_materialization_ns: u128,
+    pub identity_conversion_ns: u128,
+    pub target_lookup_filter_ns: u128,
+    pub dynamic_evaluation_ns: u128,
+    pub builder_dedup_ns: u128,
+    pub builder_map_ns: u128,
+    pub closure_source_lookup_ns: u128,
+    pub closure_publish_ns: u128,
+    pub closure_membership_ns: u128,
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl From<crate::engine::v2::V2VirtualDemandAttribution> for EngineV2VirtualDemandAttribution {
+    fn from(value: crate::engine::v2::V2VirtualDemandAttribution) -> Self {
+        Self {
+            expansion_requests: value.expansion_requests,
+            expansion_calls: value.expansion_calls,
+            sources_with_edges: value.sources_with_edges,
+            unique_sources: value.unique_sources,
+            unique_targets: value.unique_targets,
+            range_source_lookups: value.range_source_lookups,
+            range_sources_with_dependencies: value.range_sources_with_dependencies,
+            range_dependency_records: value.range_dependency_records,
+            range_expansions: value.range_expansions,
+            dynamic_source_checks: value.dynamic_source_checks,
+            dynamic_expansion_calls: value.dynamic_expansion_calls,
+            sheet_identity_resolutions: value.sheet_identity_resolutions,
+            coordinates_examined: value.coordinates_examined,
+            vertex_grid_lookups: value.vertex_grid_lookups,
+            formula_owner_graph_lookups: value.formula_owner_graph_lookups,
+            raw_edges_emitted: value.raw_edges_emitted,
+            unique_source_target_pairs: value.unique_source_target_pairs,
+            duplicate_source_target_pairs: value.duplicate_source_target_pairs,
+            closure_membership_probes: value.closure_membership_probes,
+            closure_new_targets: value.closure_new_targets,
+            stack_pushes: value.stack_pushes,
+            temporary_vec_allocations: value.temporary_vec_allocations,
+            temporary_map_allocations: value.temporary_map_allocations,
+            source_lookup_ns: value.source_lookup_ns,
+            range_resolution_ns: value.range_resolution_ns,
+            expansion_materialization_ns: value.expansion_materialization_ns,
+            identity_conversion_ns: value.identity_conversion_ns,
+            target_lookup_filter_ns: value.target_lookup_filter_ns,
+            dynamic_evaluation_ns: value.dynamic_evaluation_ns,
+            builder_dedup_ns: value.builder_dedup_ns,
+            builder_map_ns: value.builder_map_ns,
+            closure_source_lookup_ns: value.closure_source_lookup_ns,
+            closure_publish_ns: value.closure_publish_ns,
+            closure_membership_ns: value.closure_membership_ns,
+        }
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[doc(hidden)]
+pub struct EngineV2Diagnostics {
+    pub enabled: bool,
+    pub exclusive_attribution: EngineV2ExclusiveAttribution,
+    pub fallback_activations: usize,
+    pub logical_range_positions: usize,
+    pub physical_cells_read: usize,
+    pub formula_evaluations: usize,
+    pub formulas_evaluated_inside_workspaces: usize,
+    pub formulas_evaluated_outside_workspaces: usize,
+    pub runtime_formula_edge_events: usize,
+    pub unique_runtime_formula_edges: usize,
+    pub exact_formula_edges_retained: usize,
+    pub schedule_units: usize,
+    pub workspace_units: usize,
+    pub active_cyclic_workspace_members: usize,
+    pub workspace_members: usize,
+    pub solver_passes: usize,
+    pub queue_steps: usize,
+    pub demand_subgraph_ns: u128,
+    pub scoped_admission_ns: u128,
+    pub dirty_seed_selection_ns: u128,
+    pub schedule_construction_ns: u128,
+    pub acyclic_formula_evaluation_ns: u128,
+    pub workspace_construction_ns: u128,
+    pub iterative_solver_execution_ns: u128,
+    pub exact_read_finalization_ns: u128,
+    pub exact_edge_replacement_ns: u128,
+    pub generation_reference_validation_ns: u128,
+    pub spill_effect_commit_ns: u128,
+    pub schedule_ns: u128,
+    pub formula_ns: u128,
+    pub schedule_demand_subgraph_ns: u128,
+    pub kernel_named_phase_ns: u128,
+    pub kernel_unattributed_ns: u128,
+    pub kernel_top_level_named_phase_ns: u128,
+    pub kernel_top_level_unattributed_ns: u128,
+    pub retained_state_scan_ns: u128,
+    pub retained_state_scan_read_sets: usize,
+    pub retained_state_scan_edges: usize,
+    pub demand_nodes_visited: usize,
+    pub demand_explicit_edges_visited: usize,
+    pub demand_virtual_edges_visited: usize,
+    pub demand_dedup_entries: usize,
+    pub demand_allocation_ns: u128,
+    pub demand_dependency_traversal_ns: u128,
+    pub demand_virtual_traversal_ns: u128,
+    pub virtual_demand: EngineV2VirtualDemandAttribution,
+    pub demand_closures_built: usize,
+    pub demand_closure_reuse_hits: usize,
+    pub demand_closure_reuse_rejections: usize,
+    pub demand_closure_reuse_rejection_reasons: BTreeMap<String, usize>,
+    pub demand_reuse_consumption_ns: u128,
+    pub workspace_retained_plan_candidates: usize,
+    pub workspace_retained_plan_hits: usize,
+    pub workspace_retained_plan_rejections: usize,
+    pub workspace_retained_plan_rejection_reasons: BTreeMap<String, usize>,
+    pub discovery_evaluations_avoided: usize,
+    pub dirty_upstream_evaluations: usize,
+    pub clean_upstream_cache_reuses: usize,
+    pub scc_discovery_evaluations_avoided: usize,
+    pub downstream_discovery_evaluations_avoided: usize,
+    pub retained_plan_runtime_invalidations: usize,
+    pub retained_plan_reopens: usize,
+    pub retained_plan_runtime_invalidation_reasons: BTreeMap<String, usize>,
+    pub retained_classification_effective_dirty_members: usize,
+    pub retained_classification_clean_members: usize,
+    pub retained_classification_exact_scc_members: usize,
+    pub retained_classification_upstream_members: usize,
+    pub retained_classification_downstream_members: usize,
+    pub retained_classification_unrelated_members: usize,
+    pub retained_classification_missing_reads: usize,
+    pub retained_classification_invalid_members: usize,
+    pub retained_classification_reusable_values: usize,
+    pub admission_demand_nodes_visited: usize,
+    pub admission_demand_explicit_edges_visited: usize,
+    pub admission_demand_virtual_edges_visited: usize,
+    pub admission_demand_allocation_ns: u128,
+    pub admission_demand_dependency_traversal_ns: u128,
+    pub admission_demand_virtual_traversal_ns: u128,
+    pub schedule_demand_nodes_visited: usize,
+    pub schedule_demand_explicit_edges_visited: usize,
+    pub schedule_demand_virtual_edges_visited: usize,
+    pub schedule_demand_allocation_ns: u128,
+    pub schedule_demand_dependency_traversal_ns: u128,
+    pub schedule_demand_virtual_traversal_ns: u128,
+    pub validation_read_sets_examined: usize,
+    pub validation_runtime_formula_edges_examined: usize,
+    pub validation_runtime_formula_edges_invalidated: usize,
+    pub validation_runtime_formula_edges_unchanged: usize,
+    pub validation_runtime_formula_ns: u128,
+    pub validation_reference_observations_examined: usize,
+    pub validation_reference_observations_invalidated: usize,
+    pub validation_reference_observations_unchanged: usize,
+    pub validation_reference_ns: u128,
+    pub validation_topology_checks: usize,
+    pub validation_topology_invalidated: usize,
+    pub validation_topology_ns: u128,
+    pub validation_symbol_name_entries: usize,
+    pub validation_symbol_name_unchanged: usize,
+    pub validation_symbol_name_invalidated: usize,
+    pub validation_table_shape_entries: usize,
+    pub validation_table_shape_unchanged: usize,
+    pub validation_table_shape_invalidated: usize,
+    pub validation_spill_shape_entries: usize,
+    pub validation_spill_shape_unchanged: usize,
+    pub validation_spill_shape_invalidated: usize,
+    pub validation_provider_effect_entries: usize,
+    pub validation_provider_effect_unchanged: usize,
+    pub validation_provider_effect_invalidated: usize,
+    pub validation_selected_reference_entries: usize,
+    pub validation_selected_reference_unchanged: usize,
+    pub validation_selected_reference_invalidated: usize,
+    pub validation_range_reference_entries: usize,
+    pub validation_range_reference_unchanged: usize,
+    pub validation_range_reference_invalidated: usize,
+    pub validation_metadata_ns: u128,
+    pub exact_read_sets_finalized: usize,
+    pub exact_read_sets_changed: usize,
+    pub exact_read_sets_unchanged: usize,
+    pub exact_edges_examined: usize,
+    pub exact_edges_removed: usize,
+    pub exact_edges_inserted: usize,
+    pub exact_edges_unchanged: usize,
+    pub reverse_buckets_touched: usize,
+    pub exact_edge_remove_ns: u128,
+    pub exact_edge_insert_ns: u128,
+    pub exact_edge_compare_ns: u128,
+    pub exact_edge_canonicalize_ns: u128,
+    pub exact_edge_sets_compared: usize,
+    pub exact_identical_edge_sets: usize,
+    pub exact_changed_edge_sets: usize,
+    pub exact_reverse_buckets_untouched: usize,
+    pub exact_reverse_buckets_mutated: usize,
+    pub exact_full_replacement_fallback_count: usize,
+    pub exact_full_replacement_fallback_reasons: BTreeMap<String, usize>,
+    pub workspace_ns: u128,
+    pub cleanup_ns: u128,
+    pub elapsed_ns: u128,
+    pub current_read_sets: usize,
+    pub reverse_buckets: usize,
+    pub contract_scans: usize,
+    pub conservative_dirty_formula_count: usize,
+    pub effective_dirty_formula_count: usize,
+    pub pruned_dirty_formula_count: usize,
+    pub conservative_workspace_candidate_count: usize,
+    pub effective_workspace_count: usize,
+    pub pruned_workspace_count: usize,
+    pub exact_pruning_accepted_count: usize,
+    pub exact_pruning_rejected_count: usize,
+    pub exact_reverse_propagation_vertices_visited: usize,
+    pub exact_reverse_read_formulas_reached: usize,
+    pub exact_formula_edge_formulas_reached: usize,
+    pub runtime_expansion_reopen_count: usize,
+    pub runtime_contract_validation_candidates: usize,
+    pub runtime_contract_validation_cache_hits: usize,
+    pub runtime_contract_validation_cache_misses: usize,
+    pub runtime_contract_edges_skipped: usize,
+    pub runtime_contract_edges_examined: usize,
+    pub runtime_contract_certificates_invalidated: usize,
+    pub runtime_contract_certificate_invalidation_reasons: BTreeMap<String, usize>,
+    pub pruning_rejection_reasons: BTreeMap<String, usize>,
+    pub conservative_workspace_member_count: usize,
+    pub exact_scc_member_count: usize,
+    pub non_feedback_workspace_member_count: usize,
+    pub workspace_discovery_formula_evaluations: usize,
+    pub workspace_exact_scc_formula_evaluations: usize,
+    pub workspace_upstream_formula_evaluations: usize,
+    pub workspace_downstream_formula_evaluations: usize,
+    pub outside_acyclic_formula_evaluations: usize,
+    pub outside_acyclic_formula_evaluation_ns: u128,
+    pub workspace_discovery_formula_evaluation_ns: u128,
+    pub workspace_exact_scc_formula_evaluation_ns: u128,
+    pub workspace_upstream_formula_evaluation_ns: u128,
+    pub workspace_downstream_formula_evaluation_ns: u128,
+    pub scc_preparation_formula_evaluations: usize,
+    pub scc_preparation_ns: u128,
+    pub repeated_non_feedback_evaluations: usize,
+    pub repeated_non_feedback_evaluations_avoided: usize,
+    pub workspaces_using_exact_scc_kernel: usize,
+    pub workspaces_using_full_conservative_solver: usize,
+    pub workspace_kernel_fallback_reasons: BTreeMap<String, usize>,
+    pub exact_scc_rebuild_count: usize,
+    pub exact_scc_expansion_count: usize,
+    pub workspace_reopen_count: usize,
+}
+
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[doc(hidden)]
+pub struct EngineV2WorkspaceDiagnostics {
+    pub stable_id: u64,
+    pub members: Vec<String>,
+    pub dirty_members: Vec<String>,
+    pub actual_cyclic_components: Vec<Vec<String>>,
+    pub pass_formula_evaluations: Vec<usize>,
+    pub elapsed_ns: u128,
+    pub retained_plan_candidate: bool,
+    pub retained_plan_valid: bool,
+    pub retained_plan_rejection_reason: Option<String>,
+    pub stage1_effective_dirty_members: usize,
+    pub stage1_clean_members: usize,
+    pub dirty_upstream_members: usize,
+    pub clean_upstream_members: usize,
+    pub exact_scc_members: usize,
+    pub upstream_members: usize,
+    pub downstream_members: usize,
+    pub unrelated_conservative_members: usize,
+    pub exact_read_state_missing: usize,
+    pub contract_certificate_valid: usize,
+    pub contract_certificate_missing: usize,
+    pub topology_sensitive_members: usize,
+    pub generation_revision_invalid_members: usize,
+    pub cached_value_reusable_members: usize,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct TableMetadata {
@@ -1822,6 +2551,23 @@ pub struct EngineBaselineStats {
     /// Number of spans demoted to legacy because a member participated in a
     /// statically-cyclic SCC (gotcha G8, refs #112).
     pub formula_plane_cycle_member_span_demotions: u64,
+}
+
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DefinedNameLoadReport {
+    pub attempted: u64,
+    pub accepted: u64,
+    pub skipped: u64,
+    pub formula_dependency_extraction_calls: u64,
+    pub formula_dependency_extraction_ns: u128,
+    pub publication_ns: u128,
+    pub pending_name_resolution_ns: u128,
+    pub pending_name_resolution_links: u64,
+    pub symbol_vertex_allocations: u64,
+    pub name_index_insertions: u64,
+    pub symbol_revision_bumps: u64,
+    pub symbol_revision_updates: u64,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -3546,6 +4292,36 @@ where
             clock: crate::timezone::SnapshotClock::new(clock),
             thread_pool,
             recalc_epoch: 0,
+            v2_enabled: crate::engine::v2::requested(),
+            v2_read_recorder: Arc::new(crate::engine::v2::V2ReadRecorder::default()),
+            v2_formula_owner_index: Mutex::new(None),
+            v2_state: crate::engine::v2::V2State::default(),
+            v2_function_snapshot: None,
+            v2_contract_cache: None,
+            #[cfg(any(test, feature = "test-support"))]
+            v2_contract_scan_count: 0,
+            v2_run_active: false,
+            #[cfg(test)]
+            v2_bump_symbol_after_evaluation: false,
+            #[cfg(test)]
+            v2_cancel_before_workspace: false,
+            last_v2_scoped_admission_ns: 0,
+            last_v2_admission_demand_ns: 0,
+            v2_force_requested_roots: false,
+            v2_stage2_discovery_only: false,
+            v2_stage2_skip_first_pass: false,
+            v2_workspace_formula_evaluation_ns: 0,
+            v2_workspace_formula_evaluation_count: 0,
+            v2_workspace_formula_evaluation_ns_by_vertex: BTreeMap::new(),
+            v2_attribution_category: crate::engine::v2::V2FormulaAttributionCategory::default(),
+            v2_attribution: crate::engine::v2::V2ExclusiveAttribution::default(),
+            v2_demand_stats_active: std::sync::atomic::AtomicBool::new(false),
+            v2_demand_stats: std::sync::Mutex::new(crate::engine::v2::V2DemandStats::default()),
+            v2_pending_demand_closure: None,
+            v2_demand_closure_stats: crate::engine::v2::V2DemandClosureStats::default(),
+            v2_runtime_contract_certificates: FxHashMap::default(),
+            v2_runtime_contract_validation_active: false,
+            v2_runtime_contract_stats: crate::engine::v2::V2RuntimeContractStats::default(),
             snapshot_id: std::sync::atomic::AtomicU64::new(1),
             topology_epoch: 0,
             legacy_island_structural_summaries_trusted: true,
@@ -3738,6 +4514,36 @@ where
             clock: crate::timezone::SnapshotClock::new(clock),
             thread_pool: Some(thread_pool),
             recalc_epoch: 0,
+            v2_enabled: crate::engine::v2::requested(),
+            v2_read_recorder: Arc::new(crate::engine::v2::V2ReadRecorder::default()),
+            v2_formula_owner_index: Mutex::new(None),
+            v2_state: crate::engine::v2::V2State::default(),
+            v2_function_snapshot: None,
+            v2_contract_cache: None,
+            #[cfg(any(test, feature = "test-support"))]
+            v2_contract_scan_count: 0,
+            v2_run_active: false,
+            #[cfg(test)]
+            v2_bump_symbol_after_evaluation: false,
+            #[cfg(test)]
+            v2_cancel_before_workspace: false,
+            last_v2_scoped_admission_ns: 0,
+            last_v2_admission_demand_ns: 0,
+            v2_force_requested_roots: false,
+            v2_stage2_discovery_only: false,
+            v2_stage2_skip_first_pass: false,
+            v2_workspace_formula_evaluation_ns: 0,
+            v2_workspace_formula_evaluation_count: 0,
+            v2_workspace_formula_evaluation_ns_by_vertex: BTreeMap::new(),
+            v2_attribution_category: crate::engine::v2::V2FormulaAttributionCategory::default(),
+            v2_attribution: crate::engine::v2::V2ExclusiveAttribution::default(),
+            v2_demand_stats_active: std::sync::atomic::AtomicBool::new(false),
+            v2_demand_stats: std::sync::Mutex::new(crate::engine::v2::V2DemandStats::default()),
+            v2_pending_demand_closure: None,
+            v2_demand_closure_stats: crate::engine::v2::V2DemandClosureStats::default(),
+            v2_runtime_contract_certificates: FxHashMap::default(),
+            v2_runtime_contract_validation_active: false,
+            v2_runtime_contract_stats: crate::engine::v2::V2RuntimeContractStats::default(),
             snapshot_id: std::sync::atomic::AtomicU64::new(1),
             topology_epoch: 0,
             legacy_island_structural_summaries_trusted: true,
@@ -4658,6 +5464,11 @@ where
     /// take the per-recalc volatile clock sample. Called at the start of
     /// every evaluation request that walks schedule units.
     fn begin_evaluation_request(&mut self) {
+        if self.v2_enabled && !self.v2_run_active {
+            self.v2_state.reset_exact_state();
+            self.v2_function_snapshot = None;
+            self.v2_read_recorder.discard_all();
+        }
         self.last_cycle_telemetry = CycleTelemetry::default();
         self.last_recalc_telemetry = RecalcTelemetry::default();
         self.last_scc_coordinate_index_build_ns = 0;
@@ -5432,6 +6243,18 @@ where
             snapshot_id: self.data_snapshot_id(),
         };
         if let Some(index) = self.lookup_index_cache.get(&key) {
+            match axis {
+                LookupAxis::ColumnInView(col) => {
+                    for row in 0..rows {
+                        view.observe_cell_read(row, col);
+                    }
+                }
+                LookupAxis::RowInView(row) => {
+                    for col in 0..cols {
+                        view.observe_cell_read(row, col);
+                    }
+                }
+            }
             return Some(index);
         }
         if self
@@ -6010,6 +6833,82 @@ where
             .collect()
     }
 
+    fn is_skippable_load_name_error(error: &ExcelError) -> bool {
+        error.kind == ExcelErrorKind::Name
+            && error.message.as_deref().is_some_and(|message| {
+                message.starts_with("Invalid name:")
+                    || message.starts_with("Name collision under normalization:")
+                    || message.starts_with("Name collision under normalization in sheet:")
+            })
+    }
+
+    #[doc(hidden)]
+    pub fn define_names_for_load(
+        &mut self,
+        definitions: Vec<(String, NamedDefinition, NameScope)>,
+    ) -> Result<DefinedNameLoadReport, ExcelError> {
+        let before = self.graph.name_definition_stats();
+        let use_batch = self.graph.formula_authority().active_span_count() == 0;
+        let mut report = DefinedNameLoadReport {
+            attempted: definitions.len() as u64,
+            ..DefinedNameLoadReport::default()
+        };
+        if use_batch {
+            self.graph.begin_symbol_revision_batch();
+        }
+        let result = (|| {
+            for (name, definition, scope) in definitions {
+                let result = if use_batch {
+                    self.graph.define_name(&name, definition, scope)
+                } else {
+                    self.define_name(&name, definition, scope)
+                };
+                match result {
+                    Ok(()) => report.accepted = report.accepted.saturating_add(1),
+                    Err(error) if Self::is_skippable_load_name_error(&error) => {
+                        report.skipped = report.skipped.saturating_add(1);
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
+            if use_batch {
+                let started = Instant::now();
+                report.pending_name_resolution_links =
+                    self.graph.resolve_pending_name_references_for_load() as u64;
+                report.pending_name_resolution_ns = started.elapsed().as_nanos();
+            }
+            Ok(())
+        })();
+        if use_batch {
+            self.graph.end_symbol_revision_batch();
+        }
+        if use_batch && report.accepted != 0 {
+            self.record_formula_plane_structural_change(StructuralScope::AllSheets);
+            self.mark_topology_edited();
+        }
+        let after = self.graph.name_definition_stats();
+        report.formula_dependency_extraction_calls = after
+            .formula_dependency_extraction_calls
+            .saturating_sub(before.formula_dependency_extraction_calls);
+        report.formula_dependency_extraction_ns = after
+            .formula_dependency_extraction_ns
+            .saturating_sub(before.formula_dependency_extraction_ns);
+        report.publication_ns = after.publication_ns.saturating_sub(before.publication_ns);
+        report.symbol_vertex_allocations = after
+            .symbol_vertex_allocations
+            .saturating_sub(before.symbol_vertex_allocations);
+        report.name_index_insertions = after
+            .name_index_insertions
+            .saturating_sub(before.name_index_insertions);
+        report.symbol_revision_bumps = after
+            .symbol_revision_bumps
+            .saturating_sub(before.symbol_revision_bumps);
+        report.symbol_revision_updates = after
+            .symbol_revision_updates
+            .saturating_sub(before.symbol_revision_updates);
+        result.map(|()| report)
+    }
+
     pub fn define_name(
         &mut self,
         name: &str,
@@ -6276,6 +7175,11 @@ where
 
     pub fn evaluation_vertices(&self) -> Vec<VertexId> {
         self.graph.get_evaluation_vertices()
+    }
+
+    #[doc(hidden)]
+    pub fn range_dependency_stats(&self) -> crate::engine::graph::RangeDependencyStats {
+        self.graph.range_dependency_stats()
     }
 
     /// Return read-only baseline counters for FormulaPlane/dispatch benchmarking.
@@ -19514,12 +20418,16 @@ where
             engine.observe_function_semantic_epoch()?;
             // A direct request selects exactly one vertex, regardless of its formula kind.
             engine.resource_checkpoint(1)?;
-            let is_formula = engine.graph.vertex_exists(vertex_id)
-                && matches!(
-                    engine.graph.get_vertex_kind(vertex_id),
-                    VertexKind::FormulaScalar | VertexKind::FormulaArray
-                );
-            if is_formula {
+            let is_formula = engine.v2_is_formula_vertex(vertex_id);
+            let legacy_formula = engine.graph.vertex_has_formula(vertex_id);
+            if is_formula && engine.v2_enabled && engine.v2_contract_safe() {
+                engine.v2_force_requested_roots = true;
+                let result = engine.evaluate_v2_targets(&[vertex_id]);
+                engine.v2_force_requested_roots = false;
+                result?;
+                return Ok(engine.current_value_for_v2(vertex_id));
+            }
+            if legacy_formula {
                 engine.begin_evaluation_request();
                 engine.graph.flush_pending_edge_deltas();
                 let roots = [crate::engine::target_preparation::TargetProducer::Legacy(
@@ -20395,6 +21303,30 @@ where
         self.observe_evaluation_resource_request(EvaluationRequestKind::Targeted, |engine| {
             engine.observe_function_semantic_epoch()?;
             engine.validate_deterministic_mode()?;
+            if engine.v2_enabled {
+                let roots = targets
+                    .iter()
+                    .filter_map(|target| match target {
+                        crate::engine::EvaluationTarget::Cell { sheet, row, col } => {
+                            let sheet_id = engine.graph.sheet_id(sheet)?;
+                            let cell =
+                                CellRef::new(sheet_id, Coord::from_excel(*row, *col, true, true));
+                            engine.graph.get_vertex_for_cell(&cell)
+                        }
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>();
+                if roots.len() == targets.len() && engine.v2_contract_safe_for_vertices(&roots) {
+                    return engine.evaluate_v2_targets(&roots);
+                }
+                engine.v2_function_snapshot = None;
+                engine.v2_state.metrics.fallback_mode_activations = engine
+                    .v2_state
+                    .metrics
+                    .fallback_mode_activations
+                    .saturating_add(1);
+                engine.v2_state.reset_exact_state();
+            }
             engine.evaluate_mixed_targets(targets, None)
         })
     }
@@ -20451,6 +21383,30 @@ where
     ) -> Result<EvalResult, ExcelError> {
         self.observe_function_semantic_epoch()?;
         let targets = self.legacy_coordinate_targets(targets);
+        if self.v2_enabled {
+            let roots = targets
+                .iter()
+                .filter_map(|target| match target {
+                    crate::engine::EvaluationTarget::Cell { sheet, row, col } => {
+                        let sheet_id = self.graph.sheet_id(sheet)?;
+                        let cell =
+                            CellRef::new(sheet_id, Coord::from_excel(*row, *col, true, true));
+                        self.graph.get_vertex_for_cell(&cell)
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            if roots.len() == targets.len() && self.v2_contract_safe_for_vertices(&roots) {
+                return self.evaluate_v2_targets(&roots);
+            }
+            self.v2_function_snapshot = None;
+            self.v2_state.metrics.fallback_mode_activations = self
+                .v2_state
+                .metrics
+                .fallback_mode_activations
+                .saturating_add(1);
+            self.v2_state.reset_exact_state();
+        }
         self.evaluate_mixed_targets(&targets, None)
     }
 
@@ -23182,6 +24138,17 @@ where
             // Build graph for all staged formulas before evaluating
             self.build_graph_all()?;
         }
+        if self.v2_enabled {
+            if self.v2_contract_safe() {
+                return self.evaluate_v2_all();
+            }
+            self.v2_state.metrics.fallback_mode_activations = self
+                .v2_state
+                .metrics
+                .fallback_mode_activations
+                .saturating_add(1);
+            self.v2_state.reset_exact_state();
+        }
         self.evaluate_all_coordinator()
     }
 
@@ -24044,6 +25011,37 @@ where
         changed
     }
 
+    fn take_v2_demand_stats(&self) -> crate::engine::v2::V2DemandStats {
+        self.v2_demand_stats
+            .lock()
+            .map(|mut stats| std::mem::take(&mut *stats))
+            .unwrap_or_default()
+    }
+
+    fn take_v2_demand_closure_stats(&mut self) -> crate::engine::v2::V2DemandClosureStats {
+        std::mem::take(&mut self.v2_demand_closure_stats)
+    }
+
+    fn store_v2_demand_closure(
+        &mut self,
+        roots: &[VertexId],
+        vertices: Vec<VertexId>,
+        virtual_dependencies: rustc_hash::FxHashMap<VertexId, Vec<VertexId>>,
+    ) {
+        self.v2_pending_demand_closure = Some(crate::engine::v2::V2DemandClosure {
+            roots: roots.to_vec(),
+            vertices,
+            virtual_dependencies,
+            topology_revision: crate::engine::v2::V2Host::v2_topology_revision(self),
+            symbol_revision: crate::engine::v2::V2Host::v2_symbol_revision(self),
+            semantic_revision: crate::engine::v2::V2Host::v2_semantic_revision(self),
+        });
+        self.v2_demand_closure_stats.closures_built = self
+            .v2_demand_closure_stats
+            .closures_built
+            .saturating_add(1);
+    }
+
     /// Build a demand-driven subgraph for the given targets, including ephemeral edges for
     /// compressed ranges, and returning the set of dirty/volatile precedents and virtual deps.
     fn build_demand_subgraph(
@@ -24062,6 +25060,13 @@ where
         let mut visited: FxHashSet<VertexId> = FxHashSet::default();
         let mut stack: Vec<VertexId> = Vec::new();
         let mut vdeps: FxHashMap<VertexId, Vec<VertexId>> = FxHashMap::default(); // incoming deps per vertex
+        let collect_demand_stats = self
+            .v2_demand_stats_active
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let mut demand_stats = crate::engine::v2::V2DemandStats::default();
+        let collect_virtual_detail =
+            collect_demand_stats && self.v2_read_recorder.attribution_enabled();
+        let mut unique_virtual_targets = FxHashSet::default();
 
         for &t in target_vertices {
             stack.push(t);
@@ -24070,6 +25075,17 @@ where
         while let Some(v) = stack.pop() {
             if !visited.insert(v) {
                 continue;
+            }
+            if collect_demand_stats {
+                demand_stats.nodes_visited = demand_stats.nodes_visited.saturating_add(1);
+            }
+            if collect_virtual_detail {
+                demand_stats.virtual_detail.expansion_requests = demand_stats
+                    .virtual_detail
+                    .expansion_requests
+                    .saturating_add(1);
+                demand_stats.virtual_detail.unique_sources =
+                    demand_stats.virtual_detail.unique_sources.saturating_add(1);
             }
             if !self.graph.vertex_exists(v) {
                 continue;
@@ -24106,37 +25122,147 @@ where
             // using stale values for those cells. The kind check at the top
             // of the loop still gates which vertices end up in
             // ``to_evaluate``; only Formula vertices are scheduled.
+            let dependency_started = Instant::now();
             if let Some(dependencies) = self.graph.dependencies_slice(v) {
                 for &dep in dependencies {
+                    if collect_demand_stats {
+                        demand_stats.explicit_edges_visited =
+                            demand_stats.explicit_edges_visited.saturating_add(1);
+                    }
                     if self.graph.vertex_exists(dep) && !visited.contains(&dep) {
                         stack.push(dep);
                     }
                 }
             } else {
                 for dep in self.graph.get_dependencies(v) {
+                    if collect_demand_stats {
+                        demand_stats.explicit_edges_visited =
+                            demand_stats.explicit_edges_visited.saturating_add(1);
+                    }
                     if self.graph.vertex_exists(dep) && !visited.contains(&dep) {
                         stack.push(dep);
                     }
                 }
-            } // Virtual dependencies (compressed ranges + dynamic like INDIRECT)
+            }
+            if collect_demand_stats {
+                demand_stats.dependency_traversal_ns = demand_stats
+                    .dependency_traversal_ns
+                    .saturating_add(dependency_started.elapsed().as_nanos());
+            }
+            // Virtual dependencies (compressed ranges + dynamic like INDIRECT)
+            let virtual_started = Instant::now();
             let builder = VirtualDepBuilder::new(self);
-            let (vdeps_map, _) = builder.build(&[v]);
-            if let Some(deps) = vdeps_map.get(&v) {
-                for &u in deps {
-                    vdeps.entry(v).or_default().push(u);
-                    if !visited.contains(&u) {
-                        stack.push(u);
+            let (vdeps_map, _) = if collect_virtual_detail {
+                builder.build_with_stats(&[v], &mut demand_stats.virtual_detail)
+            } else {
+                builder.build(&[v])
+            };
+            let source_lookup_started = collect_virtual_detail.then(Instant::now);
+            let deps = vdeps_map.get(&v);
+            if let (true, Some(started)) = (collect_virtual_detail, source_lookup_started) {
+                demand_stats.virtual_detail.closure_source_lookup_ns = demand_stats
+                    .virtual_detail
+                    .closure_source_lookup_ns
+                    .saturating_add(started.elapsed().as_nanos());
+            }
+            if let Some(deps) = deps {
+                if collect_demand_stats {
+                    demand_stats.virtual_edges_visited = demand_stats
+                        .virtual_edges_visited
+                        .saturating_add(deps.len());
+                }
+                if collect_virtual_detail {
+                    let publish_started = Instant::now();
+                    vdeps.entry(v).or_default().extend_from_slice(deps);
+                    demand_stats.virtual_detail.closure_publish_ns = demand_stats
+                        .virtual_detail
+                        .closure_publish_ns
+                        .saturating_add(publish_started.elapsed().as_nanos());
+                    demand_stats.virtual_detail.temporary_vec_allocations = demand_stats
+                        .virtual_detail
+                        .temporary_vec_allocations
+                        .saturating_add(1);
+
+                    let membership_started = Instant::now();
+                    for &u in deps {
+                        demand_stats.virtual_detail.closure_membership_probes = demand_stats
+                            .virtual_detail
+                            .closure_membership_probes
+                            .saturating_add(1);
+                        unique_virtual_targets.insert(u);
+                        if !visited.contains(&u) {
+                            demand_stats.virtual_detail.closure_new_targets = demand_stats
+                                .virtual_detail
+                                .closure_new_targets
+                                .saturating_add(1);
+                            demand_stats.virtual_detail.stack_pushes =
+                                demand_stats.virtual_detail.stack_pushes.saturating_add(1);
+                            stack.push(u);
+                        }
+                    }
+                    demand_stats.virtual_detail.closure_membership_ns = demand_stats
+                        .virtual_detail
+                        .closure_membership_ns
+                        .saturating_add(membership_started.elapsed().as_nanos());
+                } else {
+                    for &u in deps {
+                        vdeps.entry(v).or_default().push(u);
+                        if !visited.contains(&u) {
+                            stack.push(u);
+                        }
                     }
                 }
             }
+            if collect_demand_stats {
+                demand_stats.virtual_traversal_ns = demand_stats
+                    .virtual_traversal_ns
+                    .saturating_add(virtual_started.elapsed().as_nanos());
+            }
         }
 
+        if collect_virtual_detail {
+            demand_stats.virtual_detail.unique_targets = unique_virtual_targets.len();
+        }
+        let allocation_started = Instant::now();
         let mut result: Vec<VertexId> = to_evaluate.into_iter().collect();
         result.sort_unstable();
         // Dedup virtual deps
+        let mut dedup_entries = 0usize;
         for deps in vdeps.values_mut() {
+            let before = deps.len();
             deps.sort_unstable();
             deps.dedup();
+            dedup_entries = dedup_entries.saturating_add(before.saturating_sub(deps.len()));
+        }
+        if collect_demand_stats {
+            demand_stats.dedup_entries = demand_stats.dedup_entries.saturating_add(dedup_entries);
+            demand_stats.allocation_ns = demand_stats
+                .allocation_ns
+                .saturating_add(allocation_started.elapsed().as_nanos());
+            if let Ok(mut stats) = self.v2_demand_stats.lock() {
+                stats.nodes_visited = stats
+                    .nodes_visited
+                    .saturating_add(demand_stats.nodes_visited);
+                stats.explicit_edges_visited = stats
+                    .explicit_edges_visited
+                    .saturating_add(demand_stats.explicit_edges_visited);
+                stats.virtual_edges_visited = stats
+                    .virtual_edges_visited
+                    .saturating_add(demand_stats.virtual_edges_visited);
+                stats.dedup_entries = stats
+                    .dedup_entries
+                    .saturating_add(demand_stats.dedup_entries);
+                stats.allocation_ns = stats
+                    .allocation_ns
+                    .saturating_add(demand_stats.allocation_ns);
+                stats.dependency_traversal_ns = stats
+                    .dependency_traversal_ns
+                    .saturating_add(demand_stats.dependency_traversal_ns);
+                stats.virtual_traversal_ns = stats
+                    .virtual_traversal_ns
+                    .saturating_add(demand_stats.virtual_traversal_ns);
+                stats.virtual_detail.accumulate(demand_stats.virtual_detail);
+            }
         }
         (result, vdeps)
     }
@@ -24164,12 +25290,23 @@ where
         &mut self,
         cancel_flag: &AtomicBool,
     ) -> Result<EvalResult, ExcelError> {
-        self.begin_evaluation_request();
         let _source_cache = self.source_cache_session();
         self.validate_deterministic_mode()?;
         if self.config.defer_graph_building {
             self.build_graph_all()?;
         }
+        if self.v2_enabled {
+            if self.v2_contract_safe() {
+                return self.evaluate_v2_all();
+            }
+            self.v2_state.metrics.fallback_mode_activations = self
+                .v2_state
+                .metrics
+                .fallback_mode_activations
+                .saturating_add(1);
+            self.v2_state.reset_exact_state();
+        }
+        self.begin_evaluation_request();
         if self.graph.formula_authority().active_span_count() > 0 {
             if cancel_flag.load(Ordering::Relaxed) {
                 return Err(ExcelError::new(ExcelErrorKind::Cancelled).with_message(
@@ -25584,6 +26721,14 @@ where
                 "Unqualified cell reference resolved without sheet context".to_string(),
             ));
         };
+        if self.v2_enabled
+            && self.v2_read_recorder.is_active()
+            && let Some(cell) = self.graph.sheet_id(sheet_name).and_then(|sheet_id| {
+                PackedSheetCell::try_new(sheet_id, row.saturating_sub(1), col.saturating_sub(1))
+            })
+        {
+            self.v2_read_recorder.record_cell(cell);
+        }
         // Prefer engine's unified accessor which consults Arrow store for base values
         // and falls back to graph for formulas and stored values.
         if let Some(v) = self.get_cell_value(sheet_name, row, col) {
@@ -25621,6 +26766,9 @@ where
         &self,
         name: &str,
     ) -> Result<Vec<Vec<LiteralValue>>, ExcelError> {
+        if self.v2_enabled && self.v2_read_recorder.is_active() {
+            self.v2_read_recorder.record_name(name.to_string());
+        }
         self.resolver.resolve_named_range_reference(name)
     }
 }
@@ -25670,7 +26818,10 @@ where
     R: EvaluationContext,
 {
     fn planning_semantic_revision(&self) -> Option<u64> {
-        self.resolver.planning_semantic_revision()
+        self.v2_function_snapshot
+            .as_ref()
+            .and_then(|snapshot| snapshot.planning_semantic_revision())
+            .or_else(|| self.resolver.planning_semantic_revision())
     }
 
     fn get_function(
@@ -25678,7 +26829,11 @@ where
         prefix: &str,
         name: &str,
     ) -> Option<std::sync::Arc<dyn crate::function::Function>> {
-        self.resolver.get_function(prefix, name)
+        if let Some(snapshot) = &self.v2_function_snapshot {
+            snapshot.get_function(prefix, name)
+        } else {
+            self.resolver.get_function(prefix, name)
+        }
     }
 
     fn get_function_for_planning(
@@ -25686,7 +26841,25 @@ where
         prefix: &str,
         name: &str,
     ) -> Option<std::sync::Arc<dyn crate::function::Function>> {
-        self.resolver.get_function_for_planning(prefix, name)
+        if let Some(snapshot) = &self.v2_function_snapshot {
+            snapshot.get_function_for_planning(prefix, name)
+        } else {
+            self.resolver.get_function_for_planning(prefix, name)
+        }
+    }
+
+    fn function_semantic_identity(
+        &self,
+        prefix: &str,
+        name: &str,
+        arity: usize,
+    ) -> Option<crate::function_contract::FunctionSemanticIdentity> {
+        if let Some(snapshot) = &self.v2_function_snapshot {
+            snapshot.function_semantic_identity(prefix, name, arity)
+        } else {
+            self.resolver
+                .function_semantic_identity(prefix, name, arity)
+        }
     }
 }
 
@@ -25841,6 +27014,3142 @@ fn table_selector_bounds(
     });
     let cols = col_bounds.unwrap_or((sc, ec));
     Ok((rows, cols))
+}
+
+impl<R> Engine<R>
+where
+    R: EvaluationContext,
+{
+    fn attach_v2_range_observer<'c>(&self, view: RangeView<'c>) -> RangeView<'c> {
+        if self.v2_enabled && self.v2_read_recorder.is_active() {
+            let sheet_id = self.graph.sheet_id(view.sheet_name());
+            view.with_read_observer(Some(self.v2_read_recorder.clone()), sheet_id)
+        } else {
+            view
+        }
+    }
+
+    fn record_v2_reference(&self, reference: &ReferenceType, _current_sheet: &str) {
+        if !self.v2_enabled || !self.v2_read_recorder.is_active() {
+            return;
+        }
+        match reference {
+            ReferenceType::NamedRange(name) => self.v2_read_recorder.record_name(name.clone()),
+            ReferenceType::Table(table) => self.v2_read_recorder.record_table(table.name.clone()),
+            ReferenceType::External(external) => {
+                self.v2_read_recorder.record_external(external.raw.clone())
+            }
+            ReferenceType::Cell { .. }
+            | ReferenceType::Range { .. }
+            | ReferenceType::Cell3D { .. }
+            | ReferenceType::Range3D { .. } => {}
+        }
+    }
+
+    fn collect_v2_function_requests(
+        ast: &formualizer_parse::parser::ASTNode,
+        requests: &mut Vec<(String, String, usize)>,
+    ) {
+        match &ast.node_type {
+            ASTNodeType::UnaryOp { expr, .. } => Self::collect_v2_function_requests(expr, requests),
+            ASTNodeType::BinaryOp { left, right, .. } => {
+                Self::collect_v2_function_requests(left, requests);
+                Self::collect_v2_function_requests(right, requests);
+            }
+            ASTNodeType::Function { name, args } => {
+                requests.push((String::new(), name.clone(), args.len()));
+                for arg in args {
+                    Self::collect_v2_function_requests(arg, requests);
+                }
+            }
+            ASTNodeType::Array(rows) => {
+                for cell in rows.iter().flatten() {
+                    Self::collect_v2_function_requests(cell, requests);
+                }
+            }
+            ASTNodeType::Reference { .. }
+            | ASTNodeType::Call { .. }
+            | ASTNodeType::Literal(_)
+            | ASTNodeType::Omitted => {}
+        }
+    }
+
+    fn v2_resolved_reference_shape(
+        &self,
+        reference: &ReferenceType,
+        current_sheet: &str,
+    ) -> Option<(
+        crate::reference::SheetId,
+        u32,
+        u32,
+        u32,
+        u32,
+        ReferenceShape,
+    )> {
+        let view = self.resolve_range_view(reference, current_sheet).ok()?;
+        if view.is_empty() {
+            return None;
+        }
+        let (rows, cols) = view.dims();
+        let sheet_id = self.graph.sheet_id(view.sheet_name())?;
+        Some((
+            sheet_id,
+            view.start_row() as u32,
+            view.start_col() as u32,
+            view.end_row() as u32,
+            view.end_col() as u32,
+            if rows == 1 && cols == 1 {
+                ReferenceShape::Cell
+            } else {
+                ReferenceShape::Range { rows, cols }
+            },
+        ))
+    }
+
+    fn v2_record_reference_observation(&self, observation: &ReferenceObservation) {
+        if !self.v2_enabled || !self.v2_read_recorder.is_active() {
+            return;
+        }
+        let Some((sheet_id, start_row, start_col, end_row, end_col, resolved_shape)) =
+            self.v2_resolved_reference_shape(&observation.resolved, &observation.current_sheet)
+        else {
+            return;
+        };
+        let (rows, cols) = match resolved_shape {
+            ReferenceShape::Cell => (1, 1),
+            ReferenceShape::Range { rows, cols } => (rows, cols),
+            ReferenceShape::Error => return,
+        };
+        let generation = self
+            .dynamic_target_generation(&observation.resolved, &observation.current_sheet)
+            .unwrap_or(observation.generation);
+        self.v2_read_recorder.record_reference_observation(
+            crate::engine::v2::ReferenceObservationRecord {
+                sheet: self.graph.sheet_name(sheet_id).to_string(),
+                start_row,
+                start_col,
+                end_row,
+                end_col,
+                rows,
+                cols,
+                generation,
+            },
+        );
+    }
+
+    fn record_v2_semantic_effects(&self, ast: &formualizer_parse::parser::ASTNode) {
+        if !self.v2_enabled || !self.v2_read_recorder.is_active() {
+            return;
+        }
+        match &ast.node_type {
+            ASTNodeType::Function { name, args } => {
+                if let Some(identity) = self.function_semantic_identity("", name, args.len()) {
+                    if identity.contract.context
+                        == crate::function_contract::FunctionContextDependence::PlacementDependent
+                    {
+                        self.v2_read_recorder
+                            .record_effect(crate::engine::v2::EffectKind::PlacementContext);
+                    }
+                    if identity.capability_class()
+                        == crate::function_contract::FunctionCapabilityClass::DynamicReference
+                    {
+                        self.v2_read_recorder
+                            .record_effect(crate::engine::v2::EffectKind::DynamicTarget);
+                    }
+                    if identity.contract.result.may_return_reference()
+                        || identity.contract.result.may_spill()
+                    {
+                        self.v2_read_recorder
+                            .record_effect(crate::engine::v2::EffectKind::SpillShape);
+                    }
+                }
+                for arg in args {
+                    self.record_v2_semantic_effects(arg);
+                }
+            }
+            ASTNodeType::UnaryOp { expr, .. } => self.record_v2_semantic_effects(expr),
+            ASTNodeType::BinaryOp { left, right, .. } => {
+                self.record_v2_semantic_effects(left);
+                self.record_v2_semantic_effects(right);
+            }
+            ASTNodeType::Array(rows) => {
+                for cell in rows.iter().flatten() {
+                    self.record_v2_semantic_effects(cell);
+                }
+            }
+            ASTNodeType::Call { callee, args } => {
+                self.record_v2_semantic_effects(callee);
+                for arg in args {
+                    self.record_v2_semantic_effects(arg);
+                }
+            }
+            ASTNodeType::Reference { .. } | ASTNodeType::Literal(_) | ASTNodeType::Omitted => {}
+        }
+    }
+
+    fn v2_positive_selector_literals(args: &[formualizer_parse::parser::ASTNode]) -> bool {
+        let positive = |node: &formualizer_parse::parser::ASTNode| match &node.node_type {
+            ASTNodeType::Literal(LiteralValue::Int(value)) => *value > 0,
+            ASTNodeType::Literal(LiteralValue::Number(value)) => *value > 0.0,
+            _ => false,
+        };
+        (2..=3).contains(&args.len()) && positive(&args[1]) && args.get(2).is_none_or(positive)
+    }
+
+    fn v2_function_contract_safe(&self, name: &str, arity: usize, scalar_args: bool) -> bool {
+        let Some(identity) = self.function_semantic_identity("", name, arity) else {
+            return false;
+        };
+        let caps = identity.caps;
+        match identity.capability_class() {
+            crate::function_contract::FunctionCapabilityClass::ArgumentStateSafe => true,
+            crate::function_contract::FunctionCapabilityClass::ContextDependent => {
+                caps.contains(FnCaps::V2_CONTEXT_OBSERVED)
+            }
+            crate::function_contract::FunctionCapabilityClass::DynamicReference => {
+                caps.contains(FnCaps::V2_DYNAMIC_TARGET_OBSERVED)
+                    && caps.contains(FnCaps::V2_REFERENCE_SHAPE_OBSERVED)
+            }
+            crate::function_contract::FunctionCapabilityClass::StructuralReferenceShape => {
+                caps.contains(FnCaps::V2_REFERENCE_SHAPE_OBSERVED)
+                    || (caps.contains(FnCaps::V2_SCALAR_OUTPUT_FROM_SCALAR_ARGS) && scalar_args)
+                    || (caps.contains(FnCaps::V2_POSITIVE_SELECTORS_SCALAR_REFERENCE)
+                        && scalar_args)
+                    || caps.contains(FnCaps::V2_RESULT_SHAPE_OBSERVED)
+            }
+            crate::function_contract::FunctionCapabilityClass::VolatileOrEnvironmentDependent
+            | crate::function_contract::FunctionCapabilityClass::Unsupported => false,
+        }
+    }
+
+    fn v2_scalar_syntax_safe(
+        &self,
+        ast: &formualizer_parse::parser::ASTNode,
+        current_sheet: &str,
+    ) -> bool {
+        self.v2_scalar_syntax_safe_with_names(ast, current_sheet, &mut FxHashSet::default())
+    }
+
+    fn v2_scalar_syntax_safe_with_names(
+        &self,
+        ast: &formualizer_parse::parser::ASTNode,
+        current_sheet: &str,
+        visiting: &mut FxHashSet<VertexId>,
+    ) -> bool {
+        match &ast.node_type {
+            ASTNodeType::Literal(value) => !matches!(value, LiteralValue::Array(_)),
+            ASTNodeType::Reference { reference, .. } => match reference {
+                ReferenceType::Cell { .. } => true,
+                ReferenceType::NamedRange(name) => {
+                    let Some(sheet_id) = self.graph.sheet_id(current_sheet) else {
+                        return false;
+                    };
+                    self.graph
+                        .resolve_name_entry(name, sheet_id)
+                        .is_some_and(|named| match &named.definition {
+                            NamedDefinition::Cell(_) | NamedDefinition::Literal(_) => true,
+                            NamedDefinition::Formula { .. } => {
+                                self.v2_named_formula_scalar_safe(named.vertex, visiting)
+                            }
+                            NamedDefinition::Range(_) => false,
+                        })
+                }
+                _ => false,
+            },
+            ASTNodeType::UnaryOp { expr, .. } => {
+                self.v2_scalar_syntax_safe_with_names(expr, current_sheet, visiting)
+            }
+            ASTNodeType::BinaryOp { left, right, .. } => {
+                self.v2_scalar_syntax_safe_with_names(left, current_sheet, visiting)
+                    && self.v2_scalar_syntax_safe_with_names(right, current_sheet, visiting)
+            }
+            ASTNodeType::Function { name, args } => {
+                let scalar_args = args
+                    .iter()
+                    .all(|arg| self.v2_scalar_syntax_safe_with_names(arg, current_sheet, visiting));
+                let Some(identity) = self.function_semantic_identity("", name, args.len()) else {
+                    return false;
+                };
+                let shape_safe = match identity.capability_class() {
+                    crate::function_contract::FunctionCapabilityClass::ArgumentStateSafe
+                    | crate::function_contract::FunctionCapabilityClass::ContextDependent => true,
+                    crate::function_contract::FunctionCapabilityClass::DynamicReference => false,
+                    crate::function_contract::FunctionCapabilityClass::StructuralReferenceShape => {
+                        identity
+                            .caps
+                            .contains(FnCaps::V2_SCALAR_OUTPUT_FROM_SCALAR_ARGS)
+                            && scalar_args
+                    }
+                    crate::function_contract::FunctionCapabilityClass::VolatileOrEnvironmentDependent
+                    | crate::function_contract::FunctionCapabilityClass::Unsupported => false,
+                };
+                self.v2_function_contract_safe(name, args.len(), scalar_args) && shape_safe
+            }
+            ASTNodeType::Array(_) | ASTNodeType::Call { .. } | ASTNodeType::Omitted => false,
+        }
+    }
+
+    fn v2_named_formula_scalar_safe(
+        &self,
+        vertex: VertexId,
+        visiting: &mut FxHashSet<VertexId>,
+    ) -> bool {
+        if !visiting.insert(vertex) {
+            return false;
+        }
+        let result = self
+            .graph
+            .named_range_by_vertex(vertex)
+            .and_then(|entry| self.v2_named_formula_context(entry))
+            .is_some_and(|(ast, sheet)| {
+                self.v2_scalar_syntax_safe_with_names(&ast, &sheet, visiting)
+            });
+        visiting.remove(&vertex);
+        result
+    }
+
+    fn v2_ast_contract_safe(
+        &self,
+        ast: &formualizer_parse::parser::ASTNode,
+        current_sheet: &str,
+    ) -> bool {
+        self.v2_ast_contract_safe_with_names(ast, current_sheet, &mut FxHashSet::default())
+    }
+
+    fn v2_ast_contract_safe_with_names(
+        &self,
+        ast: &formualizer_parse::parser::ASTNode,
+        current_sheet: &str,
+        visiting: &mut FxHashSet<VertexId>,
+    ) -> bool {
+        match &ast.node_type {
+            ASTNodeType::Reference { reference, .. } => match reference {
+                ReferenceType::External(_)
+                | ReferenceType::Cell3D { .. }
+                | ReferenceType::Range3D { .. } => false,
+                ReferenceType::Table(table) => {
+                    self.graph.resolve_table_entry(&table.name).is_some()
+                }
+                ReferenceType::NamedRange(name) => {
+                    let Some(sheet_id) = self.graph.sheet_id(current_sheet) else {
+                        return false;
+                    };
+                    if let Some(named) = self.graph.resolve_name_entry(name, sheet_id) {
+                        match &named.definition {
+                            NamedDefinition::Formula { .. } => {
+                                self.v2_named_formula_contract_safe(named.vertex, visiting)
+                            }
+                            NamedDefinition::Cell(_) | NamedDefinition::Range(_) => true,
+                            NamedDefinition::Literal(_) => true,
+                        }
+                    } else {
+                        self.graph.resolve_source_scalar_entry(name).is_none()
+                            && self.graph.resolve_source_table_entry(name).is_none()
+                    }
+                }
+                ReferenceType::Cell { .. } | ReferenceType::Range { .. } => true,
+            },
+            ASTNodeType::UnaryOp { expr, .. } => {
+                self.v2_ast_contract_safe_with_names(expr, current_sheet, visiting)
+            }
+            ASTNodeType::BinaryOp { left, right, .. } => {
+                self.v2_ast_contract_safe_with_names(left, current_sheet, visiting)
+                    && self.v2_ast_contract_safe_with_names(right, current_sheet, visiting)
+            }
+            ASTNodeType::Function { name, args } => {
+                let scalar_args = args
+                    .iter()
+                    .all(|arg| self.v2_scalar_syntax_safe_with_names(arg, current_sheet, visiting));
+                let Some(identity) = self.function_semantic_identity("", name, args.len()) else {
+                    return false;
+                };
+                let reference_shape_safe = match identity.capability_class() {
+                    crate::function_contract::FunctionCapabilityClass::ArgumentStateSafe
+                    | crate::function_contract::FunctionCapabilityClass::ContextDependent => true,
+                    crate::function_contract::FunctionCapabilityClass::DynamicReference => {
+                        identity.caps.contains(FnCaps::V2_REFERENCE_SHAPE_OBSERVED)
+                    }
+                    crate::function_contract::FunctionCapabilityClass::StructuralReferenceShape => {
+                        identity.caps.contains(FnCaps::V2_REFERENCE_SHAPE_OBSERVED)
+                            || (identity
+                                .caps
+                                .contains(FnCaps::V2_SCALAR_OUTPUT_FROM_SCALAR_ARGS)
+                                && scalar_args)
+                            || (identity
+                                .caps
+                                .contains(FnCaps::V2_POSITIVE_SELECTORS_SCALAR_REFERENCE)
+                                && Self::v2_positive_selector_literals(args))
+                            || identity.caps.contains(FnCaps::V2_RESULT_SHAPE_OBSERVED)
+                    }
+                    crate::function_contract::FunctionCapabilityClass::VolatileOrEnvironmentDependent
+                    | crate::function_contract::FunctionCapabilityClass::Unsupported => false,
+                };
+                self.v2_function_contract_safe(name, args.len(), scalar_args)
+                    && reference_shape_safe
+                    && args.iter().all(|arg| {
+                        self.v2_ast_contract_safe_with_names(arg, current_sheet, visiting)
+                    })
+            }
+            ASTNodeType::Array(rows) => rows
+                .iter()
+                .flatten()
+                .all(|cell| self.v2_ast_contract_safe_with_names(cell, current_sheet, visiting)),
+            ASTNodeType::Call { .. } => false,
+            ASTNodeType::Literal(_) | ASTNodeType::Omitted => true,
+        }
+    }
+
+    fn v2_named_formula_contract_safe(
+        &self,
+        vertex: VertexId,
+        visiting: &mut FxHashSet<VertexId>,
+    ) -> bool {
+        if !visiting.insert(vertex) {
+            return true;
+        }
+        let result = self
+            .graph
+            .named_range_by_vertex(vertex)
+            .and_then(|entry| self.v2_named_formula_context(entry))
+            .is_some_and(|(ast, sheet)| {
+                self.v2_ast_contract_safe_with_names(&ast, &sheet, visiting)
+            });
+        visiting.remove(&vertex);
+        result
+    }
+
+    fn add_v2_rejection(rejections: &mut BTreeMap<String, usize>, reason: impl Into<String>) {
+        *rejections.entry(reason.into()).or_default() += 1;
+    }
+
+    fn v2_diagnostic_identity(
+        provider: &dyn crate::traits::FunctionProvider,
+        name: &str,
+        arity: usize,
+        identities: &mut BTreeMap<
+            (String, usize),
+            Option<crate::function_contract::FunctionSemanticIdentity>,
+        >,
+    ) -> Option<crate::function_contract::FunctionSemanticIdentity> {
+        let key = (name.to_string(), arity);
+        if let Some(identity) = identities.get(&key) {
+            return identity.clone();
+        }
+        let identity = provider.function_semantic_identity("", name, arity);
+        identities.insert(key, identity.clone());
+        identity
+    }
+
+    fn v2_diagnostic_scalar_syntax_safe(
+        &self,
+        ast: &formualizer_parse::parser::ASTNode,
+        current_sheet: &str,
+        provider: &dyn crate::traits::FunctionProvider,
+        identities: &mut BTreeMap<
+            (String, usize),
+            Option<crate::function_contract::FunctionSemanticIdentity>,
+        >,
+        scalar_cache: &mut BTreeMap<usize, bool>,
+    ) -> bool {
+        let key = ast as *const _ as usize;
+        if let Some(value) = scalar_cache.get(&key) {
+            return *value;
+        }
+        let result = match &ast.node_type {
+            ASTNodeType::Literal(value) => !matches!(value, LiteralValue::Array(_)),
+            ASTNodeType::Reference { reference, .. } => match reference {
+                ReferenceType::Cell { .. } => true,
+                ReferenceType::NamedRange(name) => {
+                    let Some(sheet_id) = self.graph.sheet_id(current_sheet) else {
+                        return false;
+                    };
+                    self.graph
+                        .resolve_name_entry(name, sheet_id)
+                        .is_some_and(|named| match &named.definition {
+                            NamedDefinition::Cell(_) | NamedDefinition::Literal(_) => true,
+                            NamedDefinition::Formula { .. } => self.v2_named_formula_scalar_safe(
+                                named.vertex,
+                                &mut FxHashSet::default(),
+                            ),
+                            NamedDefinition::Range(_) => false,
+                        })
+                }
+                _ => false,
+            },
+            ASTNodeType::UnaryOp { expr, .. } => self.v2_diagnostic_scalar_syntax_safe(
+                expr,
+                current_sheet,
+                provider,
+                identities,
+                scalar_cache,
+            ),
+            ASTNodeType::BinaryOp { left, right, .. } => {
+                self.v2_diagnostic_scalar_syntax_safe(
+                    left,
+                    current_sheet,
+                    provider,
+                    identities,
+                    scalar_cache,
+                ) && self.v2_diagnostic_scalar_syntax_safe(
+                    right,
+                    current_sheet,
+                    provider,
+                    identities,
+                    scalar_cache,
+                )
+            }
+            ASTNodeType::Function { name, args } => {
+                let scalar_args = args.iter().all(|arg| {
+                    self.v2_diagnostic_scalar_syntax_safe(
+                        arg,
+                        current_sheet,
+                        provider,
+                        identities,
+                        scalar_cache,
+                    )
+                });
+                let Some(identity) =
+                    Self::v2_diagnostic_identity(provider, name, args.len(), identities)
+                else {
+                    return false;
+                };
+                scalar_args
+                    && identity
+                        .caps
+                        .intersects(FnCaps::RETURNS_REFERENCE | FnCaps::MAY_SPILL)
+                        == false
+                    && matches!(
+                        identity.contract.result,
+                        crate::function_contract::FunctionResultSemantics::ScalarValue
+                    )
+            }
+            ASTNodeType::Array(_) | ASTNodeType::Call { .. } | ASTNodeType::Omitted => false,
+        };
+        scalar_cache.insert(key, result);
+        result
+    }
+
+    fn diagnose_v2_ast_contract(
+        &self,
+        ast: &formualizer_parse::parser::ASTNode,
+        current_sheet: &str,
+        provider: &dyn crate::traits::FunctionProvider,
+        identities: &mut BTreeMap<
+            (String, usize),
+            Option<crate::function_contract::FunctionSemanticIdentity>,
+        >,
+        scalar_cache: &mut BTreeMap<usize, bool>,
+        rejections: &mut BTreeMap<String, usize>,
+    ) {
+        match &ast.node_type {
+            ASTNodeType::Reference { reference, .. } => match reference {
+                ReferenceType::External(_) => {
+                    Self::add_v2_rejection(rejections, "reference.external")
+                }
+                ReferenceType::Table(table) => {
+                    if self.graph.resolve_table_entry(&table.name).is_none() {
+                        Self::add_v2_rejection(rejections, "reference.table")
+                    }
+                }
+                ReferenceType::Cell3D { .. } => {
+                    Self::add_v2_rejection(rejections, "reference.cell3d")
+                }
+                ReferenceType::Range3D { .. } => {
+                    Self::add_v2_rejection(rejections, "reference.range3d")
+                }
+                ReferenceType::NamedRange(name) => {
+                    if let Some(sheet_id) = self.graph.sheet_id(current_sheet) {
+                        if self.graph.resolve_name_entry(name, sheet_id).is_none()
+                            && (self.graph.resolve_source_scalar_entry(name).is_some()
+                                || self.graph.resolve_source_table_entry(name).is_some())
+                        {
+                            Self::add_v2_rejection(rejections, "name.provider")
+                        }
+                    }
+                }
+                ReferenceType::Cell { .. } | ReferenceType::Range { .. } => {}
+            },
+            ASTNodeType::UnaryOp { expr, .. } => self.diagnose_v2_ast_contract(
+                expr,
+                current_sheet,
+                provider,
+                identities,
+                scalar_cache,
+                rejections,
+            ),
+            ASTNodeType::BinaryOp { left, right, .. } => {
+                self.diagnose_v2_ast_contract(
+                    left,
+                    current_sheet,
+                    provider,
+                    identities,
+                    scalar_cache,
+                    rejections,
+                );
+                self.diagnose_v2_ast_contract(
+                    right,
+                    current_sheet,
+                    provider,
+                    identities,
+                    scalar_cache,
+                    rejections,
+                );
+            }
+            ASTNodeType::Function { name, args } => {
+                let scalar_args = args.iter().all(|arg| {
+                    self.v2_diagnostic_scalar_syntax_safe(
+                        arg,
+                        current_sheet,
+                        provider,
+                        identities,
+                        scalar_cache,
+                    )
+                });
+                let Some(identity) =
+                    Self::v2_diagnostic_identity(provider, name, args.len(), identities)
+                else {
+                    Self::add_v2_rejection(
+                        rejections,
+                        format!("function.identity_missing:{name}/{}", args.len()),
+                    );
+                    for arg in args {
+                        self.diagnose_v2_ast_contract(
+                            arg,
+                            current_sheet,
+                            provider,
+                            identities,
+                            scalar_cache,
+                            rejections,
+                        );
+                    }
+                    return;
+                };
+                match identity.capability_class() {
+                    crate::function_contract::FunctionCapabilityClass::ArgumentStateSafe => {}
+                    crate::function_contract::FunctionCapabilityClass::ContextDependent => {
+                        if !identity.caps.contains(FnCaps::V2_CONTEXT_OBSERVED) {
+                            Self::add_v2_rejection(
+                                rejections,
+                                format!("function.context_observation_unproven:{name}"),
+                            );
+                        }
+                    }
+                    crate::function_contract::FunctionCapabilityClass::DynamicReference => {
+                        if !identity.caps.contains(FnCaps::V2_DYNAMIC_TARGET_OBSERVED) {
+                            Self::add_v2_rejection(
+                                rejections,
+                                format!("function.dynamic_target_observation_unproven:{name}"),
+                            );
+                        }
+                        if !identity.caps.contains(FnCaps::V2_REFERENCE_SHAPE_OBSERVED) {
+                            Self::add_v2_rejection(
+                                rejections,
+                                format!("function.dynamic_shape_observation_unproven:{name}"),
+                            );
+                        }
+                    }
+                    crate::function_contract::FunctionCapabilityClass::StructuralReferenceShape => {
+                        let shape_safe = identity
+                            .caps
+                            .contains(FnCaps::V2_REFERENCE_SHAPE_OBSERVED)
+                            || (identity
+                                .caps
+                                .contains(FnCaps::V2_SCALAR_OUTPUT_FROM_SCALAR_ARGS)
+                                && scalar_args)
+                            || (identity
+                                .caps
+                                .contains(FnCaps::V2_POSITIVE_SELECTORS_SCALAR_REFERENCE)
+                                && Self::v2_positive_selector_literals(args))
+                            || identity.caps.contains(FnCaps::V2_RESULT_SHAPE_OBSERVED);
+                        if !shape_safe {
+                            Self::add_v2_rejection(
+                                rejections,
+                                format!("function.reference_shape_observation_unproven:{name}"),
+                            );
+                        }
+                    }
+                    crate::function_contract::FunctionCapabilityClass::VolatileOrEnvironmentDependent => {
+                        Self::add_v2_rejection(
+                            rejections,
+                            format!("function.volatile_or_environment_dependent:{name}"),
+                        );
+                    }
+                    crate::function_contract::FunctionCapabilityClass::Unsupported => {
+                        Self::add_v2_rejection(
+                            rejections,
+                            format!("function.semantic_contract_unsupported:{name}"),
+                        );
+                    }
+                }
+                for arg in args {
+                    self.diagnose_v2_ast_contract(
+                        arg,
+                        current_sheet,
+                        provider,
+                        identities,
+                        scalar_cache,
+                        rejections,
+                    );
+                }
+            }
+            ASTNodeType::Array(rows) => {
+                for arg in rows.iter().flatten() {
+                    self.diagnose_v2_ast_contract(
+                        arg,
+                        current_sheet,
+                        provider,
+                        identities,
+                        scalar_cache,
+                        rejections,
+                    );
+                }
+            }
+            ASTNodeType::Call { .. } => Self::add_v2_rejection(rejections, "ast.call"),
+            ASTNodeType::Literal(_) | ASTNodeType::Omitted => {}
+        }
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    pub fn v2_basic_contract_diagnostics_for_test(&self) -> EngineV2AdmissionDiagnostics {
+        let mut rejections = BTreeMap::new();
+        if !self.v2_enabled {
+            Self::add_v2_rejection(&mut rejections, "engine.disabled");
+        }
+        if self.config.cycle.detection != CycleDetection::Runtime {
+            Self::add_v2_rejection(&mut rejections, "config.cycle_detection");
+        }
+        if self.config.formula_plane_mode != FormulaPlaneMode::Off {
+            Self::add_v2_rejection(&mut rejections, "config.formula_plane");
+        }
+        if self.graph.formula_authority().active_span_count() != 0 {
+            Self::add_v2_rejection(&mut rejections, "state.active_formula_spans");
+        }
+        if self.graph.spill_registry_counts() != (0, 0) {
+            Self::add_v2_rejection(&mut rejections, "state.spill_registry");
+        }
+        if self.resolver.planning_semantic_revision().is_none() {
+            Self::add_v2_rejection(&mut rejections, "provider.missing_planning_revision");
+        }
+        let mut formula_count = 0;
+        for vertex in self.v2_formula_vertices_with_names() {
+            formula_count += 1;
+            if self.graph.vertex_has_formula(vertex)
+                && self.graph.get_vertex_kind(vertex) == VertexKind::FormulaArray
+            {
+                Self::add_v2_rejection(&mut rejections, "formula.array_kind");
+            }
+        }
+        EngineV2AdmissionDiagnostics {
+            enabled: self.v2_enabled,
+            eligible: rejections.is_empty(),
+            formula_count,
+            function_request_count: 0,
+            function_classes: BTreeMap::new(),
+            rejection_counts: rejections,
+        }
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    pub fn v2_contract_diagnostics_for_test(&self) -> EngineV2AdmissionDiagnostics {
+        let mut rejections = BTreeMap::new();
+        if !self.v2_enabled {
+            Self::add_v2_rejection(&mut rejections, "engine.disabled");
+        }
+        if self.config.cycle.detection != CycleDetection::Runtime {
+            Self::add_v2_rejection(&mut rejections, "config.cycle_detection");
+        }
+        if self.config.formula_plane_mode != FormulaPlaneMode::Off {
+            Self::add_v2_rejection(&mut rejections, "config.formula_plane");
+        }
+        if self.graph.formula_authority().active_span_count() != 0 {
+            Self::add_v2_rejection(&mut rejections, "state.active_formula_spans");
+        }
+        if self.graph.spill_registry_counts() != (0, 0) {
+            Self::add_v2_rejection(&mut rejections, "state.spill_registry");
+        }
+        if self.resolver.planning_semantic_revision().is_none() {
+            Self::add_v2_rejection(&mut rejections, "provider.missing_planning_revision");
+        }
+        let mut formulas = Vec::new();
+        for vertex in self.graph.vertices_with_formulas() {
+            let Some(ast) = self.graph.get_formula(vertex) else {
+                Self::add_v2_rejection(&mut rejections, "formula.missing_ast");
+                continue;
+            };
+            let Some(cell) = self.graph.get_cell_ref(vertex) else {
+                Self::add_v2_rejection(&mut rejections, "formula.missing_cell_identity");
+                continue;
+            };
+            formulas.push((ast, cell));
+            if self.graph.get_vertex_kind(vertex) == VertexKind::FormulaArray {
+                Self::add_v2_rejection(&mut rejections, "formula.array_kind");
+            }
+        }
+        let named_formulas = self
+            .graph
+            .named_ranges_iter()
+            .map(|(_, entry)| entry)
+            .chain(self.graph.sheet_named_ranges_iter().map(|(_, entry)| entry))
+            .filter_map(|entry| self.v2_named_formula_context(entry))
+            .collect::<Vec<_>>();
+        let formula_count = formulas.len().saturating_add(named_formulas.len());
+        let mut requests = Vec::new();
+        for (ast, _) in &formulas {
+            Self::collect_v2_function_requests(ast, &mut requests);
+        }
+        for (ast, _) in &named_formulas {
+            Self::collect_v2_function_requests(ast, &mut requests);
+        }
+        requests.sort();
+        requests.dedup();
+        let function_request_count = requests.len();
+        let mut identities = BTreeMap::new();
+        let mut scalar_cache = BTreeMap::new();
+        for (ast, cell) in &formulas {
+            self.diagnose_v2_ast_contract(
+                ast,
+                self.graph.sheet_name(cell.sheet_id),
+                &self.resolver,
+                &mut identities,
+                &mut scalar_cache,
+                &mut rejections,
+            );
+        }
+        for (ast, sheet) in &named_formulas {
+            self.diagnose_v2_ast_contract(
+                ast,
+                sheet,
+                &self.resolver,
+                &mut identities,
+                &mut scalar_cache,
+                &mut rejections,
+            );
+        }
+        let mut function_classes = BTreeMap::new();
+        for identity in identities.values().flatten() {
+            Self::add_v2_rejection(&mut function_classes, identity.capability_class().label());
+        }
+        EngineV2AdmissionDiagnostics {
+            enabled: self.v2_enabled,
+            eligible: rejections.is_empty(),
+            formula_count,
+            function_request_count,
+            function_classes,
+            rejection_counts: rejections,
+        }
+    }
+
+    fn current_v2_runtime_contract_certificate_key(
+        &self,
+        vertex: VertexId,
+    ) -> V2RuntimeContractCertificateKey {
+        V2RuntimeContractCertificateKey {
+            topology_revision: self.graph.topology_revision(),
+            symbol_revision: self.graph.symbol_revision(),
+            registry_epoch: crate::function_registry::semantic_epoch(),
+            provider_revision: self.resolver.planning_semantic_revision(),
+            date_system: self.config.date_system,
+            active_spans: self.graph.formula_authority().active_span_count(),
+            spill_shape_present: self.graph.spill_cells_for_anchor(vertex).is_some(),
+        }
+    }
+
+    fn record_runtime_contract_invalidation(
+        &mut self,
+        previous: V2RuntimeContractCertificateKey,
+        current: V2RuntimeContractCertificateKey,
+    ) {
+        if !self.v2_runtime_contract_validation_active {
+            return;
+        }
+        self.v2_runtime_contract_stats.certificates_invalidated = self
+            .v2_runtime_contract_stats
+            .certificates_invalidated
+            .saturating_add(1);
+        let mut reasons = Vec::new();
+        if previous.topology_revision != current.topology_revision {
+            reasons.push("topology_revision");
+        }
+        if previous.symbol_revision != current.symbol_revision {
+            reasons.push("symbol_revision");
+        }
+        if previous.registry_epoch != current.registry_epoch {
+            reasons.push("registry_semantic_epoch");
+        }
+        if previous.provider_revision != current.provider_revision {
+            reasons.push("provider_revision");
+        }
+        if previous.date_system != current.date_system {
+            reasons.push("date_system");
+        }
+        if previous.active_spans != current.active_spans {
+            reasons.push("formula_plane_spans");
+        }
+        if previous.spill_shape_present != current.spill_shape_present {
+            reasons.push("spill_shape_generation");
+        }
+        if reasons.is_empty() {
+            reasons.push("certificate_identity_changed");
+        }
+        for reason in reasons {
+            *self
+                .v2_runtime_contract_stats
+                .invalidation_reasons
+                .entry(reason.to_string())
+                .or_default() += 1;
+        }
+    }
+
+    fn v2_runtime_formula_contract_safe(&mut self, vertex: VertexId) -> bool {
+        if !self.v2_is_formula_vertex(vertex) {
+            return true;
+        }
+        let current_key = self.current_v2_runtime_contract_certificate_key(vertex);
+        if let Some(previous) = self.v2_runtime_contract_certificates.get(&vertex).copied() {
+            if previous == current_key {
+                if self.v2_runtime_contract_validation_active {
+                    self.v2_runtime_contract_stats.cache_hits =
+                        self.v2_runtime_contract_stats.cache_hits.saturating_add(1);
+                    self.v2_runtime_contract_stats.edges_skipped = self
+                        .v2_runtime_contract_stats
+                        .edges_skipped
+                        .saturating_add(1);
+                }
+                return true;
+            }
+            self.v2_runtime_contract_certificates.remove(&vertex);
+            self.record_runtime_contract_invalidation(previous, current_key);
+        }
+        if self.v2_runtime_contract_validation_active {
+            self.v2_runtime_contract_stats.cache_misses = self
+                .v2_runtime_contract_stats
+                .cache_misses
+                .saturating_add(1);
+            self.v2_runtime_contract_stats.edges_examined = self
+                .v2_runtime_contract_stats
+                .edges_examined
+                .saturating_add(1);
+        }
+        if self.graph.vertex_has_formula(vertex)
+            && self.graph.get_vertex_kind(vertex) == VertexKind::FormulaArray
+            && self.graph.spill_cells_for_anchor(vertex).is_none()
+        {
+            return false;
+        }
+        let context = if self.graph.vertex_has_formula(vertex) {
+            let Some(ast) = self.graph.get_formula(vertex) else {
+                return false;
+            };
+            let Some(cell) = self.graph.get_cell_ref(vertex) else {
+                return false;
+            };
+            Some((ast, self.graph.sheet_name(cell.sheet_id).to_string()))
+        } else {
+            self.graph
+                .named_range_by_vertex(vertex)
+                .and_then(|entry| self.v2_named_formula_context(entry))
+        };
+        let Some((ast, sheet)) = context else {
+            return false;
+        };
+        let snapshot = self.v2_function_snapshot.take();
+        let safe = self.v2_ast_contract_safe(&ast, &sheet);
+        self.v2_function_snapshot = snapshot;
+        if safe {
+            self.v2_runtime_contract_certificates
+                .insert(vertex, current_key);
+        }
+        safe
+    }
+
+    pub(crate) fn v2_contract_safe_for_vertices(&mut self, roots: &[VertexId]) -> bool {
+        let admission_started = Instant::now();
+        self.last_v2_scoped_admission_ns = 0;
+        self.last_v2_admission_demand_ns = 0;
+        self.v2_function_snapshot = None;
+        self.v2_pending_demand_closure = None;
+        self.v2_demand_closure_stats = crate::engine::v2::V2DemandClosureStats::default();
+        if !self.v2_enabled
+            || self.config.cycle.detection != CycleDetection::Runtime
+            || self.config.formula_plane_mode != FormulaPlaneMode::Off
+            || self.graph.formula_authority().active_span_count() != 0
+            || self.resolver.planning_semantic_revision().is_none()
+        {
+            return false;
+        }
+
+        #[cfg(any(test, feature = "test-support"))]
+        {
+            self.v2_contract_scan_count = self.v2_contract_scan_count.saturating_add(1);
+        }
+
+        let demand_started = Instant::now();
+        if let Ok(mut stats) = self.v2_demand_stats.lock() {
+            *stats = crate::engine::v2::V2DemandStats::default();
+        }
+        self.v2_demand_stats_active
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        let (mut demanded, virtual_dependencies) = self.build_demand_subgraph(roots);
+        self.v2_demand_stats_active
+            .store(false, std::sync::atomic::Ordering::Relaxed);
+        let demand_subgraph_ns = demand_started.elapsed().as_nanos();
+        demanded.extend(
+            roots
+                .iter()
+                .copied()
+                .filter(|vertex| self.v2_is_formula_vertex(*vertex)),
+        );
+        demanded.sort_unstable();
+        demanded.dedup();
+        let closure_vertices = demanded.clone();
+
+        let mut formulas = Vec::<(formualizer_parse::parser::ASTNode, String)>::new();
+        for vertex in demanded {
+            if self.graph.vertex_has_formula(vertex) {
+                if self.graph.get_vertex_kind(vertex) == VertexKind::FormulaArray
+                    && self.graph.spill_cells_for_anchor(vertex).is_none()
+                {
+                    return false;
+                }
+                let Some(ast) = self.graph.get_formula(vertex) else {
+                    return false;
+                };
+                let Some(cell) = self.graph.get_cell_ref(vertex) else {
+                    return false;
+                };
+                formulas.push((ast, self.graph.sheet_name(cell.sheet_id).to_string()));
+            } else if let Some(entry) = self.graph.named_range_by_vertex(vertex)
+                && let Some(context) = self.v2_named_formula_context(entry)
+            {
+                formulas.push(context);
+            }
+        }
+
+        let mut requests = Vec::new();
+        for (ast, _) in &formulas {
+            Self::collect_v2_function_requests(ast, &mut requests);
+        }
+        requests.sort();
+        requests.dedup();
+        if requests.is_empty() {
+            let safe = formulas
+                .iter()
+                .all(|(ast, sheet)| self.v2_ast_contract_safe(ast, sheet));
+            self.last_v2_admission_demand_ns = demand_subgraph_ns;
+            self.last_v2_scoped_admission_ns = admission_started
+                .elapsed()
+                .as_nanos()
+                .saturating_sub(demand_subgraph_ns);
+            if safe {
+                self.store_v2_demand_closure(roots, closure_vertices, virtual_dependencies);
+            }
+            return safe;
+        }
+        let Ok(snapshot) = crate::function_registry::RegistryPlanningSnapshot::capture_for_requests(
+            &self.resolver,
+            requests,
+        ) else {
+            return false;
+        };
+        self.v2_function_snapshot = Some(snapshot.clone());
+        let safe = formulas
+            .iter()
+            .all(|(ast, sheet)| self.v2_ast_contract_safe(ast, sheet));
+        if !safe {
+            self.v2_function_snapshot = None;
+        }
+        self.last_v2_admission_demand_ns = demand_subgraph_ns;
+        self.last_v2_scoped_admission_ns = admission_started
+            .elapsed()
+            .as_nanos()
+            .saturating_sub(demand_subgraph_ns);
+        if safe {
+            self.store_v2_demand_closure(roots, closure_vertices, virtual_dependencies);
+        }
+        safe
+    }
+
+    fn v2_contract_safe(&mut self) -> bool {
+        self.v2_function_snapshot = None;
+        if !self.v2_enabled {
+            return false;
+        }
+        let key = V2ContractCacheKey {
+            topology_revision: crate::engine::v2::V2Host::v2_topology_revision(self),
+            symbol_revision: crate::engine::v2::V2Host::v2_symbol_revision(self),
+            registry_epoch: crate::function_registry::semantic_epoch(),
+            provider_revision: self.resolver.planning_semantic_revision(),
+            date_system: self.config.date_system,
+            cycle: self.config.cycle,
+            formula_plane_mode: self.config.formula_plane_mode,
+            active_spans: self.graph.formula_authority().active_span_count(),
+            spill_counts: self.graph.spill_registry_counts(),
+        };
+        if let Some(cached) = self
+            .v2_contract_cache
+            .as_ref()
+            .filter(|cached| cached.key == key)
+            .cloned()
+        {
+            self.v2_function_snapshot = cached.snapshot;
+            if cached.eligible {
+                let semantic_revision = crate::engine::v2::V2Host::v2_semantic_revision(self);
+                self.v2_state.synchronize_revisions(
+                    key.topology_revision,
+                    key.symbol_revision,
+                    semantic_revision,
+                );
+            }
+            return cached.eligible;
+        }
+
+        #[cfg(any(test, feature = "test-support"))]
+        {
+            self.v2_contract_scan_count = self.v2_contract_scan_count.saturating_add(1);
+        }
+        let basic_safe = self.config.cycle.detection == CycleDetection::Runtime
+            && self.config.formula_plane_mode == FormulaPlaneMode::Off
+            && key.active_spans == 0
+            && key.spill_counts == (0, 0)
+            && key.provider_revision.is_some()
+            && !self
+                .graph
+                .vertices_with_formulas()
+                .any(|vertex| self.graph.get_vertex_kind(vertex) == VertexKind::FormulaArray);
+        if !basic_safe {
+            self.v2_contract_cache = Some(V2ContractCache {
+                key,
+                eligible: false,
+                snapshot: None,
+            });
+            return false;
+        }
+
+        let formulas = self
+            .graph
+            .vertices_with_formulas()
+            .filter_map(|vertex| {
+                Some((
+                    self.graph.get_formula(vertex)?,
+                    self.graph.get_cell_ref(vertex)?,
+                ))
+            })
+            .collect::<Vec<_>>();
+        if formulas.len() != self.graph.vertices_with_formulas().count() {
+            self.v2_contract_cache = Some(V2ContractCache {
+                key,
+                eligible: false,
+                snapshot: None,
+            });
+            return false;
+        }
+        let named_formulas = self
+            .graph
+            .named_ranges_iter()
+            .map(|(_, entry)| entry)
+            .chain(self.graph.sheet_named_ranges_iter().map(|(_, entry)| entry))
+            .filter_map(|entry| self.v2_named_formula_context(entry))
+            .collect::<Vec<_>>();
+        let mut requests = Vec::new();
+        for (ast, _) in &formulas {
+            Self::collect_v2_function_requests(ast, &mut requests);
+        }
+        for (ast, _) in &named_formulas {
+            Self::collect_v2_function_requests(ast, &mut requests);
+        }
+        requests.sort();
+        requests.dedup();
+        let Ok(snapshot) = crate::function_registry::RegistryPlanningSnapshot::capture_for_requests(
+            &self.resolver,
+            requests,
+        ) else {
+            self.v2_contract_cache = Some(V2ContractCache {
+                key,
+                eligible: false,
+                snapshot: None,
+            });
+            return false;
+        };
+        self.v2_function_snapshot = Some(snapshot.clone());
+        let safe = formulas.iter().all(|(ast, cell)| {
+            self.v2_ast_contract_safe(ast, self.graph.sheet_name(cell.sheet_id))
+        }) && named_formulas
+            .iter()
+            .all(|(ast, sheet)| self.v2_ast_contract_safe(ast, sheet));
+        self.v2_contract_cache = Some(V2ContractCache {
+            key: key.clone(),
+            eligible: safe,
+            snapshot: safe.then_some(snapshot),
+        });
+        if safe {
+            let semantic_revision = crate::engine::v2::V2Host::v2_semantic_revision(self);
+            self.v2_state.synchronize_revisions(
+                key.topology_revision,
+                key.symbol_revision,
+                semantic_revision,
+            );
+        } else {
+            self.v2_function_snapshot = None;
+        }
+        safe
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    pub fn enable_v2_for_test(&mut self) {
+        self.v2_enabled = true;
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    pub fn disable_v2_for_test(&mut self) {
+        self.v2_enabled = false;
+        self.v2_state.reset_exact_state();
+        self.v2_function_snapshot = None;
+        self.v2_read_recorder.discard_all();
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    pub fn v2_contract_safe_for_test(&self) -> bool {
+        self.v2_contract_diagnostics_for_test().eligible
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    pub fn v2_demand_vertices_for_test(&self, roots: &[VertexId]) -> Vec<VertexId> {
+        self.build_demand_subgraph(roots).0
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    pub fn v2_diagnostics_for_test(&self) -> EngineV2Diagnostics {
+        let metrics = &self.v2_state.metrics;
+        EngineV2Diagnostics {
+            enabled: self.v2_enabled,
+            exclusive_attribution: EngineV2ExclusiveAttribution::from_internal(
+                &metrics.exclusive_attribution,
+                metrics.elapsed_ns,
+            ),
+            fallback_activations: metrics.fallback_mode_activations,
+            logical_range_positions: metrics.logical_range_positions,
+            physical_cells_read: metrics.physical_cells_fetched,
+            formula_evaluations: metrics.formulas_evaluated,
+            formulas_evaluated_inside_workspaces: metrics.formulas_evaluated_inside_workspaces,
+            formulas_evaluated_outside_workspaces: metrics.formulas_evaluated_outside_workspaces,
+            runtime_formula_edge_events: metrics.runtime_formula_edge_events,
+            unique_runtime_formula_edges: metrics.unique_current_runtime_formula_edges,
+            exact_formula_edges_retained: metrics.runtime_formula_edges_retained,
+            schedule_units: metrics.schedule_units,
+            workspace_units: metrics.workspace_units,
+            active_cyclic_workspace_members: metrics.active_cyclic_workspace_members,
+            workspace_members: metrics.workspace_members_evaluated,
+            solver_passes: metrics.solver_passes,
+            queue_steps: metrics.queue_steps,
+            demand_subgraph_ns: metrics.demand_subgraph_ns,
+            scoped_admission_ns: metrics.scoped_admission_ns,
+            dirty_seed_selection_ns: metrics.dirty_seed_selection_ns,
+            schedule_construction_ns: metrics.schedule_construction_ns,
+            acyclic_formula_evaluation_ns: metrics.acyclic_formula_evaluation_ns,
+            workspace_construction_ns: metrics.workspace_construction_ns,
+            iterative_solver_execution_ns: metrics.iterative_solver_execution_ns,
+            exact_read_finalization_ns: metrics.exact_read_finalization_ns,
+            exact_edge_replacement_ns: metrics.exact_edge_replacement_ns,
+            generation_reference_validation_ns: metrics.generation_reference_validation_ns,
+            spill_effect_commit_ns: metrics.spill_effect_commit_ns,
+            schedule_ns: metrics.schedule_ns,
+            formula_ns: metrics.formula_ns,
+            schedule_demand_subgraph_ns: metrics.schedule_demand_subgraph_ns,
+            kernel_named_phase_ns: metrics.kernel_named_phase_ns,
+            kernel_unattributed_ns: metrics.kernel_unattributed_ns,
+            kernel_top_level_named_phase_ns: metrics.kernel_top_level_named_phase_ns,
+            kernel_top_level_unattributed_ns: metrics.kernel_top_level_unattributed_ns,
+            retained_state_scan_ns: metrics.retained_state_scan_ns,
+            retained_state_scan_read_sets: metrics.retained_state_scan_read_sets,
+            retained_state_scan_edges: metrics.retained_state_scan_edges,
+            demand_nodes_visited: metrics.demand_nodes_visited,
+            demand_explicit_edges_visited: metrics.demand_explicit_edges_visited,
+            demand_virtual_edges_visited: metrics.demand_virtual_edges_visited,
+            demand_dedup_entries: metrics.demand_dedup_entries,
+            demand_allocation_ns: metrics.demand_allocation_ns,
+            demand_dependency_traversal_ns: metrics.demand_dependency_traversal_ns,
+            demand_virtual_traversal_ns: metrics.demand_virtual_traversal_ns,
+            virtual_demand: metrics.virtual_demand.into(),
+            demand_closures_built: metrics.demand_closures_built,
+            demand_closure_reuse_hits: metrics.demand_closure_reuse_hits,
+            demand_closure_reuse_rejections: metrics.demand_closure_reuse_rejections,
+            demand_closure_reuse_rejection_reasons: metrics
+                .demand_closure_reuse_rejection_reasons
+                .clone(),
+            demand_reuse_consumption_ns: metrics.demand_reuse_consumption_ns,
+            workspace_retained_plan_candidates: metrics.workspace_retained_plan_candidates,
+            workspace_retained_plan_hits: metrics.workspace_retained_plan_hits,
+            workspace_retained_plan_rejections: metrics.workspace_retained_plan_rejections,
+            workspace_retained_plan_rejection_reasons: metrics
+                .workspace_retained_plan_rejection_reasons
+                .clone(),
+            discovery_evaluations_avoided: metrics.discovery_evaluations_avoided,
+            dirty_upstream_evaluations: metrics.dirty_upstream_evaluations,
+            clean_upstream_cache_reuses: metrics.clean_upstream_cache_reuses,
+            scc_discovery_evaluations_avoided: metrics.scc_discovery_evaluations_avoided,
+            downstream_discovery_evaluations_avoided: metrics
+                .downstream_discovery_evaluations_avoided,
+            retained_plan_runtime_invalidations: metrics.retained_plan_runtime_invalidations,
+            retained_plan_reopens: metrics.retained_plan_reopens,
+            retained_plan_runtime_invalidation_reasons: metrics
+                .retained_plan_runtime_invalidation_reasons
+                .clone(),
+            retained_classification_effective_dirty_members: metrics
+                .retained_classification_effective_dirty_members,
+            retained_classification_clean_members: metrics.retained_classification_clean_members,
+            retained_classification_exact_scc_members: metrics
+                .retained_classification_exact_scc_members,
+            retained_classification_upstream_members: metrics
+                .retained_classification_upstream_members,
+            retained_classification_downstream_members: metrics
+                .retained_classification_downstream_members,
+            retained_classification_unrelated_members: metrics
+                .retained_classification_unrelated_members,
+            retained_classification_missing_reads: metrics.retained_classification_missing_reads,
+            retained_classification_invalid_members: metrics
+                .retained_classification_invalid_members,
+            retained_classification_reusable_values: metrics
+                .retained_classification_reusable_values,
+            admission_demand_nodes_visited: metrics.admission_demand_nodes_visited,
+            admission_demand_explicit_edges_visited: metrics
+                .admission_demand_explicit_edges_visited,
+            admission_demand_virtual_edges_visited: metrics.admission_demand_virtual_edges_visited,
+            admission_demand_allocation_ns: metrics.admission_demand_allocation_ns,
+            admission_demand_dependency_traversal_ns: metrics
+                .admission_demand_dependency_traversal_ns,
+            admission_demand_virtual_traversal_ns: metrics.admission_demand_virtual_traversal_ns,
+            schedule_demand_nodes_visited: metrics.schedule_demand_nodes_visited,
+            schedule_demand_explicit_edges_visited: metrics.schedule_demand_explicit_edges_visited,
+            schedule_demand_virtual_edges_visited: metrics.schedule_demand_virtual_edges_visited,
+            schedule_demand_allocation_ns: metrics.schedule_demand_allocation_ns,
+            schedule_demand_dependency_traversal_ns: metrics
+                .schedule_demand_dependency_traversal_ns,
+            schedule_demand_virtual_traversal_ns: metrics.schedule_demand_virtual_traversal_ns,
+            validation_read_sets_examined: metrics.validation_read_sets_examined,
+            validation_runtime_formula_edges_examined: metrics
+                .validation_runtime_formula_edges_examined,
+            validation_runtime_formula_edges_invalidated: metrics
+                .validation_runtime_formula_edges_invalidated,
+            validation_runtime_formula_edges_unchanged: metrics
+                .validation_runtime_formula_edges_unchanged,
+            validation_runtime_formula_ns: metrics.validation_runtime_formula_ns,
+            validation_reference_observations_examined: metrics
+                .validation_reference_observations_examined,
+            validation_reference_observations_invalidated: metrics
+                .validation_reference_observations_invalidated,
+            validation_reference_observations_unchanged: metrics
+                .validation_reference_observations_unchanged,
+            validation_reference_ns: metrics.validation_reference_ns,
+            validation_topology_checks: metrics.validation_topology_checks,
+            validation_topology_invalidated: metrics.validation_topology_invalidated,
+            validation_topology_ns: metrics.validation_topology_ns,
+            validation_symbol_name_entries: metrics.validation_symbol_name_entries,
+            validation_symbol_name_unchanged: metrics.validation_symbol_name_unchanged,
+            validation_symbol_name_invalidated: metrics.validation_symbol_name_invalidated,
+            validation_table_shape_entries: metrics.validation_table_shape_entries,
+            validation_table_shape_unchanged: metrics.validation_table_shape_unchanged,
+            validation_table_shape_invalidated: metrics.validation_table_shape_invalidated,
+            validation_spill_shape_entries: metrics.validation_spill_shape_entries,
+            validation_spill_shape_unchanged: metrics.validation_spill_shape_unchanged,
+            validation_spill_shape_invalidated: metrics.validation_spill_shape_invalidated,
+            validation_provider_effect_entries: metrics.validation_provider_effect_entries,
+            validation_provider_effect_unchanged: metrics.validation_provider_effect_unchanged,
+            validation_provider_effect_invalidated: metrics.validation_provider_effect_invalidated,
+            validation_selected_reference_entries: metrics.validation_selected_reference_entries,
+            validation_selected_reference_unchanged: metrics
+                .validation_selected_reference_unchanged,
+            validation_selected_reference_invalidated: metrics
+                .validation_selected_reference_invalidated,
+            validation_range_reference_entries: metrics.validation_range_reference_entries,
+            validation_range_reference_unchanged: metrics.validation_range_reference_unchanged,
+            validation_range_reference_invalidated: metrics.validation_range_reference_invalidated,
+            validation_metadata_ns: metrics.validation_metadata_ns,
+            exact_read_sets_finalized: metrics.exact_read_sets_finalized,
+            exact_read_sets_changed: metrics.exact_read_sets_changed,
+            exact_read_sets_unchanged: metrics.exact_read_sets_unchanged,
+            exact_edges_examined: metrics.exact_edges_examined,
+            exact_edges_removed: metrics.exact_edges_removed,
+            exact_edges_inserted: metrics.exact_edges_inserted,
+            exact_edges_unchanged: metrics.exact_edges_unchanged,
+            reverse_buckets_touched: metrics.reverse_buckets_touched,
+            exact_edge_remove_ns: metrics.exact_edge_remove_ns,
+            exact_edge_insert_ns: metrics.exact_edge_insert_ns,
+            exact_edge_compare_ns: metrics.exact_edge_compare_ns,
+            exact_edge_canonicalize_ns: metrics.exact_edge_canonicalize_ns,
+            exact_edge_sets_compared: metrics.exact_edge_sets_compared,
+            exact_identical_edge_sets: metrics.exact_identical_edge_sets,
+            exact_changed_edge_sets: metrics.exact_changed_edge_sets,
+            exact_reverse_buckets_untouched: metrics.exact_reverse_buckets_untouched,
+            exact_reverse_buckets_mutated: metrics.exact_reverse_buckets_mutated,
+            exact_full_replacement_fallback_count: metrics.exact_full_replacement_fallback_count,
+            exact_full_replacement_fallback_reasons: metrics
+                .exact_full_replacement_fallback_reasons
+                .clone(),
+            workspace_ns: metrics.workspace_ns,
+            cleanup_ns: metrics.cleanup_ns,
+            elapsed_ns: metrics.elapsed_ns,
+            current_read_sets: self.v2_state.current_reads.len(),
+            reverse_buckets: self.v2_state.reverse_runtime.len(),
+            contract_scans: self.v2_contract_scan_count,
+            conservative_dirty_formula_count: metrics.conservative_dirty_formula_count,
+            effective_dirty_formula_count: metrics.effective_dirty_formula_count,
+            pruned_dirty_formula_count: metrics.pruned_dirty_formula_count,
+            conservative_workspace_candidate_count: metrics.conservative_workspace_candidate_count,
+            effective_workspace_count: metrics.effective_workspace_count,
+            pruned_workspace_count: metrics.pruned_workspace_count,
+            exact_pruning_accepted_count: metrics.exact_pruning_accepted_count,
+            exact_pruning_rejected_count: metrics.exact_pruning_rejected_count,
+            exact_reverse_propagation_vertices_visited: metrics
+                .exact_reverse_propagation_vertices_visited,
+            exact_reverse_read_formulas_reached: metrics.exact_reverse_read_formulas_reached,
+            exact_formula_edge_formulas_reached: metrics.exact_formula_edge_formulas_reached,
+            runtime_expansion_reopen_count: metrics.runtime_expansion_reopen_count,
+            runtime_contract_validation_candidates: metrics.runtime_contract_validation_candidates,
+            runtime_contract_validation_cache_hits: metrics.runtime_contract_validation_cache_hits,
+            runtime_contract_validation_cache_misses: metrics
+                .runtime_contract_validation_cache_misses,
+            runtime_contract_edges_skipped: metrics.runtime_contract_edges_skipped,
+            runtime_contract_edges_examined: metrics.runtime_contract_edges_examined,
+            runtime_contract_certificates_invalidated: metrics
+                .runtime_contract_certificates_invalidated,
+            runtime_contract_certificate_invalidation_reasons: metrics
+                .runtime_contract_certificate_invalidation_reasons
+                .clone(),
+            pruning_rejection_reasons: metrics.pruning_rejection_reasons.clone(),
+            conservative_workspace_member_count: metrics.conservative_workspace_member_count,
+            exact_scc_member_count: metrics.exact_scc_member_count,
+            non_feedback_workspace_member_count: metrics.non_feedback_workspace_member_count,
+            workspace_discovery_formula_evaluations: metrics
+                .workspace_discovery_formula_evaluations,
+            workspace_exact_scc_formula_evaluations: metrics
+                .workspace_exact_scc_formula_evaluations,
+            workspace_upstream_formula_evaluations: metrics.workspace_upstream_formula_evaluations,
+            workspace_downstream_formula_evaluations: metrics
+                .workspace_downstream_formula_evaluations,
+            outside_acyclic_formula_evaluations: metrics.outside_acyclic_formula_evaluations,
+            outside_acyclic_formula_evaluation_ns: metrics.outside_acyclic_formula_evaluation_ns,
+            workspace_discovery_formula_evaluation_ns: metrics
+                .workspace_discovery_formula_evaluation_ns,
+            workspace_exact_scc_formula_evaluation_ns: metrics
+                .workspace_exact_scc_formula_evaluation_ns,
+            workspace_upstream_formula_evaluation_ns: metrics
+                .workspace_upstream_formula_evaluation_ns,
+            workspace_downstream_formula_evaluation_ns: metrics
+                .workspace_downstream_formula_evaluation_ns,
+            scc_preparation_formula_evaluations: metrics.scc_preparation_formula_evaluations,
+            scc_preparation_ns: metrics.scc_preparation_ns,
+            repeated_non_feedback_evaluations: metrics.repeated_non_feedback_evaluations,
+            repeated_non_feedback_evaluations_avoided: metrics
+                .repeated_non_feedback_evaluations_avoided,
+            workspaces_using_exact_scc_kernel: metrics.workspaces_using_exact_scc_kernel,
+            workspaces_using_full_conservative_solver: metrics
+                .workspaces_using_full_conservative_solver,
+            workspace_kernel_fallback_reasons: metrics.workspace_kernel_fallback_reasons.clone(),
+            exact_scc_rebuild_count: metrics.exact_scc_rebuild_count,
+            exact_scc_expansion_count: metrics.exact_scc_expansion_count,
+            workspace_reopen_count: metrics.workspace_reopen_count,
+        }
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    pub fn v2_workspace_diagnostics_for_test(&self) -> Vec<EngineV2WorkspaceDiagnostics> {
+        self.v2_state
+            .metrics
+            .workspace_profiles
+            .iter()
+            .map(|profile| EngineV2WorkspaceDiagnostics {
+                stable_id: profile.stable_id,
+                members: profile
+                    .members
+                    .iter()
+                    .map(|vertex| self.diagnostic_vertex_address(*vertex))
+                    .collect(),
+                dirty_members: profile
+                    .dirty_members
+                    .iter()
+                    .map(|vertex| self.diagnostic_vertex_address(*vertex))
+                    .collect(),
+                actual_cyclic_components: profile
+                    .actual_cyclic_components
+                    .iter()
+                    .map(|component| {
+                        component
+                            .iter()
+                            .map(|vertex| self.diagnostic_vertex_address(*vertex))
+                            .collect()
+                    })
+                    .collect(),
+                pass_formula_evaluations: profile.pass_formula_evaluations.clone(),
+                elapsed_ns: profile.elapsed_ns,
+                retained_plan_candidate: profile
+                    .classification
+                    .as_ref()
+                    .is_some_and(|classification| classification.retained_plan_candidate),
+                retained_plan_valid: profile
+                    .classification
+                    .as_ref()
+                    .is_some_and(|classification| classification.retained_plan_valid),
+                retained_plan_rejection_reason: profile.classification.as_ref().and_then(
+                    |classification| {
+                        classification
+                            .retained_plan_rejection_reason
+                            .map(str::to_string)
+                    },
+                ),
+                stage1_effective_dirty_members: profile
+                    .classification
+                    .as_ref()
+                    .map_or(0, |classification| {
+                        classification.stage1_effective_dirty_members
+                    }),
+                stage1_clean_members: profile
+                    .classification
+                    .as_ref()
+                    .map_or(0, |classification| classification.stage1_clean_members),
+                dirty_upstream_members: profile
+                    .classification
+                    .as_ref()
+                    .map_or(0, |classification| classification.dirty_upstream_members),
+                clean_upstream_members: profile
+                    .classification
+                    .as_ref()
+                    .map_or(0, |classification| classification.clean_upstream_members),
+                exact_scc_members: profile
+                    .classification
+                    .as_ref()
+                    .map_or(0, |classification| classification.exact_scc_members),
+                upstream_members: profile
+                    .classification
+                    .as_ref()
+                    .map_or(0, |classification| classification.upstream_members),
+                downstream_members: profile
+                    .classification
+                    .as_ref()
+                    .map_or(0, |classification| classification.downstream_members),
+                unrelated_conservative_members: profile
+                    .classification
+                    .as_ref()
+                    .map_or(0, |classification| {
+                        classification.unrelated_conservative_members
+                    }),
+                exact_read_state_missing: profile
+                    .classification
+                    .as_ref()
+                    .map_or(0, |classification| classification.exact_read_state_missing),
+                contract_certificate_valid: profile
+                    .classification
+                    .as_ref()
+                    .map_or(0, |classification| {
+                        classification.contract_certificate_valid
+                    }),
+                contract_certificate_missing: profile
+                    .classification
+                    .as_ref()
+                    .map_or(0, |classification| {
+                        classification.contract_certificate_missing
+                    }),
+                topology_sensitive_members: profile
+                    .classification
+                    .as_ref()
+                    .map_or(0, |classification| {
+                        classification.topology_sensitive_members
+                    }),
+                generation_revision_invalid_members: profile
+                    .classification
+                    .as_ref()
+                    .map_or(0, |classification| {
+                        classification.generation_revision_invalid_members
+                    }),
+                cached_value_reusable_members: profile
+                    .classification
+                    .as_ref()
+                    .map_or(0, |classification| {
+                        classification.cached_value_reusable_members
+                    }),
+            })
+            .collect()
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    pub fn v2_exact_read_records_for_test(&self) -> Vec<(String, Vec<String>, Vec<String>)> {
+        self.v2_state
+            .current_reads
+            .iter()
+            .map(|(reader, reads)| {
+                (
+                    self.diagnostic_vertex_address(*reader),
+                    reads
+                        .cells
+                        .iter()
+                        .map(|cell| {
+                            format!(
+                                "{}!{}{}",
+                                self.graph.sheet_name(cell.sheet_id()),
+                                Self::col_to_letters(cell.col0() + 1),
+                                cell.row0() + 1
+                            )
+                        })
+                        .collect(),
+                    reads
+                        .formula_edges
+                        .iter()
+                        .map(|vertex| self.diagnostic_vertex_address(*vertex))
+                        .collect(),
+                )
+            })
+            .collect()
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    pub fn v2_static_dependency_records_for_test(&self) -> Vec<(String, Vec<String>)> {
+        self.v2_formula_vertices_with_names()
+            .into_iter()
+            .map(|vertex| {
+                (
+                    self.diagnostic_vertex_address(vertex),
+                    self.graph
+                        .get_dependencies(vertex)
+                        .into_iter()
+                        .map(|dependency| self.diagnostic_vertex_address(dependency))
+                        .collect(),
+                )
+            })
+            .collect()
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    pub fn v2_formula_edges_for_test(&self) -> Vec<(String, String)> {
+        let format_cell = |cell: CellRef| {
+            format!(
+                "{}!{}{}",
+                self.graph.sheet_name(cell.sheet_id),
+                Self::col_to_letters(cell.coord.col() + 1),
+                cell.coord.row() + 1
+            )
+        };
+        self.v2_current_formula_edges_for_test()
+            .into_iter()
+            .map(|(reader, dependency)| (format_cell(reader), format_cell(dependency)))
+            .collect()
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    pub fn v2_selected_targets_for_test(&self, sheet: &str, row: u32, col: u32) -> Vec<String> {
+        let Some(sheet_id) = self.graph.sheet_id(sheet) else {
+            return Vec::new();
+        };
+        let reader = CellRef::new(sheet_id, Coord::from_excel(row, col, true, true));
+        let Some(reads) = self.v2_read_set_for_test(reader) else {
+            return Vec::new();
+        };
+        reads
+            .selected_targets
+            .into_iter()
+            .map(|cell| {
+                format!(
+                    "{}!{}{}",
+                    self.graph.sheet_name(cell.sheet_id),
+                    Self::col_to_letters(cell.coord.col() + 1),
+                    cell.coord.row() + 1
+                )
+            })
+            .collect()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn last_v2_metrics(&self) -> &crate::engine::v2::V2Metrics {
+        &self.v2_state.metrics
+    }
+
+    #[cfg(test)]
+    pub(crate) fn v2_demand_closure_stats_for_test(
+        &self,
+    ) -> &crate::engine::v2::V2DemandClosureStats {
+        &self.v2_demand_closure_stats
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn v2_read_set_for_test(
+        &self,
+        reader: CellRef,
+    ) -> Option<crate::engine::v2::ExactReadSet> {
+        let vertex = self.graph.get_vertex_for_cell(&reader)?;
+        self.v2_state.current_reads.get(&vertex).cloned()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn v2_runtime_readers_for_test(&self, dependency: CellRef) -> Vec<CellRef> {
+        let Some(dependency) = self.graph.get_vertex_for_cell(&dependency) else {
+            return Vec::new();
+        };
+        self.v2_state
+            .readers_of(dependency)
+            .into_iter()
+            .filter_map(|reader| self.graph.get_cell_ref(reader))
+            .collect()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn v2_state_sizes_for_test(&self) -> (usize, usize, usize) {
+        (
+            self.v2_state.current_reads.len(),
+            self.v2_state.reverse_runtime.len(),
+            self.v2_state.current_edges.len(),
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn v2_raw_recorder_entries_for_test(&self) -> usize {
+        self.v2_read_recorder.retained_entry_count()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_v2_fail_after_formula_commits_for_test(&mut self, limit: Option<usize>) {
+        self.v2_state.fail_after_formula_commits = limit;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn bump_v2_symbol_after_evaluation_for_test(&mut self) {
+        self.v2_bump_symbol_after_evaluation = true;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn cancel_v2_before_workspace_for_test(&mut self) {
+        self.v2_cancel_before_workspace = true;
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn v2_current_formula_edges_for_test(&self) -> Vec<(CellRef, CellRef)> {
+        let mut edges = self
+            .v2_state
+            .current_edges
+            .iter()
+            .filter_map(|(reader, dependency)| {
+                Some((
+                    self.graph.get_cell_ref(*reader)?,
+                    self.graph.get_cell_ref(*dependency)?,
+                ))
+            })
+            .collect::<Vec<_>>();
+        edges.sort_unstable();
+        edges
+    }
+
+    fn v2_exact_read_set(
+        &self,
+        raw: crate::engine::v2::RawReadSet,
+        vertex: VertexId,
+    ) -> (
+        crate::engine::v2::ExactReadSet,
+        crate::engine::v2::V2ReadFinalizationAttribution,
+    ) {
+        let finalization_started = Instant::now();
+        let raw_entries_before = raw.recorder_raw_events.iter().copied().sum::<usize>();
+        let non_cell_unique_entries_before = raw
+            .selected_targets
+            .len()
+            .saturating_add(raw.ranges.len())
+            .saturating_add(raw.names.len())
+            .saturating_add(raw.tables.len())
+            .saturating_add(raw.external.len())
+            .saturating_add(raw.effects.len())
+            .saturating_add(raw.reference_observations.len());
+        let elements_copied = raw
+            .ranges
+            .len()
+            .saturating_add(raw.names.len())
+            .saturating_add(raw.tables.len())
+            .saturating_add(raw.external.len())
+            .saturating_add(raw.effects.len())
+            .saturating_add(raw.reference_observations.len());
+
+        let range_started = Instant::now();
+        let ranges = raw.ranges.clone();
+        let range_canonicalization_ns = range_started.elapsed().as_nanos();
+        let cloning_started = Instant::now();
+        let names = raw.names.clone();
+        let tables = raw.tables.clone();
+        let external = raw.external.clone();
+        let cloning_copying_ns = cloning_started.elapsed().as_nanos();
+        let reference_started = Instant::now();
+        let reference_observations = raw.reference_observations.clone();
+        let reference_generation_canonicalization_ns = reference_started.elapsed().as_nanos();
+        let semantic_started = Instant::now();
+        let effects = raw.effects.clone();
+        let semantic_effect_metadata_ns = semantic_started.elapsed().as_nanos();
+        let summary_started = Instant::now();
+        let mut exact = crate::engine::v2::ExactReadSet {
+            ranges,
+            names,
+            tables,
+            external,
+            logical_range_positions: raw.logical_range_positions,
+            physical_cells_fetched: raw.physical_cells_fetched,
+            effects,
+            reference_observations,
+            diagnostic_records_retained: raw.cell_read_events.saturating_add(raw.range_read_events),
+            ..Default::default()
+        };
+        let summary_construction_ns = summary_started.elapsed().as_nanos();
+
+        let mut cell_events = raw.cell_events;
+        let sorting_started = Instant::now();
+        cell_events.sort();
+        let sorting_ns = sorting_started.elapsed().as_nanos();
+        let edge_started = Instant::now();
+        let detailed_edge_attribution = self.v2_read_recorder.attribution_enabled();
+        let mut formula_edge = crate::engine::v2::V2FormulaEdgeExtractionAttribution::default();
+        if detailed_edge_attribution {
+            formula_edge.scalar_events = cell_events.len();
+            formula_edge.scalar_event_coordinates_inspected = cell_events.len();
+        }
+        let owner_index_started = Instant::now();
+        let mut formula_owner_index = self
+            .v2_formula_owner_index
+            .lock()
+            .expect("V2 formula owner index poisoned");
+        if formula_owner_index.is_none() {
+            let mut owners = CoordHashMap::default();
+            for vertex in self.graph.vertices_with_formulas() {
+                let Some(cell) = self.graph.get_cell_ref(vertex) else {
+                    continue;
+                };
+                let Some(cell) =
+                    PackedSheetCell::try_new(cell.sheet_id, cell.coord.row(), cell.coord.col())
+                else {
+                    continue;
+                };
+                owners.insert(cell, vertex);
+            }
+            if detailed_edge_attribution {
+                formula_edge.formula_owner_index_builds = 1;
+                formula_edge.formula_owner_index_entries = owners.len();
+            }
+            *formula_owner_index = Some(owners);
+            if detailed_edge_attribution {
+                formula_edge.formula_owner_index_build_ns =
+                    owner_index_started.elapsed().as_nanos();
+            }
+        }
+        let formula_owners = formula_owner_index
+            .as_ref()
+            .expect("V2 formula owner index initialized");
+        let scalar_exact_started = detailed_edge_attribution.then(Instant::now);
+        let mut event_index = 0usize;
+        while event_index < cell_events.len() {
+            let cell = cell_events[event_index];
+            let mut run_end = event_index.saturating_add(1);
+            while run_end < cell_events.len() && cell_events[run_end] == cell {
+                run_end = run_end.saturating_add(1);
+            }
+            let count = run_end.saturating_sub(event_index);
+            event_index = run_end;
+            if detailed_edge_attribution {
+                formula_edge.scalar_unique_coordinates_inspected = formula_edge
+                    .scalar_unique_coordinates_inspected
+                    .saturating_add(1);
+                formula_edge.exact_cell_insert_attempts =
+                    formula_edge.exact_cell_insert_attempts.saturating_add(1);
+                formula_edge.dependency_owner_lookups_attempted = formula_edge
+                    .dependency_owner_lookups_attempted
+                    .saturating_add(1);
+            }
+            exact.cells.push(cell);
+            if let Some(target) = formula_owners.get(&cell).copied() {
+                exact.formula_edge_events = exact.formula_edge_events.saturating_add(count);
+                exact.formula_edges.push(target);
+                if detailed_edge_attribution {
+                    formula_edge.dependency_owner_lookup_hits =
+                        formula_edge.dependency_owner_lookup_hits.saturating_add(1);
+                    formula_edge.formula_vertex_resolutions =
+                        formula_edge.formula_vertex_resolutions.saturating_add(1);
+                    formula_edge.raw_formula_edge_candidates = formula_edge
+                        .raw_formula_edge_candidates
+                        .saturating_add(count);
+                    formula_edge.formula_edge_insert_attempts =
+                        formula_edge.formula_edge_insert_attempts.saturating_add(1);
+                }
+            } else if detailed_edge_attribution {
+                formula_edge.dependency_owner_lookup_misses = formula_edge
+                    .dependency_owner_lookup_misses
+                    .saturating_add(1);
+            }
+        }
+        if let Some(started) = scalar_exact_started {
+            formula_edge.scalar_exact_cell_edge_ns = started.elapsed().as_nanos();
+        }
+        drop(formula_owner_index);
+        let current_sheet = self.graph.get_vertex_sheet_id(vertex);
+        let name_started = detailed_edge_attribution.then(Instant::now);
+        for name in &raw.names {
+            if detailed_edge_attribution {
+                formula_edge.name_resolution_attempts =
+                    formula_edge.name_resolution_attempts.saturating_add(1);
+            }
+            if let Some(named) = self.graph.resolve_name_entry(name, current_sheet) {
+                exact.formula_edges.push(named.vertex);
+                if detailed_edge_attribution {
+                    formula_edge.name_resolution_hits =
+                        formula_edge.name_resolution_hits.saturating_add(1);
+                    formula_edge.formula_edge_insert_attempts =
+                        formula_edge.formula_edge_insert_attempts.saturating_add(1);
+                }
+            }
+        }
+        if let Some(started) = name_started {
+            formula_edge.name_resolution_ns = started.elapsed().as_nanos();
+        }
+        let table_started = detailed_edge_attribution.then(Instant::now);
+        for table in &raw.tables {
+            if detailed_edge_attribution {
+                formula_edge.table_resolution_attempts =
+                    formula_edge.table_resolution_attempts.saturating_add(1);
+            }
+            if let Some(table) = self.graph.resolve_table_entry(table) {
+                exact.formula_edges.push(table.vertex);
+                if detailed_edge_attribution {
+                    formula_edge.table_resolution_hits =
+                        formula_edge.table_resolution_hits.saturating_add(1);
+                    formula_edge.formula_edge_insert_attempts =
+                        formula_edge.formula_edge_insert_attempts.saturating_add(1);
+                }
+            }
+        }
+        if let Some(started) = table_started {
+            formula_edge.table_resolution_ns = started.elapsed().as_nanos();
+        }
+        let formula_edge_extraction_ns = edge_started.elapsed().as_nanos();
+        let deduplication_started = Instant::now();
+        exact.formula_edges.sort_unstable();
+        exact.formula_edges.dedup();
+        let deduplication_ns = deduplication_started.elapsed().as_nanos();
+        if detailed_edge_attribution {
+            formula_edge.exact_cells_produced = exact.cells.len();
+            formula_edge.unique_formula_edges = exact.formula_edges.len();
+            formula_edge.duplicate_formula_edge_candidates = formula_edge
+                .formula_edge_insert_attempts
+                .saturating_sub(formula_edge.unique_formula_edges);
+            formula_edge.other_ns = formula_edge_extraction_ns
+                .saturating_sub(formula_edge.formula_owner_index_build_ns)
+                .saturating_sub(formula_edge.scalar_event_scan_ns)
+                .saturating_sub(formula_edge.scalar_exact_cell_edge_ns)
+                .saturating_sub(formula_edge.name_resolution_ns)
+                .saturating_sub(formula_edge.table_resolution_ns);
+        }
+
+        let selected_started = Instant::now();
+        for cell in raw.selected_targets {
+            let Some(sheet_id) = self.graph.sheet_id(&cell.sheet) else {
+                continue;
+            };
+            exact.selected_targets.insert(CellRef::new(
+                sheet_id,
+                Coord::new(cell.row, cell.col, true, true),
+            ));
+        }
+        let selected_reference_handling_ns = selected_started.elapsed().as_nanos();
+
+        let metadata_started = Instant::now();
+        if !raw.external.is_empty() {
+            exact
+                .effects
+                .insert(crate::engine::v2::EffectKind::ExternalProvider);
+        }
+        if !raw.tables.is_empty() {
+            exact
+                .effects
+                .insert(crate::engine::v2::EffectKind::TableShape);
+        }
+        let spill_shape_metadata_ns = metadata_started.elapsed().as_nanos();
+
+        let semantic_effect_started = Instant::now();
+        if self.graph.is_volatile(vertex) {
+            exact
+                .effects
+                .insert(crate::engine::v2::EffectKind::RecalcEpoch);
+            exact.effects.insert(crate::engine::v2::EffectKind::Clock);
+            exact.effects.insert(crate::engine::v2::EffectKind::Random);
+        }
+        if self.graph.is_dynamic(vertex) {
+            exact
+                .effects
+                .insert(crate::engine::v2::EffectKind::DynamicSelector);
+            exact
+                .effects
+                .insert(crate::engine::v2::EffectKind::DynamicTarget);
+        }
+        if self.graph.is_volatile(vertex) {
+            exact.diagnostic_records_retained = exact.diagnostic_records_retained.saturating_add(1);
+        }
+        let semantic_effect_metadata_ns = semantic_effect_metadata_ns
+            .saturating_add(semantic_effect_started.elapsed().as_nanos());
+
+        let unique_entries_before =
+            non_cell_unique_entries_before.saturating_add(exact.cells.len());
+        let unique_entries_after = exact
+            .cells
+            .len()
+            .saturating_add(exact.selected_targets.len())
+            .saturating_add(exact.ranges.len())
+            .saturating_add(exact.names.len())
+            .saturating_add(exact.tables.len())
+            .saturating_add(exact.external.len())
+            .saturating_add(exact.effects.len())
+            .saturating_add(exact.formula_edges.len())
+            .saturating_add(exact.reference_observations.len());
+        let known_ns = range_canonicalization_ns
+            .saturating_add(cloning_copying_ns)
+            .saturating_add(sorting_ns)
+            .saturating_add(deduplication_ns)
+            .saturating_add(reference_generation_canonicalization_ns)
+            .saturating_add(semantic_effect_metadata_ns)
+            .saturating_add(summary_construction_ns)
+            .saturating_add(formula_edge_extraction_ns)
+            .saturating_add(selected_reference_handling_ns)
+            .saturating_add(spill_shape_metadata_ns);
+        let mut finalization = crate::engine::v2::V2ReadFinalizationAttribution {
+            cloning_copying_ns,
+            sorting_ns,
+            deduplication_ns,
+            range_canonicalization_ns,
+            formula_edge_extraction_ns,
+            formula_edge,
+            reference_generation_canonicalization_ns,
+            selected_reference_handling_ns,
+            spill_shape_metadata_ns,
+            semantic_effect_metadata_ns,
+            summary_construction_ns,
+            raw_entries_before,
+            unique_entries_after,
+            duplicate_entries_removed: raw_entries_before.saturating_sub(unique_entries_before),
+            elements_copied,
+            ..Default::default()
+        };
+        finalization.other_ns = finalization_started
+            .elapsed()
+            .as_nanos()
+            .saturating_sub(known_ns);
+        (exact, finalization)
+    }
+
+    fn v2_record_formula_invocation(&mut self, vertex: VertexId, formula_execution_ns: u128) {
+        self.v2_attribution.record_invocation(
+            self.v2_attribution_category,
+            formula_execution_ns,
+            self.v2_read_recorder.attribution_stats(vertex),
+        );
+    }
+
+    fn v2_record_exact_read(
+        &mut self,
+        vertex: VertexId,
+        reads: &crate::engine::v2::ExactReadSet,
+        finalization: crate::engine::v2::V2ReadFinalizationAttribution,
+    ) {
+        self.v2_attribution.record_exact_read(
+            self.v2_attribution_category,
+            vertex,
+            reads,
+            finalization,
+        );
+    }
+
+    fn v2_record_semantic_effects_for_vertex(&self, vertex: VertexId) {
+        let ast = self
+            .graph
+            .get_formula_id(vertex)
+            .and_then(|ast_id| {
+                self.graph
+                    .data_store()
+                    .reconstruct_ast_node(ast_id, self.graph.sheet_reg())
+            })
+            .or_else(|| {
+                self.graph
+                    .named_range_by_vertex(vertex)
+                    .and_then(|entry| match &entry.definition {
+                        NamedDefinition::Formula { ast, .. } => Some(ast.clone()),
+                        _ => None,
+                    })
+            });
+        if let Some(ast) = ast {
+            self.record_v2_semantic_effects(&ast);
+        }
+    }
+
+    fn v2_evaluate_vertex_recorded(
+        &mut self,
+        vertex: VertexId,
+    ) -> Result<crate::engine::v2::V2VertexResult, ExcelError> {
+        let formula_started = Instant::now();
+        let guard = self.v2_read_recorder.begin(vertex);
+        self.v2_record_semantic_effects_for_vertex(vertex);
+        let value = match self.evaluate_vertex_immutable(vertex) {
+            Ok(value) => value,
+            Err(error)
+                if error.kind == ExcelErrorKind::Cancelled
+                    || matches!(
+                        &error.extra,
+                        formualizer_common::ExcelErrorExtra::Resource { .. }
+                    ) =>
+            {
+                drop(guard);
+                self.v2_read_recorder.take(vertex);
+                return Err(error);
+            }
+            Err(error) => LiteralValue::Error(error),
+        };
+        #[cfg(test)]
+        if std::mem::take(&mut self.v2_bump_symbol_after_evaluation) {
+            self.graph.bump_symbol_revision();
+        }
+        let formula_evaluation_ns = formula_started.elapsed().as_nanos();
+        drop(guard);
+        self.v2_record_formula_invocation(vertex, formula_evaluation_ns);
+        let exact_read_started = Instant::now();
+        let recorder_extraction_started = Instant::now();
+        let raw = self.v2_read_recorder.take(vertex);
+        let recorder_extraction_ns = recorder_extraction_started.elapsed().as_nanos();
+        let (reads, mut finalization) = self.v2_exact_read_set(raw, vertex);
+        finalization.recorder_extraction_ns = recorder_extraction_ns;
+        let exact_read_finalization_ns = exact_read_started.elapsed().as_nanos();
+        self.v2_record_exact_read(vertex, &reads, finalization);
+        Ok(crate::engine::v2::V2VertexResult {
+            value,
+            reads,
+            formula_evaluation_ns,
+            exact_read_finalization_ns,
+        })
+    }
+
+    fn v2_workspace_formula_times(&self, members: &[VertexId]) -> BTreeMap<VertexId, u128> {
+        members
+            .iter()
+            .filter_map(|vertex| {
+                self.v2_workspace_formula_evaluation_ns_by_vertex
+                    .get(vertex)
+                    .map(|time| (*vertex, *time))
+            })
+            .collect()
+    }
+
+    fn v2_take_workspace_outputs(
+        &mut self,
+        members: &[VertexId],
+    ) -> Vec<(VertexId, LiteralValue, crate::engine::v2::ExactReadSet)> {
+        members
+            .iter()
+            .map(|&member| {
+                let exact_read_started = Instant::now();
+                let recorder_extraction_started = Instant::now();
+                let raw = self.v2_read_recorder.take(member);
+                let recorder_extraction_ns = recorder_extraction_started.elapsed().as_nanos();
+                let (reads, mut finalization) = self.v2_exact_read_set(raw, member);
+                finalization.recorder_extraction_ns = recorder_extraction_ns;
+                let exact_read_finalization_ns = exact_read_started.elapsed().as_nanos();
+                self.v2_record_exact_read(member, &reads, finalization);
+                (member, self.current_value_for_v2(member), reads)
+            })
+            .collect()
+    }
+
+    fn v2_workspace_live_analysis(
+        &self,
+        members: &[VertexId],
+        outputs: &[(VertexId, LiteralValue, crate::engine::v2::ExactReadSet)],
+    ) -> crate::engine::live_graph::LiveGraphAnalysis {
+        let local = members
+            .iter()
+            .enumerate()
+            .map(|(index, vertex)| (*vertex, index as u32))
+            .collect::<BTreeMap<_, _>>();
+        let mut live_edges = outputs
+            .iter()
+            .enumerate()
+            .flat_map(|(reader, (_, _, reads))| {
+                let reader = reader as u32;
+                let local = &local;
+                reads
+                    .formula_edges
+                    .iter()
+                    .filter_map(move |dependency| Some((reader, *local.get(dependency)?)))
+            })
+            .collect::<Vec<_>>();
+        live_edges.sort_unstable();
+        live_edges.dedup();
+        crate::engine::live_graph::analyze_live_graph(members.len(), &live_edges)
+    }
+
+    fn v2_evaluate_workspace_retained_plan(
+        &mut self,
+        members: &[VertexId],
+        plan: &crate::engine::v2::V2WorkspaceClassification,
+        state: &crate::engine::v2::V2State,
+    ) -> Result<crate::engine::v2::V2WorkspaceResult, ExcelError> {
+        let workspace_started = Instant::now();
+        let saved_reuse = self.diagnostic_exact_scc_reuse_enabled;
+        let saved_discovery = self.v2_stage2_discovery_only;
+        let saved_skip_first = self.v2_stage2_skip_first_pass;
+        self.diagnostic_exact_scc_reuse_enabled = false;
+        self.v2_stage2_discovery_only = false;
+        self.v2_stage2_skip_first_pass = false;
+        let restore_flags = |this: &mut Self| {
+            this.v2_stage2_discovery_only = saved_discovery;
+            this.v2_stage2_skip_first_pass = saved_skip_first;
+            this.diagnostic_exact_scc_reuse_enabled = saved_reuse;
+        };
+        let cancel = self.active_cancel_flag.clone();
+        let mut output_by_vertex =
+            BTreeMap::<VertexId, (LiteralValue, crate::engine::v2::ExactReadSet)>::new();
+        for member in members {
+            let Some(reads) = state.current_reads.get(member).cloned() else {
+                restore_flags(self);
+                let mut fallback = self.v2_evaluate_workspace_recorded(members)?;
+                fallback.retained_plan_runtime_invalidations = 1;
+                fallback.retained_plan_reopens = 1;
+                fallback.retained_plan_runtime_invalidation_reason =
+                    Some("exact_read_state_missing");
+                return Ok(fallback);
+            };
+            output_by_vertex.insert(*member, (self.current_value_for_v2(*member), reads));
+        }
+
+        let exact_scc_members = plan
+            .exact_scc_components
+            .iter()
+            .flatten()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        let dirty_upstream = plan
+            .upstream_order
+            .iter()
+            .copied()
+            .filter(|member| state.last_effective_dirty.contains(member))
+            .collect::<BTreeSet<_>>();
+        let mut upstream_formula_evaluations = 0usize;
+        let mut upstream_formula_evaluation_ns = 0u128;
+        let mut exact_scc_formula_evaluations = 0usize;
+        let mut exact_scc_formula_evaluation_ns = 0u128;
+        let mut exact_solver_passes = 0usize;
+        let mut exact_solver_ns = 0u128;
+        let mut exact_read_finalization_ns = 0u128;
+        let mut downstream_formula_evaluations = 0usize;
+        let mut downstream_formula_evaluation_ns = 0u128;
+        let mut downstream_spill_effect_commit_ns = 0u128;
+        let mut changed_exact_members = BTreeSet::new();
+        let mut stamped = 0usize;
+
+        self.v2_attribution_category =
+            crate::engine::v2::V2FormulaAttributionCategory::RetainedDirtyUpstream;
+        for member in &plan.upstream_order {
+            if !dirty_upstream.contains(member) {
+                continue;
+            }
+            let evaluated = match self.v2_evaluate_vertex_recorded(*member) {
+                Ok(evaluated) => evaluated,
+                Err(error) => {
+                    restore_flags(self);
+                    return Err(error);
+                }
+            };
+            upstream_formula_evaluations = upstream_formula_evaluations.saturating_add(1);
+            upstream_formula_evaluation_ns =
+                upstream_formula_evaluation_ns.saturating_add(evaluated.formula_evaluation_ns);
+            exact_read_finalization_ns =
+                exact_read_finalization_ns.saturating_add(evaluated.exact_read_finalization_ns);
+            if let Err(error) =
+                crate::engine::v2::V2Host::v2_commit_vertex(self, *member, &evaluated.value)
+            {
+                restore_flags(self);
+                return Err(error);
+            }
+            output_by_vertex.insert(*member, (evaluated.value, evaluated.reads));
+        }
+
+        self.v2_attribution_category = crate::engine::v2::V2FormulaAttributionCategory::ExactScc;
+        for component in &plan.exact_scc_components {
+            let before_values = component
+                .iter()
+                .filter_map(|member| {
+                    output_by_vertex
+                        .get(member)
+                        .map(|(value, _)| (*member, value.clone()))
+                })
+                .collect::<BTreeMap<_, _>>();
+            let settle_before = self.last_cycle_telemetry.settle_passes_total;
+            let formula_count_before = self.v2_workspace_formula_evaluation_count;
+            let formula_ns_before = self.v2_workspace_formula_evaluation_ns;
+            let exact_started = Instant::now();
+            self.v2_stage2_skip_first_pass = false;
+            let exact_result = self.evaluate_scc_unit(
+                component,
+                None,
+                cancel
+                    .as_ref()
+                    .map(crate::engine::CancelToken::as_flag)
+                    .map(|flag| flag.as_ref()),
+            );
+            self.v2_stage2_skip_first_pass = saved_skip_first;
+            let exact_stamped = match exact_result {
+                Ok(stamped) => stamped,
+                Err(error) => {
+                    restore_flags(self);
+                    return Err(error);
+                }
+            };
+            stamped = stamped.saturating_add(exact_stamped);
+            exact_solver_ns = exact_solver_ns.saturating_add(exact_started.elapsed().as_nanos());
+            exact_solver_passes = exact_solver_passes.saturating_add(
+                self.last_cycle_telemetry
+                    .settle_passes_total
+                    .saturating_sub(settle_before),
+            );
+            exact_scc_formula_evaluations = exact_scc_formula_evaluations.saturating_add(
+                self.v2_workspace_formula_evaluation_count
+                    .saturating_sub(formula_count_before),
+            );
+            exact_scc_formula_evaluation_ns = exact_scc_formula_evaluation_ns.saturating_add(
+                self.v2_workspace_formula_evaluation_ns
+                    .saturating_sub(formula_ns_before),
+            );
+            let exact_read_started = Instant::now();
+            let outputs = self.v2_take_workspace_outputs(component);
+            exact_read_finalization_ns =
+                exact_read_finalization_ns.saturating_add(exact_read_started.elapsed().as_nanos());
+            for (member, value, reads) in outputs {
+                if before_values.get(&member).is_some_and(|before| {
+                    !crate::engine::v2::V2Host::v2_values_equal(self, before, &value)
+                }) {
+                    changed_exact_members.insert(member);
+                }
+                output_by_vertex.insert(member, (value, reads));
+            }
+        }
+
+        let mut reverse = BTreeMap::<VertexId, Vec<VertexId>>::new();
+        for member in members {
+            if let Some(reads) = state.current_reads.get(member) {
+                for dependency in &reads.formula_edges {
+                    reverse.entry(*dependency).or_default().push(*member);
+                }
+            }
+        }
+        let mut affected_downstream = BTreeSet::new();
+        let mut queue = changed_exact_members.into_iter().collect::<VecDeque<_>>();
+        while let Some(dependency) = queue.pop_front() {
+            for reader in reverse.get(&dependency).into_iter().flatten() {
+                if exact_scc_members.contains(reader) {
+                    continue;
+                }
+                if affected_downstream.insert(*reader) {
+                    queue.push_back(*reader);
+                }
+            }
+        }
+        let downstream_order = plan
+            .downstream_order
+            .iter()
+            .copied()
+            .filter(|member| affected_downstream.contains(member))
+            .collect::<Vec<_>>();
+        self.v2_attribution_category = crate::engine::v2::V2FormulaAttributionCategory::Downstream;
+        for member in downstream_order {
+            let evaluated = match self.v2_evaluate_vertex_recorded(member) {
+                Ok(evaluated) => evaluated,
+                Err(error) => {
+                    restore_flags(self);
+                    return Err(error);
+                }
+            };
+            downstream_formula_evaluations = downstream_formula_evaluations.saturating_add(1);
+            downstream_formula_evaluation_ns =
+                downstream_formula_evaluation_ns.saturating_add(evaluated.formula_evaluation_ns);
+            exact_read_finalization_ns =
+                exact_read_finalization_ns.saturating_add(evaluated.exact_read_finalization_ns);
+            let commit_started = Instant::now();
+            if let Err(error) =
+                crate::engine::v2::V2Host::v2_commit_vertex(self, member, &evaluated.value)
+            {
+                restore_flags(self);
+                return Err(error);
+            }
+            downstream_spill_effect_commit_ns = downstream_spill_effect_commit_ns
+                .saturating_add(commit_started.elapsed().as_nanos());
+            output_by_vertex.insert(member, (evaluated.value, evaluated.reads));
+        }
+
+        let retained_plan_validation_started = Instant::now();
+        self.v2_stage2_discovery_only = saved_discovery;
+        self.v2_stage2_skip_first_pass = saved_skip_first;
+        self.diagnostic_exact_scc_reuse_enabled = saved_reuse;
+        let final_outputs = members
+            .iter()
+            .filter_map(|member| {
+                output_by_vertex
+                    .get(member)
+                    .map(|(value, reads)| (*member, value.clone(), reads.clone()))
+            })
+            .collect::<Vec<_>>();
+        let final_analysis = self.v2_workspace_live_analysis(members, &final_outputs);
+        let normalize_components = |components: &[Vec<VertexId>]| {
+            components
+                .iter()
+                .map(|component| {
+                    let mut normalized = component.clone();
+                    normalized.sort_unstable();
+                    normalized
+                })
+                .collect::<BTreeSet<_>>()
+        };
+        let expected_components = normalize_components(&plan.exact_scc_components);
+        let actual_components = normalize_components(
+            &final_analysis
+                .cyclic_components
+                .iter()
+                .map(|component| {
+                    component
+                        .iter()
+                        .map(|index| members[*index as usize])
+                        .collect::<Vec<_>>()
+                })
+                .collect::<Vec<_>>(),
+        );
+        let reference_observations_unchanged =
+            |previous: &BTreeSet<crate::engine::v2::ReferenceObservationRecord>,
+             current: &BTreeSet<crate::engine::v2::ReferenceObservationRecord>| {
+                previous.len() == current.len()
+                    && previous
+                        .iter()
+                        .zip(current.iter())
+                        .all(|(previous, current)| {
+                            previous.sheet == current.sheet
+                                && previous.start_row == current.start_row
+                                && previous.start_col == current.start_col
+                                && previous.end_row == current.end_row
+                                && previous.end_col == current.end_col
+                                && previous.rows == current.rows
+                                && previous.cols == current.cols
+                                && previous.generation.topology == current.generation.topology
+                                && previous.generation.symbols == current.generation.symbols
+                                && previous.generation.shape == current.generation.shape
+                                && previous.generation.effect == current.generation.effect
+                                && previous.generation.provider == current.generation.provider
+                        })
+            };
+        let topology_effects = |effects: &BTreeSet<crate::engine::v2::EffectKind>| {
+            effects
+                .iter()
+                .filter(|effect| {
+                    matches!(
+                        effect,
+                        crate::engine::v2::EffectKind::DynamicSelector
+                            | crate::engine::v2::EffectKind::DynamicTarget
+                            | crate::engine::v2::EffectKind::SpillShape
+                            | crate::engine::v2::EffectKind::TableShape
+                            | crate::engine::v2::EffectKind::StructuralGeneration
+                    )
+                })
+                .copied()
+                .collect::<BTreeSet<_>>()
+        };
+        let topology_reason = if expected_components != actual_components {
+            Some("scc_membership_changed")
+        } else {
+            members.iter().find_map(|member| {
+                let previous = state.current_reads.get(member)?;
+                let (_, current) = output_by_vertex.get(member)?;
+                if previous.formula_edges != current.formula_edges {
+                    Some("retained_read_formula_edges_changed")
+                } else if previous.selected_targets != current.selected_targets {
+                    Some("retained_read_selected_targets_changed")
+                } else if previous.ranges != current.ranges {
+                    Some("retained_read_ranges_changed")
+                } else if previous.names != current.names {
+                    Some("retained_read_names_changed")
+                } else if previous.tables != current.tables {
+                    Some("retained_read_tables_changed")
+                } else if previous.external != current.external {
+                    Some("retained_read_external_changed")
+                } else if topology_effects(&previous.effects) != topology_effects(&current.effects)
+                {
+                    let effect_changed = |effect| {
+                        previous.effects.contains(&effect) != current.effects.contains(&effect)
+                    };
+                    Some(
+                        if effect_changed(crate::engine::v2::EffectKind::DynamicSelector) {
+                            "retained_read_dynamic_selector_changed"
+                        } else if effect_changed(crate::engine::v2::EffectKind::DynamicTarget) {
+                            "retained_read_dynamic_target_changed"
+                        } else if effect_changed(crate::engine::v2::EffectKind::SpillShape) {
+                            "retained_read_spill_shape_changed"
+                        } else if effect_changed(crate::engine::v2::EffectKind::TableShape) {
+                            "retained_read_table_shape_changed"
+                        } else {
+                            "retained_read_structural_generation_changed"
+                        },
+                    )
+                } else if !reference_observations_unchanged(
+                    &previous.reference_observations,
+                    &current.reference_observations,
+                ) {
+                    Some("retained_read_reference_observations_changed")
+                } else {
+                    None
+                }
+            })
+        };
+        if let Some(reason) = topology_reason {
+            let retained_plan_validation_ns = retained_plan_validation_started.elapsed().as_nanos();
+            restore_flags(self);
+            let mut fallback = self.v2_evaluate_workspace_recorded(members)?;
+            fallback.retained_plan_validation_ns = retained_plan_validation_ns;
+            fallback.retained_plan_runtime_invalidations = 1;
+            fallback.retained_plan_reopens = 1;
+            fallback.retained_plan_runtime_invalidation_reason = Some(reason);
+            return Ok(fallback);
+        }
+        let exact_scc_member_count = exact_scc_members.len();
+        let non_feedback_workspace_member_count =
+            members.len().saturating_sub(exact_scc_member_count);
+        let upstream_formula_evaluations = dirty_upstream.len();
+        let actual_cyclic_components = final_analysis
+            .cyclic_components
+            .into_iter()
+            .map(|component| {
+                component
+                    .into_iter()
+                    .map(|index| members[index as usize])
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        let active_cyclic_members = final_analysis
+            .in_cycle
+            .iter()
+            .filter(|in_cycle| **in_cycle)
+            .count();
+        let discovery_formula_evaluations = upstream_formula_evaluations;
+        let formula_evaluations = discovery_formula_evaluations
+            .saturating_add(exact_scc_formula_evaluations)
+            .saturating_add(downstream_formula_evaluations);
+        let retained_plan_validation_ns = retained_plan_validation_started.elapsed().as_nanos();
+        Ok(crate::engine::v2::V2WorkspaceResult {
+            stable_id: plan.stable_id,
+            stamped,
+            evaluated_vertices: members.len(),
+            formula_evaluations,
+            solver_passes: exact_solver_passes,
+            active_cyclic_members,
+            actual_cyclic_components,
+            pass_formula_evaluations: plan
+                .exact_scc_components
+                .iter()
+                .map(|component| component.len())
+                .collect(),
+            workspace_construction_ns: 0,
+            iterative_solver_execution_ns: exact_solver_ns,
+            exact_read_finalization_ns,
+            elapsed_ns: workspace_started.elapsed().as_nanos(),
+            stage2_used_exact_scc_kernel: true,
+            stage2_used_full_conservative_solver: false,
+            discovery_formula_evaluations,
+            exact_scc_formula_evaluations,
+            upstream_formula_evaluations,
+            downstream_formula_evaluations,
+            discovery_formula_evaluation_ns: upstream_formula_evaluation_ns,
+            exact_scc_formula_evaluation_ns,
+            upstream_formula_evaluation_ns,
+            downstream_formula_evaluation_ns,
+            downstream_spill_effect_commit_ns,
+            repeated_non_feedback_evaluations: 0,
+            repeated_non_feedback_evaluations_avoided: 0,
+            exact_scc_rebuild_count: 0,
+            exact_scc_expansion_count: 0,
+            workspace_reopen_count: 0,
+            retained_plan_runtime_invalidations: 0,
+            retained_plan_reopens: 0,
+            retained_plan_validation_ns,
+            retained_plan_runtime_invalidation_reason: None,
+            kernel_fallback_reason: None,
+            members: final_outputs,
+        })
+    }
+
+    fn v2_evaluate_workspace_recorded(
+        &mut self,
+        members: &[VertexId],
+    ) -> Result<crate::engine::v2::V2WorkspaceResult, ExcelError> {
+        if !matches!(self.config.cycle.policy, CyclePolicy::Iterate { .. }) {
+            return self.v2_evaluate_workspace_conservative(members);
+        }
+
+        let workspace_started = Instant::now();
+        let saved_reuse = self.diagnostic_exact_scc_reuse_enabled;
+        let saved_discovery = self.v2_stage2_discovery_only;
+        let saved_skip_first = self.v2_stage2_skip_first_pass;
+        self.diagnostic_exact_scc_reuse_enabled = false;
+        self.v2_stage2_discovery_only = true;
+        self.v2_stage2_skip_first_pass = false;
+        #[cfg(test)]
+        if std::mem::take(&mut self.v2_cancel_before_workspace)
+            && let Some(cancel) = &self.active_cancel_flag
+        {
+            cancel.cancel();
+        }
+        let cancel = self.active_cancel_flag.clone();
+        let workspace_formula_before = self.v2_workspace_formula_evaluation_ns;
+        let workspace_formula_count_before = self.v2_workspace_formula_evaluation_count;
+        let discovery_solver_started = Instant::now();
+        let discovery_result = self.evaluate_scc_unit(
+            members,
+            None,
+            cancel
+                .as_ref()
+                .map(crate::engine::CancelToken::as_flag)
+                .map(|flag| flag.as_ref()),
+        );
+        let discovery_solver_ns = discovery_solver_started.elapsed().as_nanos();
+        self.v2_stage2_discovery_only = saved_discovery;
+        self.v2_stage2_skip_first_pass = saved_skip_first;
+        self.diagnostic_exact_scc_reuse_enabled = saved_reuse;
+        let discovery_stamped = discovery_result?;
+        let discovery_formula_evaluation_ns = self
+            .v2_workspace_formula_evaluation_ns
+            .saturating_sub(workspace_formula_before);
+        let discovery_formula_evaluations = self
+            .v2_workspace_formula_evaluation_count
+            .saturating_sub(workspace_formula_count_before);
+        let discovery_outputs = self.v2_take_workspace_outputs(members);
+        let discovery_formula_times = self.v2_workspace_formula_times(members);
+        let discovery_analysis = self.v2_workspace_live_analysis(members, &discovery_outputs);
+        let stable_id = self.v2_scc_stable_id_for_members(members);
+
+        if discovery_analysis.cyclic_components.is_empty() {
+            return Ok(crate::engine::v2::V2WorkspaceResult {
+                stable_id,
+                stamped: discovery_stamped,
+                evaluated_vertices: members.len(),
+                formula_evaluations: discovery_formula_evaluations,
+                solver_passes: 0,
+                active_cyclic_members: 0,
+                actual_cyclic_components: Vec::new(),
+                pass_formula_evaluations: vec![members.len()],
+                workspace_construction_ns: discovery_solver_ns
+                    .saturating_sub(discovery_formula_evaluation_ns),
+                iterative_solver_execution_ns: 0,
+                exact_read_finalization_ns: 0,
+                elapsed_ns: workspace_started.elapsed().as_nanos(),
+                stage2_used_exact_scc_kernel: false,
+                stage2_used_full_conservative_solver: true,
+                discovery_formula_evaluations,
+                discovery_formula_evaluation_ns,
+                exact_scc_formula_evaluation_ns: 0,
+                exact_scc_formula_evaluations: 0,
+                upstream_formula_evaluations: members.len(),
+                upstream_formula_evaluation_ns: discovery_formula_evaluation_ns,
+                downstream_formula_evaluations: 0,
+                downstream_formula_evaluation_ns: 0,
+                downstream_spill_effect_commit_ns: 0,
+                repeated_non_feedback_evaluations: 0,
+                repeated_non_feedback_evaluations_avoided: 0,
+                exact_scc_rebuild_count: 0,
+                exact_scc_expansion_count: 0,
+                workspace_reopen_count: 0,
+                retained_plan_runtime_invalidations: 0,
+                retained_plan_reopens: 0,
+                retained_plan_validation_ns: 0,
+                retained_plan_runtime_invalidation_reason: None,
+                kernel_fallback_reason: Some("no_exact_runtime_scc"),
+                members: discovery_outputs,
+            });
+        }
+
+        let discovery_by_vertex = discovery_outputs
+            .iter()
+            .cloned()
+            .map(|output| (output.0, output))
+            .collect::<BTreeMap<_, _>>();
+        let mut output_by_vertex = discovery_by_vertex.clone();
+        let mut exact_scc_members = BTreeSet::new();
+        let mut changed_exact_members = BTreeSet::new();
+        let mut exact_scc_formula_evaluations = 0usize;
+        let mut exact_scc_formula_evaluation_ns = 0u128;
+        let mut exact_solver_passes = 0usize;
+        let mut exact_solver_ns = 0u128;
+        let exact_iterations_allowed = match self.config.cycle.policy {
+            CyclePolicy::Iterate { max_iterations, .. } => max_iterations > 1,
+            CyclePolicy::Error => false,
+        };
+        let mut exact_read_finalization_ns = 0u128;
+        let mut stamped = discovery_stamped;
+        let mut pass_formula_evaluations = vec![members.len()];
+
+        for component in &discovery_analysis.cyclic_components {
+            let component_vertices = component
+                .iter()
+                .map(|index| members[*index as usize])
+                .collect::<Vec<_>>();
+            exact_scc_members.extend(component_vertices.iter().copied());
+            if !exact_iterations_allowed {
+                continue;
+            }
+            let before_values = component_vertices
+                .iter()
+                .filter_map(|vertex| {
+                    output_by_vertex
+                        .get(vertex)
+                        .map(|(_, value, _)| (*vertex, value.clone()))
+                })
+                .collect::<BTreeMap<_, _>>();
+            let settle_before = self.last_cycle_telemetry.settle_passes_total;
+            let exact_formula_before = self.v2_workspace_formula_evaluation_ns;
+            let exact_formula_count_before = self.v2_workspace_formula_evaluation_count;
+            let exact_started = Instant::now();
+            self.v2_stage2_skip_first_pass = true;
+            let exact_result = self.evaluate_scc_unit(
+                &component_vertices,
+                None,
+                cancel
+                    .as_ref()
+                    .map(crate::engine::CancelToken::as_flag)
+                    .map(|flag| flag.as_ref()),
+            );
+            self.v2_stage2_skip_first_pass = saved_skip_first;
+            let exact_elapsed = exact_started.elapsed().as_nanos();
+            stamped = stamped.saturating_add(exact_result?);
+            exact_solver_ns = exact_solver_ns.saturating_add(exact_elapsed);
+            let exact_formula_evaluation_ns = self
+                .v2_workspace_formula_evaluation_ns
+                .saturating_sub(exact_formula_before);
+            let exact_passes = self
+                .last_cycle_telemetry
+                .settle_passes_total
+                .saturating_sub(settle_before);
+            let exact_evaluations = self
+                .v2_workspace_formula_evaluation_count
+                .saturating_sub(exact_formula_count_before);
+            exact_solver_passes = exact_solver_passes.saturating_add(exact_passes);
+            exact_scc_formula_evaluations =
+                exact_scc_formula_evaluations.saturating_add(exact_evaluations);
+            exact_scc_formula_evaluation_ns =
+                exact_scc_formula_evaluation_ns.saturating_add(exact_formula_evaluation_ns);
+            pass_formula_evaluations.push(component_vertices.len().saturating_mul(exact_passes));
+            let exact_read_started = Instant::now();
+            let exact_outputs = self.v2_take_workspace_outputs(&component_vertices);
+            exact_read_finalization_ns =
+                exact_read_finalization_ns.saturating_add(exact_read_started.elapsed().as_nanos());
+            for output in exact_outputs {
+                if before_values.get(&output.0).is_some_and(|before| {
+                    !crate::engine::v2::V2Host::v2_values_equal(self, before, &output.1)
+                }) {
+                    changed_exact_members.insert(output.0);
+                }
+                output_by_vertex.insert(output.0, output);
+            }
+        }
+
+        let mut local_reverse = vec![Vec::<usize>::new(); members.len()];
+        let local = members
+            .iter()
+            .enumerate()
+            .map(|(index, vertex)| (*vertex, index))
+            .collect::<BTreeMap<_, _>>();
+        for (reader, _, reads) in &discovery_outputs {
+            let Some(&reader_index) = local.get(reader) else {
+                continue;
+            };
+            for dependency in &reads.formula_edges {
+                if let Some(&dependency_index) = local.get(dependency) {
+                    local_reverse[dependency_index].push(reader_index);
+                }
+            }
+        }
+        let changed_indices = changed_exact_members
+            .iter()
+            .filter_map(|vertex| local.get(vertex).copied())
+            .collect::<BTreeSet<_>>();
+        let mut downstream_indices = BTreeSet::new();
+        let mut downstream_queue = changed_indices.into_iter().collect::<VecDeque<_>>();
+        while let Some(dependency) = downstream_queue.pop_front() {
+            for reader in &local_reverse[dependency] {
+                if exact_scc_members.contains(&members[*reader]) {
+                    continue;
+                }
+                if downstream_indices.insert(*reader) {
+                    downstream_queue.push_back(*reader);
+                }
+            }
+        }
+        let topo_positions = discovery_analysis.topo_positions();
+        let downstream_member_set = downstream_indices
+            .iter()
+            .map(|index| members[*index])
+            .collect::<BTreeSet<_>>();
+        let mut downstream_order = downstream_indices.into_iter().collect::<Vec<_>>();
+        downstream_order.sort_unstable_by_key(|index| topo_positions[*index]);
+        let mut downstream_formula_evaluations = 0usize;
+        let mut downstream_formula_evaluation_ns = 0u128;
+        let mut downstream_spill_effect_commit_ns = 0u128;
+        for index in downstream_order {
+            let vertex = members[index];
+            let evaluated = self.v2_evaluate_vertex_recorded(vertex)?;
+            downstream_formula_evaluation_ns =
+                downstream_formula_evaluation_ns.saturating_add(evaluated.formula_evaluation_ns);
+            let commit_started = Instant::now();
+            crate::engine::v2::V2Host::v2_commit_vertex(self, vertex, &evaluated.value)?;
+            downstream_spill_effect_commit_ns = downstream_spill_effect_commit_ns
+                .saturating_add(commit_started.elapsed().as_nanos());
+            exact_read_finalization_ns =
+                exact_read_finalization_ns.saturating_add(evaluated.exact_read_finalization_ns);
+            output_by_vertex.insert(vertex, (vertex, evaluated.value, evaluated.reads));
+            downstream_formula_evaluations = downstream_formula_evaluations.saturating_add(1);
+        }
+
+        let final_outputs = members
+            .iter()
+            .filter_map(|vertex| output_by_vertex.get(vertex).cloned())
+            .collect::<Vec<_>>();
+        let final_analysis = self.v2_workspace_live_analysis(members, &final_outputs);
+        let normalize_components = |components: &[Vec<VertexId>]| {
+            components
+                .iter()
+                .map(|component| {
+                    let mut normalized = component.clone();
+                    normalized.sort_unstable();
+                    normalized
+                })
+                .collect::<BTreeSet<_>>()
+        };
+        let expected_components = normalize_components(
+            &discovery_analysis
+                .cyclic_components
+                .iter()
+                .map(|component| {
+                    component
+                        .iter()
+                        .map(|index| members[*index as usize])
+                        .collect::<Vec<_>>()
+                })
+                .collect::<Vec<_>>(),
+        );
+        let actual_components = normalize_components(
+            &final_analysis
+                .cyclic_components
+                .iter()
+                .map(|component| {
+                    component
+                        .iter()
+                        .map(|index| members[*index as usize])
+                        .collect::<Vec<_>>()
+                })
+                .collect::<Vec<_>>(),
+        );
+        let read_topology_changed = discovery_by_vertex.iter().any(|(vertex, (_, _, reads))| {
+            output_by_vertex
+                .get(vertex)
+                .is_none_or(|(_, _, current_reads)| current_reads != reads)
+        });
+        if expected_components != actual_components || read_topology_changed {
+            self.v2_stage2_discovery_only = false;
+            self.v2_stage2_skip_first_pass = false;
+            let mut fallback = self.v2_evaluate_workspace_conservative(members)?;
+            fallback.stage2_used_exact_scc_kernel = false;
+            fallback.stage2_used_full_conservative_solver = true;
+            fallback.exact_scc_rebuild_count = 1;
+            fallback.exact_scc_expansion_count = usize::from(read_topology_changed);
+            fallback.workspace_reopen_count = 1;
+            fallback.kernel_fallback_reason = Some(if read_topology_changed {
+                "exact_scc_topology_or_reads_changed"
+            } else {
+                "exact_scc_topology_changed"
+            });
+            return Ok(fallback);
+        }
+
+        let exact_scc_member_count = exact_scc_members.len();
+        let non_feedback_workspace_member_count =
+            members.len().saturating_sub(exact_scc_member_count);
+        let upstream_formula_evaluations =
+            non_feedback_workspace_member_count.saturating_sub(downstream_formula_evaluations);
+        let upstream_formula_evaluation_ns = members
+            .iter()
+            .filter(|vertex| {
+                !exact_scc_members.contains(vertex) && !downstream_member_set.contains(vertex)
+            })
+            .filter_map(|vertex| discovery_formula_times.get(vertex))
+            .copied()
+            .sum::<u128>();
+        let repeated_non_feedback_evaluations_avoided = non_feedback_workspace_member_count
+            .saturating_mul(exact_solver_passes)
+            .saturating_sub(downstream_formula_evaluations);
+        let active_cyclic_members = final_analysis
+            .in_cycle
+            .iter()
+            .filter(|in_cycle| **in_cycle)
+            .count();
+        let actual_cyclic_components = final_analysis
+            .cyclic_components
+            .into_iter()
+            .map(|component| {
+                component
+                    .into_iter()
+                    .map(|index| members[index as usize])
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        let formula_evaluations = discovery_formula_evaluations
+            .saturating_add(exact_scc_formula_evaluations)
+            .saturating_add(downstream_formula_evaluations);
+        let workspace_construction_ns =
+            discovery_solver_ns.saturating_sub(discovery_formula_evaluation_ns);
+        let iterative_solver_execution_ns = exact_solver_ns;
+        Ok(crate::engine::v2::V2WorkspaceResult {
+            stable_id,
+            stamped,
+            evaluated_vertices: members.len(),
+            formula_evaluations,
+            solver_passes: 1usize.saturating_add(exact_solver_passes),
+            active_cyclic_members,
+            actual_cyclic_components,
+            pass_formula_evaluations,
+            workspace_construction_ns,
+            iterative_solver_execution_ns,
+            exact_read_finalization_ns,
+            elapsed_ns: workspace_started.elapsed().as_nanos(),
+            stage2_used_exact_scc_kernel: true,
+            stage2_used_full_conservative_solver: false,
+            discovery_formula_evaluations,
+            exact_scc_formula_evaluations,
+            upstream_formula_evaluations,
+            downstream_formula_evaluations,
+            discovery_formula_evaluation_ns,
+            exact_scc_formula_evaluation_ns,
+            upstream_formula_evaluation_ns,
+            downstream_formula_evaluation_ns,
+            downstream_spill_effect_commit_ns,
+            repeated_non_feedback_evaluations: 0,
+            repeated_non_feedback_evaluations_avoided,
+            exact_scc_rebuild_count: 0,
+            exact_scc_expansion_count: 0,
+            workspace_reopen_count: 0,
+            retained_plan_runtime_invalidations: 0,
+            retained_plan_reopens: 0,
+            retained_plan_validation_ns: 0,
+            retained_plan_runtime_invalidation_reason: None,
+            kernel_fallback_reason: None,
+            members: final_outputs,
+        })
+    }
+
+    fn v2_evaluate_workspace_conservative(
+        &mut self,
+        members: &[VertexId],
+    ) -> Result<crate::engine::v2::V2WorkspaceResult, ExcelError> {
+        let workspace_started = Instant::now();
+        let saved = self.diagnostic_exact_scc_reuse_enabled;
+        let settle_passes_before = self.last_cycle_telemetry.settle_passes_total;
+        let member_evaluations_before = self.last_recalc_telemetry.scc_member_evaluations;
+        self.diagnostic_exact_scc_reuse_enabled = false;
+        #[cfg(test)]
+        if std::mem::take(&mut self.v2_cancel_before_workspace)
+            && let Some(cancel) = &self.active_cancel_flag
+        {
+            cancel.cancel();
+        }
+        let cancel = self.active_cancel_flag.clone();
+        let solver_started = Instant::now();
+        let result = self.evaluate_scc_unit(
+            members,
+            None,
+            cancel
+                .as_ref()
+                .map(crate::engine::CancelToken::as_flag)
+                .map(|flag| flag.as_ref()),
+        );
+        let solver_ns = solver_started.elapsed().as_nanos();
+        self.diagnostic_exact_scc_reuse_enabled = saved;
+        let stamped = result?;
+        let solver_passes = self
+            .last_cycle_telemetry
+            .settle_passes_total
+            .saturating_sub(settle_passes_before);
+        let formula_evaluations = self
+            .last_recalc_telemetry
+            .scc_member_evaluations
+            .saturating_sub(member_evaluations_before);
+        let exact_read_started = Instant::now();
+        let mut outputs = Vec::with_capacity(members.len());
+        for &member in members {
+            let value = self.current_value_for_v2(member);
+            let recorder_extraction_started = Instant::now();
+            let raw = self.v2_read_recorder.take(member);
+            let recorder_extraction_ns = recorder_extraction_started.elapsed().as_nanos();
+            let (reads, mut finalization) = self.v2_exact_read_set(raw, member);
+            finalization.recorder_extraction_ns = recorder_extraction_ns;
+            self.v2_record_exact_read(member, &reads, finalization);
+            outputs.push((member, value, reads));
+        }
+        let exact_read_finalization_ns = exact_read_started.elapsed().as_nanos();
+        let workspace_construction_ns = workspace_started
+            .elapsed()
+            .as_nanos()
+            .saturating_sub(solver_ns)
+            .saturating_sub(exact_read_finalization_ns);
+        let local = members
+            .iter()
+            .enumerate()
+            .map(|(index, vertex)| (*vertex, index as u32))
+            .collect::<BTreeMap<_, _>>();
+        let mut live_edges = outputs
+            .iter()
+            .enumerate()
+            .flat_map(|(reader, (_, _, reads))| {
+                let reader = reader as u32;
+                let local = &local;
+                reads
+                    .formula_edges
+                    .iter()
+                    .filter_map(move |dependency| Some((reader, *local.get(dependency)?)))
+            })
+            .collect::<Vec<_>>();
+        live_edges.sort_unstable();
+        live_edges.dedup();
+        let analysis = crate::engine::live_graph::analyze_live_graph(members.len(), &live_edges);
+        let active_cyclic_members = analysis
+            .in_cycle
+            .iter()
+            .filter(|in_cycle| **in_cycle)
+            .count();
+        let actual_cyclic_components = analysis
+            .cyclic_components
+            .into_iter()
+            .map(|component| {
+                component
+                    .into_iter()
+                    .map(|index| members[index as usize])
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        let stable_id = self.v2_scc_stable_id_for_members(members);
+        let mut pass_formula_evaluations = self
+            .last_scc_pass_profile
+            .iter()
+            .filter(|profile| profile.stable_id == stable_id)
+            .map(|profile| profile.evaluated_members)
+            .collect::<Vec<_>>();
+        if pass_formula_evaluations.is_empty() {
+            pass_formula_evaluations = vec![members.len(); solver_passes];
+        }
+        Ok(crate::engine::v2::V2WorkspaceResult {
+            stable_id,
+            stamped,
+            evaluated_vertices: members.len(),
+            formula_evaluations,
+            solver_passes,
+            active_cyclic_members,
+            actual_cyclic_components,
+            pass_formula_evaluations,
+            workspace_construction_ns,
+            iterative_solver_execution_ns: solver_ns,
+            exact_read_finalization_ns,
+            elapsed_ns: workspace_started.elapsed().as_nanos(),
+            stage2_used_exact_scc_kernel: false,
+            stage2_used_full_conservative_solver: true,
+            discovery_formula_evaluations: formula_evaluations,
+            exact_scc_formula_evaluations: 0,
+            upstream_formula_evaluations: 0,
+            downstream_formula_evaluations: 0,
+            discovery_formula_evaluation_ns: 0,
+            exact_scc_formula_evaluation_ns: 0,
+            upstream_formula_evaluation_ns: 0,
+            downstream_formula_evaluation_ns: 0,
+            downstream_spill_effect_commit_ns: 0,
+            repeated_non_feedback_evaluations: formula_evaluations,
+            repeated_non_feedback_evaluations_avoided: 0,
+            exact_scc_rebuild_count: 0,
+            exact_scc_expansion_count: 0,
+            workspace_reopen_count: 0,
+            retained_plan_runtime_invalidations: 0,
+            retained_plan_reopens: 0,
+            retained_plan_validation_ns: 0,
+            retained_plan_runtime_invalidation_reason: None,
+            kernel_fallback_reason: Some("stage2_disabled_for_error_policy"),
+            members: outputs,
+        })
+    }
+
+    fn current_value_for_v2(&self, vertex: VertexId) -> LiteralValue {
+        self.graph
+            .get_cell_ref(vertex)
+            .and_then(|cell| {
+                self.get_cell_value(
+                    self.graph.sheet_name(cell.sheet_id),
+                    cell.coord.row() + 1,
+                    cell.coord.col() + 1,
+                )
+            })
+            .or_else(|| self.graph.get_value(vertex))
+            .unwrap_or(LiteralValue::Empty)
+    }
+
+    fn abort_v2_exact_state(&mut self) {
+        self.v2_state.reset_exact_state();
+        self.v2_read_recorder.discard_all();
+        let formulas = self.v2_formula_vertices_with_names();
+        for vertex in formulas {
+            self.graph.mark_vertex_dirty(vertex);
+        }
+    }
+
+    fn evaluate_v2_all(&mut self) -> Result<EvalResult, ExcelError> {
+        let mut state = std::mem::take(&mut self.v2_state);
+        self.v2_run_active = true;
+        let result = crate::engine::v2::run(self, &mut state, None);
+        self.v2_run_active = false;
+        self.v2_function_snapshot = None;
+        self.v2_state = state;
+        match result {
+            Ok(result) => Ok(EvalResult {
+                computed_vertices: result.computed_vertices,
+                cycle_errors: result.cycle_errors,
+                elapsed: result.elapsed,
+            }),
+            Err(error) => {
+                self.abort_v2_exact_state();
+                Err(error)
+            }
+        }
+    }
+
+    fn evaluate_v2_targets(&mut self, roots: &[VertexId]) -> Result<EvalResult, ExcelError> {
+        let mut state = std::mem::take(&mut self.v2_state);
+        self.v2_run_active = true;
+        let result = crate::engine::v2::run(self, &mut state, Some(roots));
+        self.v2_run_active = false;
+        self.v2_function_snapshot = None;
+        self.v2_state = state;
+        match result {
+            Ok(result) => Ok(EvalResult {
+                computed_vertices: result.computed_vertices,
+                cycle_errors: result.cycle_errors,
+                elapsed: result.elapsed,
+            }),
+            Err(error) => {
+                self.abort_v2_exact_state();
+                Err(error)
+            }
+        }
+    }
 }
 
 // Override EvaluationContext to provide thread pool access
@@ -26058,6 +30367,9 @@ where
         let ReferenceType::NamedRange(name) = reference else {
             return None;
         };
+        if self.v2_enabled && self.v2_read_recorder.is_active() {
+            self.v2_read_recorder.record_name(name.clone());
+        }
         let current_id = self.graph.sheet_id(current_sheet)?;
         let named = self.graph.resolve_name_entry(name, current_id)?;
         if let NamedDefinition::Formula { ast, .. } = &named.definition
@@ -26207,6 +30519,26 @@ where
         self.snapshot_id.load(std::sync::atomic::Ordering::Relaxed)
     }
 
+    fn reference_generation(
+        &self,
+        _reference: &ReferenceType,
+        current_sheet: &str,
+    ) -> Option<ReferenceGeneration> {
+        self.graph.sheet_id(current_sheet)?;
+        Some(ReferenceGeneration {
+            data_snapshot: self.data_snapshot_id(),
+            topology: self.graph.topology_revision(),
+            symbols: self.graph.symbol_revision(),
+            shape: self.graph.topology_revision(),
+            effect: self.recalc_epoch,
+            provider: self.resolver.planning_semantic_revision(),
+        })
+    }
+
+    fn record_reference_observation(&self, observation: &ReferenceObservation) {
+        self.v2_record_reference_observation(observation);
+    }
+
     fn backend_caps(&self) -> crate::traits::BackendCaps {
         crate::traits::BackendCaps {
             streaming: true,
@@ -26222,370 +30554,417 @@ where
         view: &RangeView<'_>,
         axis: LookupAxis,
     ) -> Option<Arc<LookupIndex>> {
+        if self.v2_enabled && self.v2_read_recorder.is_active() && !view.is_empty() {
+            let (rows, cols) = view.dims();
+            self.v2_read_recorder.record_range_consumed(
+                view.sheet_name(),
+                view.start_row() as u32,
+                view.start_col() as u32,
+                view.end_row() as u32,
+                view.end_col() as u32,
+                rows.saturating_mul(cols),
+                0,
+            );
+        }
         self.build_lookup_index_impl(view, axis)
     }
 
     // Flats removed
 
     fn date_system(&self) -> crate::engine::DateSystem {
+        if self.v2_enabled && self.v2_read_recorder.is_active() {
+            self.v2_read_recorder
+                .record_effect(crate::engine::v2::EffectKind::DateSystem);
+        }
         self.config.date_system
     }
-    /// New: resolve a reference into a RangeView (Phase 2 API)
+
     fn resolve_range_view<'c>(
         &'c self,
         reference: &ReferenceType,
         current_sheet: &str,
     ) -> Result<RangeView<'c>, ExcelError> {
-        match reference {
-            ReferenceType::External(ext) => {
-                let name = ext.raw.as_str();
-                match ext.kind {
-                    formualizer_parse::parser::ExternalRefKind::Cell { .. } => {
-                        let Some(source) = self.graph.resolve_source_scalar_entry(name) else {
-                            return Err(ExcelError::new(ExcelErrorKind::Name)
-                                .with_message(format!("Undefined name: {name}")));
-                        };
-                        let version = source
-                            .version
-                            .or_else(|| self.resolver.source_scalar_version(name));
-                        let v = self.resolve_source_scalar_cached(name, version)?;
+        self.record_v2_reference(reference, current_sheet);
+        let result = (|| {
+            match reference {
+                ReferenceType::External(ext) => {
+                    let name = ext.raw.as_str();
+                    match ext.kind {
+                        formualizer_parse::parser::ExternalRefKind::Cell { .. } => {
+                            let Some(source) = self.graph.resolve_source_scalar_entry(name) else {
+                                return Err(ExcelError::new(ExcelErrorKind::Name)
+                                    .with_message(format!("Undefined name: {name}")));
+                            };
+                            let version = source
+                                .version
+                                .or_else(|| self.resolver.source_scalar_version(name));
+                            let v = self.resolve_source_scalar_cached(name, version)?;
+                            Ok(RangeView::from_owned_rows(
+                                vec![vec![v]],
+                                self.config.date_system,
+                            ))
+                        }
+                        formualizer_parse::parser::ExternalRefKind::Range { .. } => {
+                            let Some(source) = self.graph.resolve_source_table_entry(name) else {
+                                return Err(ExcelError::new(ExcelErrorKind::Name)
+                                    .with_message(format!("Undefined table: {name}")));
+                            };
+                            let version = source
+                                .version
+                                .or_else(|| self.resolver.source_table_version(name));
+                            let table = self.resolve_source_table_cached(name, version)?;
+                            let spec = Some(formualizer_parse::parser::TableSpecifier::Data);
+                            self.source_table_to_range_view(table.as_ref(), &spec)
+                        }
+                    }
+                }
+                ReferenceType::Range { .. } => {
+                    let shared = self.resolve_shared_ref(reference, current_sheet)?;
+                    let formualizer_common::SheetRef::Range(range) = shared else {
+                        return Err(ExcelError::new(ExcelErrorKind::Ref));
+                    };
+                    // No context sheet is available here, so an unresolved locator
+                    // is #REF! rather than a guess (issue #110).
+                    let sheet_id = match range.sheet {
+                        formualizer_common::SheetLocator::Id(id) => id,
+                        formualizer_common::SheetLocator::Current
+                        | formualizer_common::SheetLocator::Name(_) => {
+                            return Err(ExcelError::new(ExcelErrorKind::Ref));
+                        }
+                    };
+                    let sheet_name = self.graph.sheet_name(sheet_id);
+
+                    let bounded_range = if range.start_row.is_some()
+                        && range.start_col.is_some()
+                        && range.end_row.is_some()
+                        && range.end_col.is_some()
+                    {
+                        Some(RangeRef::try_from_shared(range.as_ref())?)
+                    } else {
+                        None
+                    };
+
+                    let sr = bounded_range
+                        .as_ref()
+                        .map(|r| r.start.coord.row() + 1)
+                        .or_else(|| range.start_row.map(|b| b.index + 1));
+                    let sc = bounded_range
+                        .as_ref()
+                        .map(|r| r.start.coord.col() + 1)
+                        .or_else(|| range.start_col.map(|b| b.index + 1));
+                    let er = bounded_range
+                        .as_ref()
+                        .map(|r| r.end.coord.row() + 1)
+                        .or_else(|| range.end_row.map(|b| b.index + 1));
+                    let ec = bounded_range
+                        .as_ref()
+                        .map(|r| r.end.coord.col() + 1)
+                        .or_else(|| range.end_col.map(|b| b.index + 1));
+
+                    let extent = resolve_used_extent_with_fallback(
+                        OpenRangeBounds {
+                            start_row: sr,
+                            start_column: sc,
+                            end_row: er,
+                            end_column: ec,
+                        },
+                        ExtentPolicy::EvaluationCompat {
+                            fallback_row: None,
+                            fallback_column: None,
+                        },
+                        || {
+                            self.sheet_bounds(sheet_name)
+                                .map(|_| self.config.max_open_ended_rows)
+                        },
+                        || {
+                            self.sheet_bounds(sheet_name)
+                                .map(|_| self.config.max_open_ended_cols)
+                        },
+                        |first, last| self.used_rows_for_columns(sheet_name, first, last),
+                        |first, last| self.used_cols_for_rows(sheet_name, first, last),
+                    );
+                    let (sr, sc, er, ec) = extent
+                        .map(|extent| {
+                            (
+                                extent.start_row,
+                                extent.start_column,
+                                extent.end_row,
+                                extent.end_column,
+                            )
+                        })
+                        .unwrap_or((1, 1, 0, 0));
+
+                    if self.force_materialize_range_views {
+                        if er < sr || ec < sc {
+                            return Ok(RangeView::from_owned_rows(
+                                Vec::new(),
+                                self.config.date_system,
+                            ));
+                        }
+                        let h = (er - sr + 1) as u64;
+                        let w = (ec - sc + 1) as u64;
+                        let cell_count = h.saturating_mul(w);
+                        if cell_count <= self.config.spill.max_spill_cells as u64 {
+                            let mut rows: Vec<Vec<LiteralValue>> = Vec::with_capacity(h as usize);
+                            for r in sr..=er {
+                                let mut rowv: Vec<LiteralValue> = Vec::with_capacity(w as usize);
+                                for c in sc..=ec {
+                                    rowv.push(
+                                        self.get_cell_value(sheet_name, r, c)
+                                            .unwrap_or(LiteralValue::Empty),
+                                    );
+                                }
+                                rows.push(rowv);
+                            }
+                            return Ok(RangeView::from_owned_rows(rows, self.config.date_system));
+                        }
+                    }
+
+                    let Some(asheet) = self.sheet_store().sheet(sheet_name) else {
+                        return Ok(RangeView::from_owned_rows(
+                            Vec::new(),
+                            self.config.date_system,
+                        ));
+                    };
+
+                    let rv = if er < sr || ec < sc {
+                        asheet.range_view(1, 1, 0, 0)
+                    } else {
+                        let sr0 = sr.saturating_sub(1) as usize;
+                        let sc0 = sc.saturating_sub(1) as usize;
+                        let er0 = er.saturating_sub(1) as usize;
+                        let ec0 = ec.saturating_sub(1) as usize;
+                        asheet.range_view(sr0, sc0, er0, ec0)
+                    };
+
+                    Ok(rv)
+                }
+                ReferenceType::Cell { .. } => {
+                    let shared = self.resolve_shared_ref(reference, current_sheet)?;
+                    let formualizer_common::SheetRef::Cell(cell) = shared else {
+                        return Err(ExcelError::new(ExcelErrorKind::Ref));
+                    };
+                    let addr = CellRef::try_from_shared(cell)?;
+                    let sheet_id = addr.sheet_id;
+                    let sheet_name = self.graph.sheet_name(sheet_id);
+                    let row = addr.coord.row() + 1;
+                    let col = addr.coord.col() + 1;
+
+                    if self.force_materialize_range_views {
+                        let v = self
+                            .get_cell_value(sheet_name, row, col)
+                            .unwrap_or(LiteralValue::Empty);
+                        return Ok(RangeView::from_owned_rows(
+                            vec![vec![v]],
+                            self.config.date_system,
+                        ));
+                    }
+
+                    if let Some(asheet) = self.sheet_store().sheet(sheet_name) {
+                        let r0 = row.saturating_sub(1) as usize;
+                        let c0 = col.saturating_sub(1) as usize;
+                        let rv = asheet.range_view(r0, c0, r0, c0);
+                        Ok(rv)
+                    } else {
+                        let v = self
+                            .get_cell_value(sheet_name, row, col)
+                            .unwrap_or(LiteralValue::Empty);
                         Ok(RangeView::from_owned_rows(
                             vec![vec![v]],
                             self.config.date_system,
                         ))
                     }
-                    formualizer_parse::parser::ExternalRefKind::Range { .. } => {
-                        let Some(source) = self.graph.resolve_source_table_entry(name) else {
-                            return Err(ExcelError::new(ExcelErrorKind::Name)
-                                .with_message(format!("Undefined table: {name}")));
-                        };
-                        let version = source
-                            .version
-                            .or_else(|| self.resolver.source_table_version(name));
-                        let table = self.resolve_source_table_cached(name, version)?;
-                        let spec = Some(formualizer_parse::parser::TableSpecifier::Data);
-                        self.source_table_to_range_view(table.as_ref(), &spec)
-                    }
                 }
-            }
-            ReferenceType::Range { .. } => {
-                let shared = self.resolve_shared_ref(reference, current_sheet)?;
-                let formualizer_common::SheetRef::Range(range) = shared else {
-                    return Err(ExcelError::new(ExcelErrorKind::Ref));
-                };
-                // No context sheet is available here, so an unresolved locator
-                // is #REF! rather than a guess (issue #110).
-                let sheet_id = match range.sheet {
-                    formualizer_common::SheetLocator::Id(id) => id,
-                    formualizer_common::SheetLocator::Current
-                    | formualizer_common::SheetLocator::Name(_) => {
-                        return Err(ExcelError::new(ExcelErrorKind::Ref));
-                    }
-                };
-                let sheet_name = self.graph.sheet_name(sheet_id);
-
-                let bounded_range = if range.start_row.is_some()
-                    && range.start_col.is_some()
-                    && range.end_row.is_some()
-                    && range.end_col.is_some()
-                {
-                    Some(RangeRef::try_from_shared(range.as_ref())?)
-                } else {
-                    None
-                };
-
-                let sr = bounded_range
-                    .as_ref()
-                    .map(|r| r.start.coord.row() + 1)
-                    .or_else(|| range.start_row.map(|b| b.index + 1));
-                let sc = bounded_range
-                    .as_ref()
-                    .map(|r| r.start.coord.col() + 1)
-                    .or_else(|| range.start_col.map(|b| b.index + 1));
-                let er = bounded_range
-                    .as_ref()
-                    .map(|r| r.end.coord.row() + 1)
-                    .or_else(|| range.end_row.map(|b| b.index + 1));
-                let ec = bounded_range
-                    .as_ref()
-                    .map(|r| r.end.coord.col() + 1)
-                    .or_else(|| range.end_col.map(|b| b.index + 1));
-
-                let extent = resolve_used_extent_with_fallback(
-                    OpenRangeBounds {
-                        start_row: sr,
-                        start_column: sc,
-                        end_row: er,
-                        end_column: ec,
-                    },
-                    ExtentPolicy::EvaluationCompat {
-                        fallback_row: None,
-                        fallback_column: None,
-                    },
-                    || {
-                        self.sheet_bounds(sheet_name)
-                            .map(|_| self.config.max_open_ended_rows)
-                    },
-                    || {
-                        self.sheet_bounds(sheet_name)
-                            .map(|_| self.config.max_open_ended_cols)
-                    },
-                    |first, last| self.used_rows_for_columns(sheet_name, first, last),
-                    |first, last| self.used_cols_for_rows(sheet_name, first, last),
-                );
-                let (sr, sc, er, ec) = extent
-                    .map(|extent| {
-                        (
-                            extent.start_row,
-                            extent.start_column,
-                            extent.end_row,
-                            extent.end_column,
-                        )
-                    })
-                    .unwrap_or((1, 1, 0, 0));
-
-                if self.force_materialize_range_views {
-                    if er < sr || ec < sc {
-                        return Ok(RangeView::from_owned_rows(
-                            Vec::new(),
-                            self.config.date_system,
-                        ));
-                    }
-                    let h = (er - sr + 1) as u64;
-                    let w = (ec - sc + 1) as u64;
-                    let cell_count = h.saturating_mul(w);
-                    if cell_count <= self.config.spill.max_spill_cells as u64 {
-                        let mut rows: Vec<Vec<LiteralValue>> = Vec::with_capacity(h as usize);
-                        for r in sr..=er {
-                            let mut rowv: Vec<LiteralValue> = Vec::with_capacity(w as usize);
-                            for c in sc..=ec {
-                                rowv.push(
-                                    self.get_cell_value(sheet_name, r, c)
-                                        .unwrap_or(LiteralValue::Empty),
-                                );
+                ReferenceType::NamedRange(name) => {
+                    if let Some(current_id) = self.graph.sheet_id(current_sheet)
+                        && let Some(named) = self.graph.resolve_name_entry(name, current_id)
+                    {
+                        match &named.definition {
+                            NamedDefinition::Cell(cell_ref) => {
+                                let sheet_name = self.graph.sheet_name(cell_ref.sheet_id);
+                                if self.force_materialize_range_views {
+                                    let v = self
+                                        .get_cell_value(
+                                            sheet_name,
+                                            cell_ref.coord.row() + 1,
+                                            cell_ref.coord.col() + 1,
+                                        )
+                                        .unwrap_or(LiteralValue::Empty);
+                                    return Ok(RangeView::from_owned_rows(
+                                        vec![vec![v]],
+                                        self.config.date_system,
+                                    ));
+                                } else {
+                                    let asheet = self
+                                        .sheet_store()
+                                        .sheet(sheet_name)
+                                        .expect("Arrow sheet missing for named cell");
+                                    let r0 = cell_ref.coord.row() as usize;
+                                    let c0 = cell_ref.coord.col() as usize;
+                                    let rv = asheet.range_view(r0, c0, r0, c0);
+                                    return Ok(rv);
+                                }
                             }
-                            rows.push(rowv);
-                        }
-                        return Ok(RangeView::from_owned_rows(rows, self.config.date_system));
-                    }
-                }
-
-                let Some(asheet) = self.sheet_store().sheet(sheet_name) else {
-                    return Ok(RangeView::from_owned_rows(
-                        Vec::new(),
-                        self.config.date_system,
-                    ));
-                };
-
-                let rv = if er < sr || ec < sc {
-                    asheet.range_view(1, 1, 0, 0)
-                } else {
-                    let sr0 = sr.saturating_sub(1) as usize;
-                    let sc0 = sc.saturating_sub(1) as usize;
-                    let er0 = er.saturating_sub(1) as usize;
-                    let ec0 = ec.saturating_sub(1) as usize;
-                    asheet.range_view(sr0, sc0, er0, ec0)
-                };
-
-                Ok(rv)
-            }
-            ReferenceType::Cell { .. } => {
-                let shared = self.resolve_shared_ref(reference, current_sheet)?;
-                let formualizer_common::SheetRef::Cell(cell) = shared else {
-                    return Err(ExcelError::new(ExcelErrorKind::Ref));
-                };
-                let addr = CellRef::try_from_shared(cell)?;
-                let sheet_id = addr.sheet_id;
-                let sheet_name = self.graph.sheet_name(sheet_id);
-                let row = addr.coord.row() + 1;
-                let col = addr.coord.col() + 1;
-
-                if self.force_materialize_range_views {
-                    let v = self
-                        .get_cell_value(sheet_name, row, col)
-                        .unwrap_or(LiteralValue::Empty);
-                    return Ok(RangeView::from_owned_rows(
-                        vec![vec![v]],
-                        self.config.date_system,
-                    ));
-                }
-
-                if let Some(asheet) = self.sheet_store().sheet(sheet_name) {
-                    let r0 = row.saturating_sub(1) as usize;
-                    let c0 = col.saturating_sub(1) as usize;
-                    let rv = asheet.range_view(r0, c0, r0, c0);
-                    Ok(rv)
-                } else {
-                    let v = self
-                        .get_cell_value(sheet_name, row, col)
-                        .unwrap_or(LiteralValue::Empty);
-                    Ok(RangeView::from_owned_rows(
-                        vec![vec![v]],
-                        self.config.date_system,
-                    ))
-                }
-            }
-            ReferenceType::NamedRange(name) => {
-                if let Some(current_id) = self.graph.sheet_id(current_sheet)
-                    && let Some(named) = self.graph.resolve_name_entry(name, current_id)
-                {
-                    match &named.definition {
-                        NamedDefinition::Cell(cell_ref) => {
-                            let sheet_name = self.graph.sheet_name(cell_ref.sheet_id);
-                            if self.force_materialize_range_views {
-                                let v = self
-                                    .get_cell_value(
-                                        sheet_name,
-                                        cell_ref.coord.row() + 1,
-                                        cell_ref.coord.col() + 1,
-                                    )
-                                    .unwrap_or(LiteralValue::Empty);
-                                return Ok(RangeView::from_owned_rows(
-                                    vec![vec![v]],
-                                    self.config.date_system,
-                                ));
-                            } else {
+                            NamedDefinition::Range(range_ref) => {
+                                let sheet_name = self.graph.sheet_name(range_ref.start.sheet_id);
+                                let sr = range_ref.start.coord.row() + 1;
+                                let sc = range_ref.start.coord.col() + 1;
+                                let er = range_ref.end.coord.row() + 1;
+                                let ec = range_ref.end.coord.col() + 1;
+                                if self.force_materialize_range_views {
+                                    let h = (er.saturating_sub(sr) + 1) as u64;
+                                    let w = (ec.saturating_sub(sc) + 1) as u64;
+                                    let cell_count = h.saturating_mul(w);
+                                    if cell_count <= self.config.spill.max_spill_cells as u64 {
+                                        let mut rows: Vec<Vec<LiteralValue>> =
+                                            Vec::with_capacity(h as usize);
+                                        for r in sr..=er {
+                                            let mut rowv: Vec<LiteralValue> =
+                                                Vec::with_capacity(w as usize);
+                                            for c in sc..=ec {
+                                                rowv.push(
+                                                    self.get_cell_value(sheet_name, r, c)
+                                                        .unwrap_or(LiteralValue::Empty),
+                                                );
+                                            }
+                                            rows.push(rowv);
+                                        }
+                                        return Ok(RangeView::from_owned_rows(
+                                            rows,
+                                            self.config.date_system,
+                                        ));
+                                    }
+                                }
                                 let asheet = self
                                     .sheet_store()
                                     .sheet(sheet_name)
-                                    .expect("Arrow sheet missing for named cell");
-                                let r0 = cell_ref.coord.row() as usize;
-                                let c0 = cell_ref.coord.col() as usize;
-                                let rv = asheet.range_view(r0, c0, r0, c0);
+                                    .expect("Arrow sheet missing for named range");
+                                let sr0 = range_ref.start.coord.row() as usize;
+                                let sc0 = range_ref.start.coord.col() as usize;
+                                let er0 = range_ref.end.coord.row() as usize;
+                                let ec0 = range_ref.end.coord.col() as usize;
+                                let rv = asheet.range_view(sr0, sc0, er0, ec0);
                                 return Ok(rv);
                             }
-                        }
-                        NamedDefinition::Range(range_ref) => {
-                            let sheet_name = self.graph.sheet_name(range_ref.start.sheet_id);
-                            let sr = range_ref.start.coord.row() + 1;
-                            let sc = range_ref.start.coord.col() + 1;
-                            let er = range_ref.end.coord.row() + 1;
-                            let ec = range_ref.end.coord.col() + 1;
-                            if self.force_materialize_range_views {
-                                let h = (er.saturating_sub(sr) + 1) as u64;
-                                let w = (ec.saturating_sub(sc) + 1) as u64;
-                                let cell_count = h.saturating_mul(w);
-                                if cell_count <= self.config.spill.max_spill_cells as u64 {
-                                    let mut rows: Vec<Vec<LiteralValue>> =
-                                        Vec::with_capacity(h as usize);
-                                    for r in sr..=er {
-                                        let mut rowv: Vec<LiteralValue> =
-                                            Vec::with_capacity(w as usize);
-                                        for c in sc..=ec {
-                                            rowv.push(
-                                                self.get_cell_value(sheet_name, r, c)
-                                                    .unwrap_or(LiteralValue::Empty),
-                                            );
-                                        }
-                                        rows.push(rowv);
-                                    }
+                            NamedDefinition::Literal(v) => {
+                                return Ok(RangeView::from_owned_rows(
+                                    vec![vec![v.clone()]],
+                                    self.config.date_system,
+                                ));
+                            }
+                            NamedDefinition::Formula { .. } => {
+                                if let Some(value) = self.graph.get_value(named.vertex) {
+                                    let rows = match value {
+                                        LiteralValue::Array(rows) => rows,
+                                        other => vec![vec![other]],
+                                    };
                                     return Ok(RangeView::from_owned_rows(
                                         rows,
                                         self.config.date_system,
                                     ));
                                 }
                             }
-                            let asheet = self
-                                .sheet_store()
-                                .sheet(sheet_name)
-                                .expect("Arrow sheet missing for named range");
-                            let sr0 = range_ref.start.coord.row() as usize;
-                            let sc0 = range_ref.start.coord.col() as usize;
-                            let er0 = range_ref.end.coord.row() as usize;
-                            let ec0 = range_ref.end.coord.col() as usize;
-                            let rv = asheet.range_view(sr0, sc0, er0, ec0);
-                            return Ok(rv);
-                        }
-                        NamedDefinition::Literal(v) => {
-                            return Ok(RangeView::from_owned_rows(
-                                vec![vec![v.clone()]],
-                                self.config.date_system,
-                            ));
-                        }
-                        NamedDefinition::Formula { .. } => {
-                            if let Some(value) = self.graph.get_value(named.vertex) {
-                                let rows = match value {
-                                    LiteralValue::Array(rows) => rows,
-                                    other => vec![vec![other]],
-                                };
-                                return Ok(RangeView::from_owned_rows(
-                                    rows,
-                                    self.config.date_system,
-                                ));
-                            }
                         }
                     }
+
+                    if let Some(source) = self.graph.resolve_source_scalar_entry(name) {
+                        let version = source
+                            .version
+                            .or_else(|| self.resolver.source_scalar_version(name));
+                        let v = self.resolve_source_scalar_cached(name, version)?;
+                        return Ok(RangeView::from_owned_rows(
+                            vec![vec![v]],
+                            self.config.date_system,
+                        ));
+                    }
+
+                    let data = self.resolver.resolve_named_range_reference(name)?;
+                    Ok(RangeView::from_owned_rows(data, self.config.date_system))
                 }
+                ReferenceType::Table(tref) => {
+                    if let Some(table) = self.graph.resolve_table_entry(&tref.name) {
+                        let sheet_name = self.graph.sheet_name(table.range.start.sheet_id);
+                        let asheet = self
+                            .sheet_store()
+                            .sheet(sheet_name)
+                            .expect("Arrow sheet missing for table reference");
 
-                if let Some(source) = self.graph.resolve_source_scalar_entry(name) {
-                    let version = source
-                        .version
-                        .or_else(|| self.resolver.source_scalar_version(name));
-                    let v = self.resolve_source_scalar_cached(name, version)?;
-                    return Ok(RangeView::from_owned_rows(
-                        vec![vec![v]],
-                        self.config.date_system,
-                    ));
-                }
-
-                let data = self.resolver.resolve_named_range_reference(name)?;
-                Ok(RangeView::from_owned_rows(data, self.config.date_system))
-            }
-            ReferenceType::Table(tref) => {
-                if let Some(table) = self.graph.resolve_table_entry(&tref.name) {
-                    let sheet_name = self.graph.sheet_name(table.range.start.sheet_id);
-                    let asheet = self
-                        .sheet_store()
-                        .sheet(sheet_name)
-                        .expect("Arrow sheet missing for table reference");
-
-                    let select = |sr: usize, sc: usize, er: usize, ec: usize| {
-                        if sr > er || sc > ec {
-                            asheet.range_view(1, 1, 0, 0)
-                        } else {
-                            asheet.range_view(sr, sc, er, ec)
-                        }
-                    };
-
-                    let ((row_start, row_end), (col_start, col_end)) =
-                        if let Some(specifier) = &tref.specifier {
-                            table_selector_bounds(table, specifier)?
-                        } else {
-                            let row_start = table.range.start.coord.row() as usize
-                                + usize::from(table.header_row);
-                            let row_end = table.range.end.coord.row() as usize
-                                - usize::from(table.totals_row);
-                            (
-                                (row_start, row_end),
-                                (
-                                    table.range.start.coord.col() as usize,
-                                    table.range.end.coord.col() as usize,
-                                ),
-                            )
+                        let select = |sr: usize, sc: usize, er: usize, ec: usize| {
+                            if sr > er || sc > ec {
+                                asheet.range_view(1, 1, 0, 0)
+                            } else {
+                                asheet.range_view(sr, sc, er, ec)
+                            }
                         };
-                    let av = select(row_start, col_start, row_end, col_end);
 
-                    return Ok(av);
+                        let ((row_start, row_end), (col_start, col_end)) =
+                            if let Some(specifier) = &tref.specifier {
+                                table_selector_bounds(table, specifier)?
+                            } else {
+                                let row_start = table.range.start.coord.row() as usize
+                                    + usize::from(table.header_row);
+                                let row_end = table.range.end.coord.row() as usize
+                                    - usize::from(table.totals_row);
+                                (
+                                    (row_start, row_end),
+                                    (
+                                        table.range.start.coord.col() as usize,
+                                        table.range.end.coord.col() as usize,
+                                    ),
+                                )
+                            };
+                        let av = select(row_start, col_start, row_end, col_end);
+
+                        return Ok(av);
+                    }
+
+                    if let Some(source) = self.graph.resolve_source_table_entry(&tref.name) {
+                        let version = source
+                            .version
+                            .or_else(|| self.resolver.source_table_version(&tref.name));
+                        let table = self.resolve_source_table_cached(&tref.name, version)?;
+                        return self.source_table_to_range_view(table.as_ref(), &tref.specifier);
+                    }
+
+                    // Fallback: materialize via Resolver::resolve_range_like tranche 1
+                    let boxed = self.resolve_range_like(&ReferenceType::Table(tref.clone()))?;
+                    let owned = boxed.materialise().into_owned();
+                    Ok(RangeView::from_owned_rows(owned, self.config.date_system))
                 }
-
-                if let Some(source) = self.graph.resolve_source_table_entry(&tref.name) {
-                    let version = source
-                        .version
-                        .or_else(|| self.resolver.source_table_version(&tref.name));
-                    let table = self.resolve_source_table_cached(&tref.name, version)?;
-                    return self.source_table_to_range_view(table.as_ref(), &tref.specifier);
+                ReferenceType::Cell3D { .. } | ReferenceType::Range3D { .. } => {
+                    Err(ExcelError::new(ExcelErrorKind::NImpl)
+                        .with_message("3D references are not yet supported".to_string()))
                 }
+            }
+        })()?;
+        Ok(self.attach_v2_range_observer(result))
+    }
 
-                // Fallback: materialize via Resolver::resolve_range_like tranche 1
-                let boxed = self.resolve_range_like(&ReferenceType::Table(tref.clone()))?;
-                let owned = boxed.materialise().into_owned();
-                Ok(RangeView::from_owned_rows(owned, self.config.date_system))
-            }
-            ReferenceType::Cell3D { .. } | ReferenceType::Range3D { .. } => {
-                Err(ExcelError::new(ExcelErrorKind::NImpl)
-                    .with_message("3D references are not yet supported".to_string()))
-            }
+    fn record_selected_reference(&self, reference: &ReferenceType, current_sheet: &str) {
+        if !self.v2_enabled || !self.v2_read_recorder.is_active() {
+            return;
         }
+        let Some((sheet_id, start_row, start_col, _end_row, _end_col, shape)) =
+            self.v2_resolved_reference_shape(reference, current_sheet)
+        else {
+            return;
+        };
+        if matches!(shape, ReferenceShape::Cell) {
+            self.v2_read_recorder.record_selected_cell(
+                self.graph.sheet_name(sheet_id),
+                start_row,
+                start_col,
+            );
+        }
+        self.v2_record_reference_observation(&ReferenceObservation {
+            source: reference.clone(),
+            resolved: reference.clone(),
+            current_sheet: current_sheet.to_string(),
+            shape,
+            generation: self
+                .reference_generation(reference, current_sheet)
+                .unwrap_or_default(),
+        });
     }
 
     fn resolve_cell_format(
@@ -26626,8 +31005,16 @@ where
         current_sheet: &str,
     ) -> Result<LiteralValue, ExcelError> {
         let sheet_name = sheet.unwrap_or(current_sheet);
-        if self.graph.sheet_id(sheet_name).is_none() {
+        let Some(sheet_id) = self.graph.sheet_id(sheet_name) else {
             return Err(ExcelError::new(ExcelErrorKind::Ref));
+        };
+        if self.v2_enabled && self.v2_read_recorder.is_active() {
+            let Some(cell) =
+                PackedSheetCell::try_new(sheet_id, row.saturating_sub(1), col.saturating_sub(1))
+            else {
+                return Err(ExcelError::new(ExcelErrorKind::Ref));
+            };
+            self.v2_read_recorder.record_cell(cell);
         }
         Ok(self
             .get_cell_value(sheet_name, row, col)
@@ -26640,6 +31027,18 @@ where
         col_in_view: usize,
         pred: &crate::args::CriteriaPredicate,
     ) -> Option<std::sync::Arc<arrow_array::BooleanArray>> {
+        if self.v2_enabled && self.v2_read_recorder.is_active() && !view.is_empty() {
+            let (rows, cols) = view.dims();
+            self.v2_read_recorder.record_range_consumed(
+                view.sheet_name(),
+                view.start_row() as u32,
+                view.start_col() as u32,
+                view.end_row() as u32,
+                view.end_col() as u32,
+                rows.saturating_mul(cols),
+                0,
+            );
+        }
         if view.dims().1 == 0 {
             return None;
         }
@@ -26658,6 +31057,470 @@ where
         mode: VisibilityMaskMode,
     ) -> Option<std::sync::Arc<arrow_array::BooleanArray>> {
         self.build_row_visibility_mask_for_view(view, mode)
+    }
+}
+
+impl<R> Engine<R>
+where
+    R: EvaluationContext,
+{
+    fn v2_formula_vertices_with_names(&self) -> Vec<VertexId> {
+        let mut vertices = self.graph.vertices_with_formulas().collect::<Vec<_>>();
+        vertices.extend(
+            self.graph
+                .named_ranges_iter()
+                .map(|(_, entry)| entry)
+                .chain(self.graph.sheet_named_ranges_iter().map(|(_, entry)| entry))
+                .filter_map(|entry| {
+                    matches!(&entry.definition, NamedDefinition::Formula { .. })
+                        .then_some(entry.vertex)
+                }),
+        );
+        vertices.sort_unstable();
+        vertices.dedup();
+        vertices
+    }
+
+    fn v2_is_formula_vertex(&self, vertex: VertexId) -> bool {
+        self.graph.vertex_exists(vertex)
+            && (self.graph.vertex_has_formula(vertex)
+                || self
+                    .graph
+                    .named_range_by_vertex(vertex)
+                    .is_some_and(|entry| {
+                        matches!(&entry.definition, NamedDefinition::Formula { .. })
+                    }))
+    }
+
+    fn v2_named_formula_context(
+        &self,
+        entry: &crate::engine::named_range::NamedRange,
+    ) -> Option<(formualizer_parse::parser::ASTNode, String)> {
+        let NamedDefinition::Formula { ast, .. } = &entry.definition else {
+            return None;
+        };
+        let sheet_id = match entry.scope {
+            NameScope::Sheet(id) => id,
+            NameScope::Workbook => self.graph.default_sheet_id(),
+        };
+        Some((ast.clone(), self.graph.sheet_name(sheet_id).to_string()))
+    }
+}
+
+impl<R> crate::engine::v2::V2Host for Engine<R>
+where
+    R: EvaluationContext,
+{
+    fn v2_begin_request(&mut self) {
+        self.begin_evaluation_request();
+        self.v2_workspace_formula_evaluation_ns = 0;
+        self.v2_workspace_formula_evaluation_count = 0;
+        self.v2_workspace_formula_evaluation_ns_by_vertex.clear();
+        *self
+            .v2_formula_owner_index
+            .lock()
+            .expect("V2 formula owner index poisoned") = None;
+        self.v2_read_recorder.begin_attribution_request();
+        self.v2_attribution_category = crate::engine::v2::V2FormulaAttributionCategory::default();
+        self.v2_attribution = crate::engine::v2::V2ExclusiveAttribution::default();
+    }
+
+    fn v2_set_formula_attribution_category(
+        &mut self,
+        category: crate::engine::v2::V2FormulaAttributionCategory,
+    ) {
+        self.v2_attribution_category = category;
+    }
+
+    fn v2_take_formula_attribution(&mut self) -> crate::engine::v2::V2ExclusiveAttribution {
+        std::mem::take(&mut self.v2_attribution)
+    }
+
+    fn v2_finish_request(&mut self, kind: crate::engine::v2::V2RequestKind) {
+        self.redirty_for_next_recalc();
+        if kind == crate::engine::v2::V2RequestKind::Full {
+            self.recalc_epoch = self.recalc_epoch.wrapping_add(1);
+        }
+    }
+
+    fn v2_abort_request(&mut self) {
+        self.next_dirty_root_seeds
+            .append(&mut self.request_dirty_root_seeds);
+        for (vertex, flags) in self.request_dirty_provenance.drain() {
+            *self.next_dirty_provenance.entry(vertex).or_default() |= flags;
+        }
+        self.pending_user_dirty_roots
+            .extend(self.request_user_dirty_roots.drain());
+        self.request_naturally_dirty = None;
+        self.request_dirty_count = 0;
+    }
+
+    fn v2_dirty_vertices(&self) -> Vec<VertexId> {
+        self.graph.get_evaluation_vertices()
+    }
+
+    fn v2_user_dirty_roots(&self) -> Vec<VertexId> {
+        self.pending_user_dirty_roots.iter().copied().collect()
+    }
+
+    fn v2_force_requested_roots(&self) -> bool {
+        self.v2_force_requested_roots
+    }
+
+    fn v2_exact_read_intersects_mutations(&self, reads: &crate::engine::v2::ExactReadSet) -> bool {
+        self.pending_user_dirty_roots.iter().any(|vertex| {
+            let Some(cell) = self.graph.get_cell_ref(*vertex) else {
+                return false;
+            };
+            if reads.contains_cell(&cell) || reads.selected_targets.contains(&cell) {
+                return true;
+            }
+            let sheet = self.graph.sheet_name(cell.sheet_id);
+            reads.ranges.iter().any(|range| {
+                range.sheet == sheet
+                    && range.start_row <= cell.coord.row()
+                    && cell.coord.row() <= range.end_row
+                    && range.start_col <= cell.coord.col()
+                    && cell.coord.col() <= range.end_col
+            })
+        })
+    }
+
+    fn v2_exact_read_generation_valid_for_pruning(
+        &self,
+        reads: &crate::engine::v2::ExactReadSet,
+    ) -> bool {
+        let current = ReferenceGeneration {
+            data_snapshot: self.data_snapshot_id(),
+            topology: self.graph.topology_revision(),
+            symbols: self.graph.symbol_revision(),
+            shape: self.graph.topology_revision(),
+            effect: self.recalc_epoch,
+            provider: self.resolver.planning_semantic_revision(),
+        };
+        reads.reference_observations.iter().all(|observation| {
+            observation.generation.topology == current.topology
+                && observation.generation.symbols == current.symbols
+                && observation.generation.shape == current.shape
+                && observation.generation.effect == current.effect
+                && observation.generation.provider == current.provider
+                && (observation.generation.data_snapshot == current.data_snapshot
+                    || !self.v2_exact_read_intersects_mutations(reads))
+        })
+    }
+
+    fn v2_runtime_contract_certificate_valid(&self, vertex: VertexId) -> bool {
+        self.v2_runtime_contract_certificates
+            .get(&vertex)
+            .is_some_and(|certificate| {
+                *certificate == self.current_v2_runtime_contract_certificate_key(vertex)
+            })
+    }
+
+    fn v2_is_volatile(&self, vertex: VertexId) -> bool {
+        self.graph.is_volatile(vertex)
+    }
+
+    fn v2_admission_phase_timings(&self) -> (u128, u128) {
+        (
+            self.last_v2_scoped_admission_ns,
+            self.last_v2_admission_demand_ns,
+        )
+    }
+
+    fn v2_take_demand_stats(&mut self) -> crate::engine::v2::V2DemandStats {
+        self.take_v2_demand_stats()
+    }
+
+    fn v2_take_demand_closure_stats(&mut self) -> crate::engine::v2::V2DemandClosureStats {
+        self.take_v2_demand_closure_stats()
+    }
+
+    fn v2_begin_runtime_contract_validation(&mut self) {
+        self.v2_runtime_contract_stats = crate::engine::v2::V2RuntimeContractStats::default();
+        self.v2_runtime_contract_validation_active = true;
+    }
+
+    fn v2_take_runtime_contract_stats(&mut self) -> crate::engine::v2::V2RuntimeContractStats {
+        self.v2_runtime_contract_validation_active = false;
+        std::mem::take(&mut self.v2_runtime_contract_stats)
+    }
+
+    fn v2_schedule(
+        &mut self,
+        roots: Option<&[VertexId]>,
+        full_rebuild: bool,
+    ) -> Result<crate::engine::v2::V2ScheduleResult, ExcelError> {
+        let construction_started = Instant::now();
+        let mut demand_subgraph_ns = 0;
+        let mut demand_reuse_consumption_ns = 0;
+        if let Ok(mut stats) = self.v2_demand_stats.lock() {
+            *stats = crate::engine::v2::V2DemandStats::default();
+        }
+        self.v2_demand_stats_active
+            .store(roots.is_some(), std::sync::atomic::Ordering::Relaxed);
+        let schedule = if let Some(roots) = roots {
+            let pending = self.v2_pending_demand_closure.take();
+            let current_topology = crate::engine::v2::V2Host::v2_topology_revision(self);
+            let current_symbol = crate::engine::v2::V2Host::v2_symbol_revision(self);
+            let current_semantic = crate::engine::v2::V2Host::v2_semantic_revision(self);
+            let reusable = pending.as_ref().is_some_and(|closure| {
+                closure.roots.as_slice() == roots
+                    && closure.topology_revision == current_topology
+                    && closure.symbol_revision == current_symbol
+                    && closure.semantic_revision == current_semantic
+            });
+            let schedule_result = if reusable {
+                let closure = pending.expect("reusable demand closure must be present");
+                self.v2_demand_closure_stats.reuse_hits =
+                    self.v2_demand_closure_stats.reuse_hits.saturating_add(1);
+                let reuse_started = Instant::now();
+                let result = Scheduler::new(&self.graph)
+                    .create_schedule_with_virtual(&closure.vertices, &closure.virtual_dependencies);
+                demand_reuse_consumption_ns = reuse_started.elapsed().as_nanos();
+                demand_subgraph_ns = 0;
+                result?
+            } else {
+                if let Some(closure) = pending {
+                    self.v2_demand_closure_stats.reuse_rejections = self
+                        .v2_demand_closure_stats
+                        .reuse_rejections
+                        .saturating_add(1);
+                    let reason = if closure.roots.as_slice() != roots {
+                        "target_roots_changed"
+                    } else if closure.topology_revision != current_topology {
+                        "topology_revision_changed"
+                    } else if closure.symbol_revision != current_symbol {
+                        "symbol_revision_changed"
+                    } else if closure.semantic_revision != current_semantic {
+                        "semantic_revision_changed"
+                    } else {
+                        "closure_incomplete"
+                    };
+                    *self
+                        .v2_demand_closure_stats
+                        .rejection_reasons
+                        .entry(reason.to_string())
+                        .or_default() += 1;
+                }
+                let demand_started = Instant::now();
+                let (mut vertices, virtual_dependencies) = self.build_demand_subgraph(roots);
+                demand_subgraph_ns = demand_started.elapsed().as_nanos();
+                vertices.extend(
+                    roots
+                        .iter()
+                        .copied()
+                        .filter(|vertex| self.v2_is_formula_vertex(*vertex)),
+                );
+                vertices.sort_unstable();
+                vertices.dedup();
+                self.v2_demand_closure_stats.closures_built = self
+                    .v2_demand_closure_stats
+                    .closures_built
+                    .saturating_add(1);
+                Scheduler::new(&self.graph)
+                    .create_schedule_with_virtual(&vertices, &virtual_dependencies)?
+            };
+            schedule_result
+        } else {
+            self.v2_pending_demand_closure = None;
+            let vertices = if full_rebuild {
+                self.v2_formula_vertices_with_names()
+            } else {
+                self.graph.get_evaluation_vertices()
+            };
+            self.create_evaluation_schedule(&vertices)?.0
+        };
+        self.v2_demand_stats_active
+            .store(false, std::sync::atomic::Ordering::Relaxed);
+        let demand_stats = self.take_v2_demand_stats();
+
+        let mut units = Vec::with_capacity(schedule.units.len());
+        for &unit in &schedule.units {
+            let (workspace, vertices) = match unit {
+                ScheduleUnit::Layer(index) => (false, schedule.unit_layer(index).vertices.clone()),
+                ScheduleUnit::Cycle(index) => (true, schedule.unit_cycle(index).to_vec()),
+            };
+            let mut formulas = vertices
+                .into_iter()
+                .filter(|vertex| self.v2_is_formula_vertex(*vertex))
+                .collect::<Vec<_>>();
+            formulas.sort_unstable();
+            formulas.dedup();
+            if formulas.is_empty() {
+                continue;
+            }
+            units.push(if workspace {
+                crate::engine::v2::V2ScheduleUnit::Workspace(formulas)
+            } else {
+                crate::engine::v2::V2ScheduleUnit::Acyclic(formulas)
+            });
+        }
+        let construction_ns = construction_started
+            .elapsed()
+            .as_nanos()
+            .saturating_sub(demand_subgraph_ns);
+        Ok(crate::engine::v2::V2ScheduleResult {
+            units,
+            demand_subgraph_ns,
+            construction_ns,
+            demand_reuse_consumption_ns,
+            demand_stats,
+        })
+    }
+
+    fn v2_formula_vertices(&self) -> Vec<VertexId> {
+        self.v2_formula_vertices_with_names()
+    }
+
+    fn v2_is_formula(&self, vertex: VertexId) -> bool {
+        self.v2_is_formula_vertex(vertex)
+    }
+
+    fn v2_is_dirty(&self, vertex: VertexId) -> bool {
+        self.graph.is_dirty(vertex)
+    }
+
+    fn v2_current_value(&self, vertex: VertexId) -> LiteralValue {
+        self.current_value_for_v2(vertex)
+    }
+
+    fn v2_evaluate_vertex(
+        &mut self,
+        vertex: VertexId,
+    ) -> Result<crate::engine::v2::V2VertexResult, ExcelError> {
+        self.v2_evaluate_vertex_recorded(vertex)
+    }
+
+    fn v2_runtime_reads_valid(&mut self, reads: &crate::engine::v2::ExactReadSet) -> bool {
+        if self.v2_runtime_contract_validation_active {
+            self.v2_runtime_contract_stats.candidates = self
+                .v2_runtime_contract_stats
+                .candidates
+                .saturating_add(reads.formula_edges.len());
+        }
+        reads.formula_edges.iter().copied().all(|vertex| {
+            if !self.v2_is_formula_vertex(vertex) {
+                if self.v2_runtime_contract_validation_active {
+                    self.v2_runtime_contract_stats.edges_skipped = self
+                        .v2_runtime_contract_stats
+                        .edges_skipped
+                        .saturating_add(1);
+                }
+                true
+            } else {
+                self.v2_runtime_formula_contract_safe(vertex)
+            }
+        })
+    }
+
+    fn v2_reference_observations_valid(&self, reads: &crate::engine::v2::ExactReadSet) -> bool {
+        let current = ReferenceGeneration {
+            data_snapshot: self.data_snapshot_id(),
+            topology: self.graph.topology_revision(),
+            symbols: self.graph.symbol_revision(),
+            shape: self.graph.topology_revision(),
+            effect: self.recalc_epoch,
+            provider: self.resolver.planning_semantic_revision(),
+        };
+        reads.reference_observations.iter().all(|observation| {
+            observation.generation.topology == current.topology
+                && observation.generation.symbols == current.symbols
+                && observation.generation.shape == current.shape
+                && observation.generation.effect == current.effect
+                && observation.generation.provider == current.provider
+                && (observation.generation.data_snapshot == current.data_snapshot
+                    || !self.v2_exact_read_intersects_mutations(reads))
+        })
+    }
+
+    fn v2_commit_vertex(
+        &mut self,
+        vertex: VertexId,
+        value: &LiteralValue,
+    ) -> Result<(), ExcelError> {
+        let effects = self.plan_vertex_effects(vertex, value.clone(), None)?;
+        self.resource_checkpoint(0)?;
+        for effect in &effects {
+            self.apply_effect_with_computed_writes(effect, None, None, None)?;
+        }
+        Ok(())
+    }
+
+    fn v2_evaluate_workspace(
+        &mut self,
+        members: &[VertexId],
+    ) -> Result<crate::engine::v2::V2WorkspaceResult, ExcelError> {
+        self.v2_attribution_category = crate::engine::v2::V2FormulaAttributionCategory::ExactScc;
+        self.v2_evaluate_workspace_recorded(members)
+    }
+
+    fn v2_evaluate_workspace_retained_plan(
+        &mut self,
+        members: &[VertexId],
+        plan: &crate::engine::v2::V2WorkspaceClassification,
+        state: &crate::engine::v2::V2State,
+    ) -> Result<crate::engine::v2::V2WorkspaceResult, ExcelError> {
+        self.v2_evaluate_workspace_retained_plan(members, plan, state)
+    }
+
+    fn v2_clear_dirty(&mut self, vertices: &[VertexId]) {
+        self.graph.clear_dirty_flags(vertices);
+    }
+
+    fn v2_resource_checkpoint(&mut self, work: u64) -> Result<(), ExcelError> {
+        self.cancellation_checkpoint("Evaluation cancelled during Engine V2 execution")?;
+        self.resource_checkpoint(work)
+    }
+
+    fn v2_values_equal(&self, left: &LiteralValue, right: &LiteralValue) -> bool {
+        crate::engine::convergence::values_semantically_equal(left, right, self.config.date_system)
+    }
+
+    fn v2_topology_revision(&self) -> u64 {
+        self.graph
+            .topology_revision()
+            .wrapping_mul(0x9e37_79b9)
+            .wrapping_add(self.topology_epoch)
+    }
+
+    fn v2_symbol_revision(&self) -> u64 {
+        self.graph.symbol_revision()
+    }
+
+    fn v2_semantic_revision(&self) -> u64 {
+        let (registry, provider) = self
+            .v2_function_snapshot
+            .as_ref()
+            .map(|snapshot| {
+                (
+                    snapshot.epoch(),
+                    snapshot.provider_revision().unwrap_or_default(),
+                )
+            })
+            .unwrap_or_else(|| {
+                (
+                    crate::function_registry::semantic_epoch(),
+                    self.resolver.planning_semantic_revision().unwrap_or(0),
+                )
+            });
+        let date_system = match self.config.date_system {
+            DateSystem::Excel1900 => 0_u64,
+            DateSystem::Excel1904 => 1_u64,
+        };
+        registry
+            .wrapping_mul(0x9e37_79b9)
+            .wrapping_add(provider)
+            .wrapping_mul(0x9e37_79b9)
+            .wrapping_add(date_system)
+    }
+
+    fn v2_cycle_config(&self) -> CycleConfig {
+        self.config.cycle
+    }
+
+    fn v2_date_system(&self) -> DateSystem {
+        self.config.date_system
     }
 }
 
@@ -26852,6 +31715,45 @@ where
     /// *and* range reads observe earlier members' results through the overlay
     /// cascade. Deltas are recorded once per member at end of task (G11).
     ///
+    fn v2_scc_stable_id_for_members(&self, vertices: &[VertexId]) -> u64 {
+        let mut cell_members = Vec::<(VertexId, CellRef)>::new();
+        let mut name_members = Vec::<(VertexId, String)>::new();
+        let mut other_members = Vec::<VertexId>::new();
+        for &vertex in vertices {
+            match self.graph.get_vertex_kind(vertex) {
+                VertexKind::FormulaScalar | VertexKind::FormulaArray => {
+                    if let Some(cell) = self.graph.get_cell_ref(vertex) {
+                        cell_members.push((vertex, cell));
+                    } else {
+                        other_members.push(vertex);
+                    }
+                }
+                VertexKind::NamedScalar | VertexKind::NamedArray => {
+                    if let Some(key) = self.graph.name_key_for_vertex(vertex) {
+                        name_members.push((vertex, key));
+                    } else {
+                        other_members.push(vertex);
+                    }
+                }
+                _ => other_members.push(vertex),
+            }
+        }
+        cell_members
+            .sort_unstable_by_key(|(_, cell)| (cell.sheet_id, cell.coord.row(), cell.coord.col()));
+        name_members.sort_unstable_by(|(left_vertex, left_key), (right_vertex, right_key)| {
+            left_key.cmp(right_key).then(left_vertex.cmp(right_vertex))
+        });
+        other_members.sort_unstable();
+        cell_members
+            .into_iter()
+            .map(|(vertex, _)| vertex)
+            .chain(name_members.into_iter().map(|(vertex, _)| vertex))
+            .chain(other_members)
+            .fold(0xcbf29ce484222325_u64, |hash, vertex| {
+                (hash ^ vertex.0 as u64).wrapping_mul(0x100000001b3)
+            })
+    }
+
     /// Returns the number of vertices stamped `#CIRC!`.
     ///
     /// `pub(crate)` so tests can drive SCC shapes (e.g. name-vertex members)
@@ -26919,9 +31821,7 @@ where
             });
         }
         let n = members.len();
-        let scc_stable_id = members.iter().fold(0xcbf29ce484222325_u64, |hash, member| {
-            (hash ^ member.vertex.0 as u64).wrapping_mul(0x100000001b3)
-        });
+        let scc_stable_id = self.v2_scc_stable_id_for_members(cycle);
         // Indices addressable by the collector (cells + names); `other`
         // members can be neither edge sources nor targets.
         let recordable = cell_refs.len() + name_keys.len();
@@ -27306,7 +32206,8 @@ where
                     .collect::<Vec<_>>()
             });
         let mut latest_read_fingerprints = vec![0_u64; n];
-        let mut passes = 1usize;
+        let stage2_pass_offset = usize::from(self.v2_stage2_skip_first_pass);
+        let mut passes = 1usize.saturating_add(stage2_pass_offset);
         let mut pass_member_profiles = Vec::<SccMemberPassProfileRecord>::new();
 
         // Evaluate-and-commit one member; returns Ok(true) when the member was
@@ -27331,6 +32232,20 @@ where
                     }
                 };
                 let member_eval_ns = member_eval_started.elapsed().as_nanos();
+                if self.v2_run_active {
+                    self.v2_workspace_formula_evaluation_ns = self
+                        .v2_workspace_formula_evaluation_ns
+                        .saturating_add(member_eval_ns);
+                    self.v2_workspace_formula_evaluation_count = self
+                        .v2_workspace_formula_evaluation_count
+                        .saturating_add(1);
+                    let formula_time = self
+                        .v2_workspace_formula_evaluation_ns_by_vertex
+                        .entry(m.vertex)
+                        .or_default();
+                    *formula_time = formula_time.saturating_add(member_eval_ns);
+                    self.v2_record_formula_invocation(m.vertex, member_eval_ns);
+                }
                 let read_counters = if self.scc_pass_profile_enabled
                     || self.diagnostic_exact_scc_reuse_enabled
                 {
@@ -27511,7 +32426,8 @@ where
         // Values committed by the last *full* pass; `None` until the first
         // iteration pass runs (pass 1 has no predecessor to compare against)
         // and reset when a settle pass runs (no cross-kind comparisons).
-        let mut prev_pass: Option<Vec<LiteralValue>> = None;
+        let mut prev_pass: Option<Vec<LiteralValue>> =
+            self.v2_stage2_skip_first_pass.then(|| snapshot.clone());
         // Final-round convergence stats (overwritten per round so the values
         // reported are the ones observed at stop).
         let mut iter_max_delta = 0f64;
@@ -27772,6 +32688,9 @@ where
                 // `Iterate`; record the widest single witness instead of
                 // accumulating so the count stays "distinct live cycles".
                 witnessed_cycles = witnessed_cycles.max(analysis.cycle_count);
+                if self.v2_stage2_discovery_only {
+                    break;
+                }
                 match policy {
                     CyclePolicy::Error => {
                         // POLICY (Error): stamp every member of a live cycle,
@@ -28361,6 +33280,7 @@ where
         }
 
         let task_elapsed = task_start.elapsed();
+        let executed_passes = passes.saturating_sub(stage2_pass_offset);
         {
             let t = &mut self.last_cycle_telemetry;
             t.static_sccs += 1;
@@ -28369,8 +33289,8 @@ where
             }
             t.live_cycles_witnessed += witnessed_cycles;
             t.circ_cells_stamped += stamped;
-            t.settle_passes_total += passes;
-            t.max_passes_single_scc = t.max_passes_single_scc.max(passes);
+            t.settle_passes_total += executed_passes;
+            t.max_passes_single_scc = t.max_passes_single_scc.max(executed_passes);
             if iterating {
                 t.iterated_sccs += 1;
                 if converged {
@@ -28390,7 +33310,8 @@ where
         self.last_recalc_telemetry.iterative_scc_evaluation_ns += task_elapsed.as_nanos();
         self.last_recalc_telemetry.scc_tasks_evaluated += 1;
         self.last_recalc_telemetry.scc_member_count += members.len();
-        self.last_recalc_telemetry.scc_member_evaluations += members.len().saturating_mul(passes);
+        self.last_recalc_telemetry.scc_member_evaluations +=
+            members.len().saturating_mul(executed_passes);
 
         Ok(stamped)
     }
@@ -28408,6 +33329,12 @@ where
         ctx: &RecordingContext<'_, R>,
         collector: &LiveEdgeCollector,
     ) -> Result<LiteralValue, ExcelError> {
+        let _v2_read_guard = self
+            .v2_run_active
+            .then(|| self.v2_read_recorder.begin(vertex_id));
+        if self.v2_run_active {
+            self.v2_record_semantic_effects_for_vertex(vertex_id);
+        }
         if !self.graph.vertex_exists(vertex_id) {
             return Err(ExcelError::new(formualizer_common::ExcelErrorKind::Ref)
                 .with_message(format!("Vertex not found: {vertex_id:?}")));

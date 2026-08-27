@@ -103,11 +103,16 @@ pub struct LetFn;
 /// Variadic: true
 /// Signature: LET(arg1...: any@scalar)
 /// Arg schema: arg1{kinds=any,required=true,shape=scalar,by_ref=false,coercion=None,max=None,repeating=None,default=false}
-/// Caps: PURE, SHORT_CIRCUIT
+/// Caps: PURE, SHORT_CIRCUIT, LOCAL_ENVIRONMENT, MAY_SPILL, V2_LOCAL_ENVIRONMENT_OBSERVED, V2_RESULT_SHAPE_OBSERVED
 /// [formualizer-docgen:schema:end]
 impl Function for LetFn {
     fn caps(&self) -> FnCaps {
-        FnCaps::PURE | FnCaps::SHORT_CIRCUIT | FnCaps::LOCAL_ENVIRONMENT | FnCaps::MAY_SPILL
+        FnCaps::PURE
+            | FnCaps::SHORT_CIRCUIT
+            | FnCaps::LOCAL_ENVIRONMENT
+            | FnCaps::MAY_SPILL
+            | FnCaps::V2_LOCAL_ENVIRONMENT_OBSERVED
+            | FnCaps::V2_RESULT_SHAPE_OBSERVED
     }
 
     fn name(&self) -> &'static str {
@@ -264,11 +269,16 @@ pub struct LambdaFn;
 /// Variadic: true
 /// Signature: LAMBDA(arg1...: any@scalar)
 /// Arg schema: arg1{kinds=any,required=true,shape=scalar,by_ref=false,coercion=None,max=None,repeating=None,default=false}
-/// Caps: PURE, SHORT_CIRCUIT
+/// Caps: PURE, SHORT_CIRCUIT, LOCAL_ENVIRONMENT, MAY_SPILL, V2_LOCAL_ENVIRONMENT_OBSERVED, V2_RESULT_SHAPE_OBSERVED
 /// [formualizer-docgen:schema:end]
 impl Function for LambdaFn {
     fn caps(&self) -> FnCaps {
-        FnCaps::PURE | FnCaps::SHORT_CIRCUIT | FnCaps::LOCAL_ENVIRONMENT | FnCaps::MAY_SPILL
+        FnCaps::PURE
+            | FnCaps::SHORT_CIRCUIT
+            | FnCaps::LOCAL_ENVIRONMENT
+            | FnCaps::MAY_SPILL
+            | FnCaps::V2_LOCAL_ENVIRONMENT_OBSERVED
+            | FnCaps::V2_RESULT_SHAPE_OBSERVED
     }
 
     fn name(&self) -> &'static str {

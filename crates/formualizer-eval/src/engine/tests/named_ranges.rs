@@ -2910,3 +2910,44 @@ fn public_delete_rows_of_named_formula_target_invalidates_to_ref_atomically() {
 fn public_delete_columns_of_named_formula_target_invalidates_to_ref_atomically() {
     assert_public_delete_of_named_target(false, DeleteTargetKind::Formula);
 }
+
+#[test]
+fn bulk_formula_name_publication_plans_once_and_links_forward_names() {
+    let mut engine = Engine::new(TestWorkbook::new(), canonical_cfg());
+    let report = engine
+        .define_names_for_load(vec![
+            (
+                "First".to_string(),
+                NamedDefinition::Formula {
+                    ast: parse("=Second+1").unwrap(),
+                    dependencies: Vec::new(),
+                    range_deps: Vec::new(),
+                },
+                NameScope::Workbook,
+            ),
+            (
+                "Second".to_string(),
+                NamedDefinition::Literal(LiteralValue::Number(2.0)),
+                NameScope::Workbook,
+            ),
+        ])
+        .unwrap();
+
+    assert_eq!(report.attempted, 2);
+    assert_eq!(report.accepted, 2);
+    assert_eq!(report.skipped, 0);
+    assert_eq!(report.symbol_vertex_allocations, 2);
+    assert_eq!(report.name_index_insertions, 6);
+    assert_eq!(report.symbol_revision_bumps, 2);
+    assert_eq!(report.symbol_revision_updates, 1);
+    assert_eq!(report.formula_dependency_extraction_calls, 1);
+
+    engine
+        .set_cell_formula("Sheet1", 1, 1, parse("=First").unwrap())
+        .unwrap();
+    engine.evaluate_all().unwrap();
+    assert_eq!(
+        engine.get_cell_value("Sheet1", 1, 1),
+        Some(LiteralValue::Number(3.0))
+    );
+}

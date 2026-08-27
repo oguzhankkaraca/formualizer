@@ -34,6 +34,7 @@ pub mod scheduler;
 pub mod spill;
 mod target_preparation;
 pub(crate) mod used_extent;
+pub(crate) mod v2;
 pub mod vertex;
 pub mod virtual_deps;
 
@@ -60,11 +61,17 @@ mod tests;
 pub use arena::AstNodeId;
 pub use cancel::CancelToken;
 pub use eval::{
-    CycleTelemetry, Engine, EngineAction, EngineBaselineStats, EvalResult, RecalcPlan,
-    RecalcTelemetry, SccCollectorParityRecord, SccDirtyRecord, SccDirtyTelemetry,
+    CycleTelemetry, DefinedNameLoadReport, Engine, EngineAction, EngineBaselineStats, EvalResult,
+    RecalcPlan, RecalcTelemetry, SccCollectorParityRecord, SccDirtyRecord, SccDirtyTelemetry,
     SccEarlyTerminationRecord, SccExactReuseRecord, SccIterationRecord, SccMemberPassProfileRecord,
     SccPassProfileRecord, SccSameRequestExtraPassRecord, SourceFormulaIngress, StaticSccStats,
     TableMetadata, VirtualDepTelemetry,
+};
+#[cfg(any(test, feature = "test-support"))]
+pub use eval::{
+    EngineV2AdmissionDiagnostics, EngineV2Diagnostics, EngineV2ExclusiveAttribution,
+    EngineV2FormulaAttribution, EngineV2ReadFinalizationAttribution, EngineV2RecorderAttribution,
+    EngineV2WorkspaceDiagnostics,
 };
 pub use eval_delta::{
     DeltaMode, EvalDelta, EvalDeltaCompatibilityPolicy, EvalDeltaRecord, TARGET_EVAL_DELTA_VERSION,

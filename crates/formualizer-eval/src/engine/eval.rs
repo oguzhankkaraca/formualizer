@@ -3159,6 +3159,18 @@ fn diagnostic_disable_iterative_redirty() -> bool {
     }
 }
 
+fn scc_dirty_telemetry_enabled() -> bool {
+    #[cfg(target_arch = "wasm32")]
+    {
+        false
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        std::env::var_os("FZ_TRACE_SCC_DIRTY_TELEMETRY").is_some()
+            || std::env::var_os("FZ_PROFILE_WORKSPACE_STRUCTURE").is_some()
+    }
+}
+
 fn dirty_provenance_label(flags: u8) -> &'static str {
     match flags {
         1 => "natural_only",
@@ -4498,7 +4510,7 @@ where
             scc_reuse_deterministic_mode,
             scc_reuse_invalidated_before_request: 0,
             last_scc_dirty_telemetry: SccDirtyTelemetry::default(),
-            scc_dirty_telemetry_enabled: true,
+            scc_dirty_telemetry_enabled: scc_dirty_telemetry_enabled(),
             scc_iteration_trace_enabled: scc_iteration_trace_enabled(),
             last_scc_iteration_trace: Vec::new(),
             scc_pass_profile_enabled: scc_pass_profile_enabled(),
@@ -4720,7 +4732,7 @@ where
             scc_reuse_deterministic_mode,
             scc_reuse_invalidated_before_request: 0,
             last_scc_dirty_telemetry: SccDirtyTelemetry::default(),
-            scc_dirty_telemetry_enabled: true,
+            scc_dirty_telemetry_enabled: scc_dirty_telemetry_enabled(),
             scc_iteration_trace_enabled: scc_iteration_trace_enabled(),
             last_scc_iteration_trace: Vec::new(),
             scc_pass_profile_enabled: scc_pass_profile_enabled(),
@@ -5919,23 +5931,6 @@ where
         let state_refresh = std::mem::take(&mut self.pending_iterative_state_refresh);
         let pending_sccs = std::mem::take(&mut self.pending_iterative_scc_redirty);
         let iterative_redirty_enabled = !self.diagnostic_disable_iterative_redirty;
-        let mut iterative_seed_ids = if iterative_redirty_enabled {
-            pending.clone()
-        } else {
-            Vec::new()
-        };
-        iterative_seed_ids.sort_unstable_by_key(|vertex| vertex.0);
-        iterative_seed_ids.dedup();
-        let mut volatile_seed_ids = if volatile_redirty_enabled {
-            self.graph.volatile_vertex_ids()
-        } else {
-            Vec::new()
-        };
-        volatile_seed_ids.sort_unstable_by_key(|vertex| vertex.0);
-        self.next_dirty_root_seeds = vec![
-            ("volatile_redirty", volatile_seed_ids),
-            ("iterative_scc_redirty", iterative_seed_ids),
-        ];
         self.last_recalc_telemetry.iterative_vertices_redirtied = if iterative_redirty_enabled {
             pending.len()
         } else {
@@ -5969,6 +5964,49 @@ where
         );
         self.iterative_state_values
             .retain(|vertex, _| active_iterative_members.contains(vertex));
+        if iterative_redirty_enabled && !pending.is_empty() {
+            self.graph.redirty_iterative_members(&pending);
+        }
+        self.last_recalc_telemetry.scc_units_reusable_after_recalc =
+            self.reusable_iterative_sccs.len();
+        self.last_recalc_telemetry.scc_reuse_metadata_bytes = self
+            .reusable_iterative_sccs
+            .capacity()
+            .saturating_mul(std::mem::size_of::<ReusableIterativeScc>())
+            .saturating_add(
+                self.reusable_iterative_sccs
+                    .iter()
+                    .map(|scc| {
+                        scc.members
+                            .len()
+                            .saturating_mul(std::mem::size_of::<VertexId>())
+                    })
+                    .sum::<usize>(),
+            );
+        if !self.scc_dirty_telemetry_enabled {
+            self.next_dirty_root_seeds.clear();
+            self.request_dirty_root_seeds.clear();
+            self.next_dirty_provenance.clear();
+            self.request_dirty_provenance.clear();
+            return;
+        }
+        let mut iterative_seed_ids = if iterative_redirty_enabled {
+            pending.clone()
+        } else {
+            Vec::new()
+        };
+        iterative_seed_ids.sort_unstable_by_key(|vertex| vertex.0);
+        iterative_seed_ids.dedup();
+        let mut volatile_seed_ids = if volatile_redirty_enabled {
+            self.graph.volatile_vertex_ids()
+        } else {
+            Vec::new()
+        };
+        volatile_seed_ids.sort_unstable_by_key(|vertex| vertex.0);
+        self.next_dirty_root_seeds = vec![
+            ("volatile_redirty", volatile_seed_ids),
+            ("iterative_scc_redirty", iterative_seed_ids),
+        ];
         let mut dirty_root_sources = self
             .request_dirty_root_seeds
             .iter()
@@ -6020,28 +6058,6 @@ where
             .find(|(source, _)| *source == "iterative_scc_redirty")
             .map(|(_, vertices)| vertices.iter().copied().collect::<FxHashSet<_>>())
             .unwrap_or_default();
-        if iterative_redirty_enabled && !pending.is_empty() {
-            self.graph.redirty_iterative_members(&pending);
-        }
-        self.last_recalc_telemetry.scc_units_reusable_after_recalc =
-            self.reusable_iterative_sccs.len();
-        self.last_recalc_telemetry.scc_reuse_metadata_bytes = self
-            .reusable_iterative_sccs
-            .capacity()
-            .saturating_mul(std::mem::size_of::<ReusableIterativeScc>())
-            .saturating_add(
-                self.reusable_iterative_sccs
-                    .iter()
-                    .map(|scc| {
-                        scc.members
-                            .len()
-                            .saturating_mul(std::mem::size_of::<VertexId>())
-                    })
-                    .sum::<usize>(),
-            );
-        if !self.scc_dirty_telemetry_enabled {
-            return;
-        }
         let naturally_dirty = naturally_dirty.expect("enabled telemetry has a natural dirty set");
         let after_volatile = after_volatile.expect("enabled telemetry has a volatile dirty set");
         let after_iterative: FxHashSet<VertexId> =

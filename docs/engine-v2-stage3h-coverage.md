@@ -617,3 +617,60 @@ runtime contract validation     0.115 s     0.138 s
 ```
 
 Owner/edge extraction is no longer dominant. Cleanup is the next campaign because it leads current Heavy bookkeeping and remains large enough on Light to satisfy the continuation threshold. Retained validation is second. Stage 3H remains open and Stage 4 has not started.
+
+## Cleanup/redirty campaign
+
+### Work classification
+
+```text
+final revision validation       correctness required
+evaluated-set conversion        production state required
+dirty clearing                  correctness required
+volatile redirty                correctness required
+iterative-SCC redirty           correctness required
+iterative-state refresh/prune   correctness required
+graph-wide dirty snapshots      observability only
+root-vector clones/sorts        diagnostic only
+provenance unions/maps          diagnostic only
+address-string samples          diagnostic only
+per-SCC sheet/sample records    diagnostic only
+```
+
+The old implementation kept SCC dirty telemetry enabled unconditionally in both Engine constructors. It scanned `get_evaluation_vertices()` before redirty, after volatile redirty, and after iterative redirty; built multiple `FxHashSet`/`FxHashMap` products; and formatted sampled cell addresses. Root and sample products were partly constructed even before the old telemetry return.
+
+### Retained change
+
+Telemetry is explicitly enabled by `FZ_TRACE_SCC_DIRTY_TELEMETRY` or `FZ_PROFILE_WORKSPACE_STRUCTURE`. Disabled production requests still:
+
+- clear every successfully evaluated dirty vertex;
+- redirty all required volatile vertices;
+- redirty iterative SCC members;
+- refresh and prune iterative-state values;
+- preserve reusable iterative SCC state and scalar counters;
+- restore user/request state on abort.
+
+Disabled requests clear diagnostic seed/provenance scratch rather than carrying it forward. The explicitly enabled real Light path still produced `3952.2073713873697` and built telemetry, with 184.7 ms attributed cleanup.
+
+### Measured attribution
+
+```text
+request                         before       after       removed diagnostic work
+Light warm                       163.7 ms      2.8 ms      160.9 ms
+Heavy warm                       360.0 ms     85.2 ms      274.8 ms
+Heavy unchanged                      n/a      98.3 ms      semantic retained work
+```
+
+Heavy's remaining cleanup is volatile/iterative work and state maintenance, not provenance/sample construction.
+
+### Fresh uninstrumented acceptance
+
+| Request | Wall samples | Wall median | Kernel samples | Kernel median | Working-set median |
+|---|---|---:|---|---:|---:|
+| Light 300 initial | 7.346, 6.737, 7.070 s | 7.070 s | 6.546, 6.062, 6.308 s | 6.308 s | 358,166,528 B |
+| Light 300→500 | 2.412, 2.300, 2.359 s | 2.359 s | 2.257, 2.155, 2.203 s | 2.203 s | 379,637,760 B |
+| Light unchanged | 0.120, 0.120, 0.114 s | 0.120 s | 0.117, 0.118, 0.111 s | 0.117 s | 379,727,872 B |
+| Heavy 300 initial | 8.555, 9.095, 9.569 s | 9.095 s | 7.733, 8.242, 8.703 s | 8.242 s | 496,775,168 B |
+| Heavy 300→500 | 3.438, 3.499, 3.667 s | 3.499 s | 3.216, 3.286, 3.432 s | 3.286 s | 525,283,328 B |
+| Heavy unchanged | 1.712, 1.762, 1.800 s | 1.762 s | 1.572, 1.616, 1.655 s | 1.616 s | 526,307,328 B |
+
+Compared with the post-owner medians, Light warm improves 2.613 to 2.359 s and unchanged improves 0.288 to 0.120 s. Heavy warm improves 3.736 to 3.499 s and unchanged improves 1.948 to 1.762 s. The full 64-test V2 production suite passed. Stage 3H remains open pending the new post-cleanup ranking.

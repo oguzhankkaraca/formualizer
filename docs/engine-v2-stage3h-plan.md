@@ -343,3 +343,42 @@ runtime contract validation     0.115 s     0.138 s
 ```
 
 Exact finalization fell from approximately 0.419/0.916 s to 0.281/0.471 s for Light/Heavy. Owner resolution is no longer the dominant Stage 3H structure. Cleanup is now the leading generic bookkeeping phase, narrowly ahead of retained validation on Heavy. Stage 3H therefore continues with cleanup attribution separating semantic dirty clearing and volatile/iterative redirty from eager telemetry, provenance, samples, and temporary destruction. Stage 4 remains deferred.
+
+## Stage 3H cleanup campaign
+
+### Classification and root cause
+
+Correctness-required cleanup consists of final revision validation, evaluated-set conversion, clearing evaluated dirty flags, volatile redirty, iterative-SCC redirty, iterative-state persistence/pruning, and abort-safe request state. Production telemetry scalars for evaluated/volatile/iterative counts are retained.
+
+The previous hard-coded `scc_dirty_telemetry_enabled = true` additionally performed three graph-wide dirty snapshots, root-vector cloning/sorting, provenance unions/maps, address-string samples, and per-SCC sheet/sample construction on every request. This work is diagnostics-only. Some root/provenance construction also occurred before the old telemetry early return.
+
+V0.8.0 uses the same semantic multi-source volatile/iterative redirty primitives but ordinary evaluation does not eagerly build V2's root/provenance diagnostic products. Its generation-bound FormulaPlane dirty leases remain a useful future pattern, but are not required for this targeted cleanup fix.
+
+### Retained design
+
+SCC dirty telemetry is now opt-in through `FZ_TRACE_SCC_DIRTY_TELEMETRY` or the existing `FZ_PROFILE_WORKSPACE_STRUCTURE` diagnostic mode. All graph-wide snapshots, provenance maps, root samples, and SCC samples are behind that gate. When disabled, stale diagnostic scratch state is cleared. Volatile and iterative redirty plus iterative-state maintenance always execute.
+
+Normal attribution measured:
+
+```text
+cleanup                         before      after
+Light warm                       164 ms       2.8 ms
+Heavy warm                       360 ms        85 ms
+Heavy unchanged                     n/a        98 ms
+```
+
+The explicitly enabled diagnostic path was also exercised on the real Light workbook, produced the exact output, and reported 185 ms cleanup, proving diagnostics remain available.
+
+Three fresh uninstrumented processes:
+
+```text
+request                       wall median    kernel median    working set median
+Light initial                    7.070 s        6.308 s          358.2 MB
+Light warm 300->500              2.359 s        2.203 s          379.6 MB
+Light unchanged                  0.120 s        0.117 s          379.7 MB
+Heavy initial                    9.095 s        8.242 s          497.0 MB
+Heavy warm 300->500              3.499 s        3.286 s          525.3 MB
+Heavy unchanged                  1.762 s        1.616 s          526.3 MB
+```
+
+The complete 64-test V2 production suite passed after the change. Exact Light/Heavy outputs and runtime dependency behavior remain unchanged. Stage 3H remains open; the next re-profile decides between retained-plan validation, residual, and remaining finalization.

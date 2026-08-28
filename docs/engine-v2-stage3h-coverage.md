@@ -447,3 +447,173 @@ Combined remaining priorities:
 The first priority satisfies the continuation rule directly and exposes a clear Heavy scalability problem. The next Stage 3H substage should measure miss cost and compare generic per-sheet sparse ownership or sorted/batched intersection against the current request-scoped hash index. No representation should be changed before that focused attribution and safety review.
 
 Stage 4 remains deferred.
+
+## Stage 3H — v0.8.0 comparative architecture and benchmark
+
+### Harness and equivalence boundary
+
+An isolated `probe-real-workbook-lifecycle` binary was added to the old tree's existing benchmark crate. It uses one retained workbook instance per process, sets 300, evaluates the target, sets 500, evaluates the same target, then evaluates unchanged 500. Cycle configuration is runtime iteration with Excel defaults and deterministic time is fixed at the Unix epoch.
+
+Exact equivalence could not be established:
+
+```text
+same XLSX files                         yes
+same input mutations                    yes
+same output targets                     yes
+same retained-instance lifecycle        yes
+same target-evaluation intent           yes
+same loader backend                     no: old Umya versus V2 Calamine
+same cold graph-build placement         no: old graph build deferred into cold calculation
+same formula counts                     Light 74,312; Heavy old 94,932 versus V2 94,966
+same output semantics                   no: old returned #VALUE!
+same runtime cycle truth                no
+```
+
+Direct old Calamine load fails with `#NAME?: Undefined table: Main_GSU_Price_X`. This is a loader capability failure: that implementation does not discover/register XLSX tables. Umya is the closest supported old path and registers tables before formulas.
+
+### Three fresh-process old-engine samples
+
+Light:
+
+| Sample | Cold calculation | Warm 300→500 | Unchanged 500 | Warm working set |
+|---|---:|---:|---:|---:|
+| 1 | 16.982 s | 4.695 s | 4.296 s | 522,067,968 B |
+| 2 | 19.081 s | 4.750 s | 4.036 s | 528,834,560 B |
+| 3 | 17.066 s | 4.954 s | 4.688 s | 424,108,032 B |
+| Median | 17.066 s | 4.750 s | 4.296 s | 522,067,968 B |
+
+Heavy:
+
+| Sample | Cold calculation | Warm 300→500 | Unchanged 500 | Warm working set |
+|---|---:|---:|---:|---:|
+| 1 | 27.386 s | 11.155 s | 11.439 s | 574,803,968 B |
+| 2 | 31.715 s | 11.022 s | 10.426 s | 605,835,264 B |
+| 3 | 29.566 s | 10.228 s | 11.330 s | 587,927,552 B |
+| Median | 29.566 s | 11.022 s | 11.330 s | 587,927,552 B |
+
+Every old output was `#VALUE!`. Light reported 73 live iterative SCCs in the first sample; Heavy reported 169 cold and 168 warm/unchanged, one stamped circular error, 4,829 iterative vertices redirtied, and approximately 27,510 evaluation vertices remaining. These timings are not correctness-equivalent wins or losses.
+
+### Proven old/new dependency difference
+
+Old mechanism: static AST dependency extraction creates direct placeholder/cell vertices and compressed range dependencies at ingest. Ordinary evaluation consumes those graph edges without recording every execution read. Runtime `LiveEdgeCollector` is instantiated only inside a conservative SCC and maps scalar reads against a small SCC-member hash; rectangle reads intersect the rectangle with SCC members without enumerating all physical cells.
+
+Why it is fast: work is proportional to static formula/range relationships and SCC membership, not every physical cell fetched by interpreter range kernels.
+
+Why it is insufficient: static adjacency and broad resolved rectangles cannot express untaken branches, selected-reference identity, dynamic targets, complete exact global formula edges, or V2 fail-closed retained-plan reopening.
+
+V2 reuse decision: retain the sparse/batched ownership principle, but not static truth. V2 exact cell evidence, reference/generation observations, and runtime formula-edge/SCC truth remain authoritative.
+
+### Request-global owner reuse
+
+Warm changed-input results:
+
+```text
+metric                              Light       Heavy
+owner probe occurrences           817,107   2,794,510
+globally unique coordinates        13,977      18,094
+repeated coordinates               12,807      16,927
+repeated positive probes          262,241     295,846
+repeated negative probes          540,889   2,480,570
+unique positive coordinates         7,106       7,787
+unique negative coordinates         6,871      10,307
+read sets                            3,824       6,209
+read-set size p50                       36          51
+read-set size p95                      507       2,566
+read-set size max                      594       2,566
+```
+
+Heavy per-sheet extremes:
+
+```text
+sheet 4: 1,381,896 probes, 2,564 unique coordinates, 0 hits, 804 formula owners
+sheet 5:   458,676 probes,   852 unique coordinates, 0 hits, 138 formula owners
+sheet 3:   738,710 probes, 6,259 unique coordinates, 256,985 hits, 25,647 owners
+```
+
+The dominant Heavy outside read sets contain 2,566 cells with one formula hit and 2,565 misses.
+
+### Candidate replay benchmark
+
+All candidates replayed the exact captured warm read-set vectors three times and were required to match direct-hash hit count and owner checksum.
+
+```text
+candidate                         Light        Heavy
+packed-coordinate owner hash    149.846 ms   546.582 ms
+request coordinate memo         125.932 ms 4,559.164 ms
+per-sheet sorted bounded merge   65.285 ms   116.851 ms
+whole-read-set memo             178.638 ms   624.507 ms
+adaptive, threshold 8            66.673 ms   105.588 ms
+adaptive, threshold 64           67.768 ms   116.816 ms
+adaptive, threshold 256          67.002 ms   120.449 ms
+```
+
+Read-set memo reuse was weak: 3,662 unique of 3,824 Light sets and 5,107 unique of 6,209 Heavy sets. Coordinate memo's second hash structure scaled pathologically on Heavy. Pure sorted merge was selected because it is the Light winner, removes the bad Heavy asymptotic/random-access behavior, needs only one owner representation, and remains close to the best adaptive Heavy measurement.
+
+### Retained change and parity
+
+The owner index is now request-scoped per-sheet sorted vectors. The existing run-length scan merges canonical exact cells against only the matching sheet vector starting at a lower bound. Exact cell evidence remains separate and unchanged, and raw formula-edge event counts are preserved without an additional pass or run-count allocation.
+
+Instrumented warm comparison:
+
+```text
+owner/edge extraction             before       after
+Light                             ~252 ms      ~194 ms
+Heavy                             ~685 ms      ~404 ms
+Heavy unchanged                       n/a      ~204 ms
+```
+
+Parity observed after the architecture change:
+
+```text
+Light 300 output     2816.3175654307174
+Light 500 output     3952.2073713873697
+Heavy 300 output     4212.843018909032
+Heavy 500 output     5766.920229312803713
+Light probes/hits/misses   817,107 / 269,347 / 547,760
+Heavy probes/hits/misses 2,794,510 / 303,633 / 2,490,877
+```
+
+Fresh uninstrumented acceptance after fusing merge resolution into the existing run-length scan:
+
+| Request | Wall samples | Wall median | Kernel samples | Kernel median | Working-set median |
+|---|---|---:|---|---:|---:|
+| Light 300 initial | 7.688, 8.013, 7.900 s | 7.900 s | 6.836, 7.229, 7.062 s | 7.062 s | 363,081,728 B |
+| Light 300→500 | 2.543, 2.709, 2.613 s | 2.613 s | 2.375, 2.550, 2.460 s | 2.460 s | 380,272,640 B |
+| Light unchanged | 0.280, 0.298, 0.288 s | 0.288 s | 0.277, 0.296, 0.286 s | 0.286 s | 380,293,120 B |
+| Heavy 300 initial | 8.990, 8.736, 10.192 s | 8.990 s | 8.140, 7.929, 9.351 s | 8.140 s | 503,775,232 B |
+| Heavy 300→500 | 3.736, 3.653, 4.312 s | 3.736 s | 3.521, 3.456, 4.098 s | 3.521 s | 531,361,792 B |
+| Heavy unchanged | 1.894, 1.948, 2.238 s | 1.948 s | 1.762, 1.811, 2.092 s | 1.811 s | 531,992,576 B |
+
+Compared with the post-3H-V medians, Light warm is neutral/slightly faster (2.625 to 2.613 s), Heavy warm improves 4.041 to 3.736 s, and Heavy unchanged improves 2.334 to 1.948 s. Working-set medians are flat.
+
+Verification passed:
+
+- complete 64-test Engine V2 production suite;
+- runtime SCC, reopen, Stage 3C closure reuse, Stage 3D fail-closed edge-change, dynamic-reference, name, table, spill, selected-reference, range/provider/effect regressions within that suite;
+- real Light and Heavy targeted lifecycle checks;
+- GNU `formualizer-eval` check;
+- GNU Calamine-enabled `formualizer-workbook` check;
+- `cargo fmt --all -- --check`;
+- `git diff --check`.
+
+### Post-owner re-profile
+
+The global-reuse and candidate-capture work is now separately gated from normal attribution so it cannot inflate residual timing. Normal warm attribution:
+
+```text
+phase                            Light       Heavy
+interpreter semantics          1.130 s     1.429 s
+formula wrappers               1.284 s     1.733 s
+exact-read finalization        0.281 s     0.471 s
+owner/edge extraction          0.129 s     0.248 s
+owner index build              0.045 s     0.058 s
+sorting                         0.077 s     0.122 s
+deduplication                   0.053 s     0.064 s
+retained-plan validation        0.172 s     0.324 s
+cleanup                         0.164 s     0.360 s
+explicit residual               0.172 s     0.245 s
+demand scheduling               0.134 s     0.186 s
+runtime contract validation     0.115 s     0.138 s
+```
+
+Owner/edge extraction is no longer dominant. Cleanup is the next campaign because it leads current Heavy bookkeeping and remains large enough on Light to satisfy the continuation threshold. Retained validation is second. Stage 3H remains open and Stage 4 has not started.

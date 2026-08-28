@@ -233,3 +233,113 @@ cleanup                   Light ~0.174 s   Heavy ~0.411 s
 Code tracing shows evaluated-set conversion, dirty clearing, volatile and iterative redirty, graph-wide dirty telemetry sets, provenance maps, diagnostic samples, and iterative-state refresh inside this aggregate. This path requires dedicated attribution before deciding which work is semantic and which is observational.
 
 Stage 4 remains deferred.
+
+## Stage 3H — v0.8.0 comparative architecture and benchmark
+
+### Comparison boundary
+
+The comparison tree is `C:\rust_engines\formualizer-v0.8.0` on `perf/value-cache-allocator`, three commits after the `v0.8.0` tag. Its only pre-existing working-tree change is a rustfmt-only import reorder in `engine/eval.rs`. An isolated benchmark binary was added under `formualizer-bench-core`; no old-engine behavior was changed.
+
+The v0.8.0 Calamine loader cannot load either real workbook because it does not register XLSX tables before formula graph construction. The old Umya loader does register tables, so the measured comparison uses Umya plus the supported deferred-graph mode. Load time is therefore not backend-equivalent; cold calculation includes deferred graph construction. Warm and unchanged requests retain one workbook/engine instance.
+
+### Measured old-engine baseline
+
+All three old-engine samples were semantically invalid: both target outputs were `#VALUE!` instead of the Excel/V2 values. Light classified 73 static SCCs as live iterative cycles. Heavy classified 168-169, retained approximately 27,510 evaluation vertices after calculation, and stamped one circular error. Performance remains useful only as labeled architectural evidence.
+
+```text
+                         Light median      Heavy median
+cold calculation          17.066 s          29.566 s
+warm changed input          4.750 s          11.022 s
+unchanged                   4.296 s          11.330 s
+warm working set          522.1 MB          587.9 MB
+```
+
+### Architecture comparison
+
+CURRENT V2 records packed exact execution-read coordinates for every evaluated formula, canonicalizes them, resolves formula ownership, retains exact formula edges, validates generations and reference shapes, reconstructs runtime SCC truth, and reopens fail-closed when retained topology changes. This work is correctness-required, but the previous mostly-negative random owner-probe implementation was not.
+
+V0.8.0 resolves ordinary dependencies statically at ingest into graph vertices/range descriptors. Runtime live-edge recording is limited to an already admitted conservative SCC: scalar reads probe only SCC membership and rectangle reads scan SCC members rather than physical range cells. FormulaPlane also uses compressed producer/consumer regions and affine dirty projection. It therefore avoids a global exact-cell-to-owner phase entirely.
+
+Classification:
+
+- REQUIRED FOR V2 CORRECTNESS: exact cells, selected-target identity, generation observations, retained exact adjacency, exact runtime SCC truth, and fail-closed reopen.
+- OLD IMPLEMENTATION UNSAFE FOR V2: using static graph adjacency or broad resolved ranges as complete runtime truth.
+- REUSABLE IDEA: formula ownership is sparse and should be resolved in batches/regions rather than by random lookup for every physical cell.
+- REQUIRED BUT IMPLEMENTED INEFFICIENTLY: the request-scoped packed owner hash and one lookup per read-set coordinate.
+- BETTER NEW DESIGN POSSIBLE: request-scoped per-sheet canonical owner vectors merged with already sorted exact cells.
+
+### Global owner-coordinate reuse
+
+Warm request attribution proved that per-read-set totals greatly overstate global coordinate diversity:
+
+```text
+                                  Light       Heavy
+probe occurrences               817,107   2,794,510
+globally unique coordinates      13,977      18,094
+coordinates repeated             12,807      16,927
+repeated positive probes        262,241     295,846
+repeated negative probes        540,889   2,480,570
+unique positive coordinates       7,106       7,787
+unique negative coordinates       6,871      10,307
+read sets                          3,824       6,209
+read-set p95                         507       2,566
+```
+
+Heavy sheets 4 and 5 account for approximately 1.84 million zero-hit probes over only 3,416 distinct coordinates. This justified testing memoization, but did not make coordinate memoization the winner.
+
+### Owner resolver candidate benchmark
+
+Real captured warm read sets were replayed three times per candidate in an attribution-only microbenchmark. Best elapsed values:
+
+```text
+candidate                    Light        Heavy
+current packed owner hash   149.8 ms     546.6 ms
+coordinate memo             125.9 ms   4,559.2 ms
+sorted bounded merge         65.3 ms     116.9 ms
+whole-read-set memo         178.6 ms     624.5 ms
+adaptive threshold <=256  ~65-70 ms    ~105-122 ms
+```
+
+The read-set memo had little reuse: 3,662/3,824 Light and 5,107/6,209 Heavy read sets were distinct. The coordinate memo added an expensive second hash table and scaled pathologically on Heavy. Adaptive resolution did not justify retaining a second owner representation; pure bounded merge won Light and remained within approximately 11 ms of the best Heavy threshold result.
+
+### Retained owner architecture
+
+The request-scoped owner hash is replaced by:
+
+```text
+BTreeMap<SheetId, Vec<(PackedSheetCell, VertexId)>>
+```
+
+Each per-sheet vector is sorted once when first needed in a request. Exact scalar events remain canonicalized independently. The existing run-length scan performs a bounded lower-bound plus linear merge and preserves formula-edge event counters without an additional pass or run-count allocation. The index is discarded at every V2 request boundary and therefore cannot retain stale `VertexId` values across topology generations.
+
+Instrumented warm owner/edge extraction after the change:
+
+```text
+                         before       after
+Light                    ~252 ms     ~194 ms
+Heavy                    ~685 ms     ~404 ms
+Heavy unchanged              n/a     ~204 ms
+```
+
+Outputs and owner hit/miss/edge counters remained unchanged. Three fresh uninstrumented processes retained the change: Light warm changed-input median was 2.613 s with 380,272,640-byte median working set; Heavy warm changed-input median was 3.736 s with 531,361,792-byte median working set. Heavy unchanged fell to a 1.948 s median. The complete 64-test V2 production suite, package checks, real-workbook checks, formatting, and diff checks passed.
+
+### Post-owner re-profile
+
+Normal attribution excludes the separately gated owner-reuse capture experiment.
+
+```text
+phase                            Light       Heavy
+interpreter semantics          1.130 s     1.429 s
+formula wrappers               1.284 s     1.733 s
+exact-read finalization        0.281 s     0.471 s
+owner/edge extraction          0.129 s     0.248 s
+sorting                         0.077 s     0.122 s
+deduplication                   0.053 s     0.064 s
+retained-plan validation        0.172 s     0.324 s
+cleanup                         0.164 s     0.360 s
+explicit residual               0.172 s     0.245 s
+demand scheduling               0.134 s     0.186 s
+runtime contract validation     0.115 s     0.138 s
+```
+
+Exact finalization fell from approximately 0.419/0.916 s to 0.281/0.471 s for Light/Heavy. Owner resolution is no longer the dominant Stage 3H structure. Cleanup is now the leading generic bookkeeping phase, narrowly ahead of retained validation on Heavy. Stage 3H therefore continues with cleanup attribution separating semantic dirty clearing and volatile/iterative redirty from eager telemetry, provenance, samples, and temporary destruction. Stage 4 remains deferred.

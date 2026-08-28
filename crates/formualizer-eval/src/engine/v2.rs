@@ -1,6 +1,6 @@
 use crate::engine::{CycleConfig, DateSystem, VertexId};
-use crate::reference::CellRef;
-use formualizer_common::{ExcelError, LiteralValue, PackedSheetCell};
+use crate::reference::{CellRef, SheetId};
+use formualizer_common::{CoordHashMap, ExcelError, LiteralValue, PackedSheetCell};
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -165,7 +165,7 @@ pub(crate) struct RawReadAttribution {
     pub effect_raw_events: [usize; EFFECT_KIND_COUNT],
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct V2FormulaEdgeExtractionAttribution {
     pub scalar_events: usize,
     pub scalar_event_coordinates_inspected: usize,
@@ -194,6 +194,8 @@ pub(crate) struct V2FormulaEdgeExtractionAttribution {
     pub formula_owner_index_builds: usize,
     pub formula_owner_index_entries: usize,
     pub formula_owner_index_build_ns: u128,
+    pub formula_owner_entries_by_sheet: BTreeMap<SheetId, usize>,
+    pub owner_probe_results: Vec<(PackedSheetCell, bool)>,
     pub scalar_event_scan_ns: u128,
     pub scalar_exact_cell_edge_ns: u128,
     pub name_resolution_ns: u128,
@@ -378,11 +380,117 @@ pub(crate) struct V2FormulaAttribution {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct V2OwnerSheetAttribution {
+    pub probes: usize,
+    pub unique_coordinates: usize,
+    pub repeated_coordinates: usize,
+    pub repeated_positive_probes: usize,
+    pub repeated_negative_probes: usize,
+    pub hits: usize,
+    pub misses: usize,
+    pub formula_owners: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct V2OwnerReadSetAttribution {
+    pub category: V2FormulaAttributionCategory,
+    pub vertex: VertexId,
+    pub size: usize,
+    pub hits: usize,
+    pub misses: usize,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct V2OwnerReuseAttribution {
+    seen: CoordHashMap<PackedSheetCell, (bool, u32)>,
+    pub probes: usize,
+    pub unique_coordinates: usize,
+    pub repeated_coordinates: usize,
+    pub repeated_positive_probes: usize,
+    pub repeated_negative_probes: usize,
+    pub unique_positive_coordinates: usize,
+    pub unique_negative_coordinates: usize,
+    pub per_sheet: BTreeMap<SheetId, V2OwnerSheetAttribution>,
+    pub read_sets: Vec<V2OwnerReadSetAttribution>,
+    pub read_set_cells: Vec<Vec<PackedSheetCell>>,
+}
+
+impl V2OwnerReuseAttribution {
+    fn record(
+        &mut self,
+        category: V2FormulaAttributionCategory,
+        vertex: VertexId,
+        probes: &[(PackedSheetCell, bool)],
+        formula_owners: &BTreeMap<SheetId, usize>,
+    ) {
+        for (&sheet, &owners) in formula_owners {
+            self.per_sheet.entry(sheet).or_default().formula_owners = owners;
+        }
+        let mut hits = 0usize;
+        for &(coordinate, positive) in probes {
+            self.probes = self.probes.saturating_add(1);
+            let sheet = self.per_sheet.entry(coordinate.sheet_id()).or_default();
+            sheet.probes = sheet.probes.saturating_add(1);
+            if positive {
+                hits = hits.saturating_add(1);
+                sheet.hits = sheet.hits.saturating_add(1);
+            } else {
+                sheet.misses = sheet.misses.saturating_add(1);
+            }
+            match self.seen.entry(coordinate) {
+                std::collections::hash_map::Entry::Vacant(entry) => {
+                    entry.insert((positive, 1));
+                    self.unique_coordinates = self.unique_coordinates.saturating_add(1);
+                    sheet.unique_coordinates = sheet.unique_coordinates.saturating_add(1);
+                    if positive {
+                        self.unique_positive_coordinates =
+                            self.unique_positive_coordinates.saturating_add(1);
+                    } else {
+                        self.unique_negative_coordinates =
+                            self.unique_negative_coordinates.saturating_add(1);
+                    }
+                }
+                std::collections::hash_map::Entry::Occupied(mut entry) => {
+                    let (first_positive, count) = entry.get_mut();
+                    debug_assert_eq!(*first_positive, positive);
+                    if *count == 1 {
+                        self.repeated_coordinates = self.repeated_coordinates.saturating_add(1);
+                        sheet.repeated_coordinates = sheet.repeated_coordinates.saturating_add(1);
+                    }
+                    *count = count.saturating_add(1);
+                    if positive {
+                        self.repeated_positive_probes =
+                            self.repeated_positive_probes.saturating_add(1);
+                        sheet.repeated_positive_probes =
+                            sheet.repeated_positive_probes.saturating_add(1);
+                    } else {
+                        self.repeated_negative_probes =
+                            self.repeated_negative_probes.saturating_add(1);
+                        sheet.repeated_negative_probes =
+                            sheet.repeated_negative_probes.saturating_add(1);
+                    }
+                }
+            }
+        }
+        self.read_sets.push(V2OwnerReadSetAttribution {
+            category,
+            vertex,
+            size: probes.len(),
+            hits,
+            misses: probes.len().saturating_sub(hits),
+        });
+        self.read_set_cells
+            .push(probes.iter().map(|(coordinate, _)| *coordinate).collect());
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct V2ExclusiveAttribution {
     pub outside_workspace: V2FormulaAttribution,
     pub retained_dirty_upstream: V2FormulaAttribution,
     pub exact_scc: V2FormulaAttribution,
     pub downstream: V2FormulaAttribution,
+    pub owner_reuse: V2OwnerReuseAttribution,
     pub retained_state_scan_ns: u128,
     pub demand_scheduling_ns: u128,
     pub retained_plan_validation_ns: u128,
@@ -441,6 +549,14 @@ impl V2ExclusiveAttribution {
         finalization: V2ReadFinalizationAttribution,
     ) {
         let finalization_ns = finalization.elapsed_ns();
+        if !finalization.formula_edge.owner_probe_results.is_empty() {
+            self.owner_reuse.record(
+                category,
+                vertex,
+                &finalization.formula_edge.owner_probe_results,
+                &finalization.formula_edge.formula_owner_entries_by_sheet,
+            );
+        }
         let formula = self.formula_mut(category);
         formula.exact_read_sets_produced = formula.exact_read_sets_produced.saturating_add(1);
         formula.logical_range_positions = formula
@@ -594,6 +710,7 @@ pub(crate) struct V2ReadRecorder {
     active: AtomicBool,
     state: Mutex<V2ReadRecorderState>,
     attribution_enabled: bool,
+    owner_reuse_enabled: bool,
     recorder_sample_counters: [std::sync::atomic::AtomicUsize; RECORDER_OPERATION_COUNT],
     range_materialization_sample_counter: std::sync::atomic::AtomicUsize,
 }
@@ -604,6 +721,8 @@ impl Default for V2ReadRecorder {
             active: AtomicBool::new(false),
             state: Mutex::new(V2ReadRecorderState::default()),
             attribution_enabled: std::env::var_os("FZ_TRACE_V2_ATTRIBUTION").is_some(),
+            owner_reuse_enabled: std::env::var_os("FZ_TRACE_V2_OWNER_REUSE").is_some()
+                || std::env::var_os("FZ_BENCH_V2_OWNER_RESOLVERS").is_some(),
             recorder_sample_counters: std::array::from_fn(|_| {
                 std::sync::atomic::AtomicUsize::new(0)
             }),
@@ -615,6 +734,10 @@ impl Default for V2ReadRecorder {
 impl V2ReadRecorder {
     pub(crate) fn attribution_enabled(&self) -> bool {
         self.attribution_enabled
+    }
+
+    pub(crate) fn owner_reuse_enabled(&self) -> bool {
+        self.attribution_enabled && self.owner_reuse_enabled
     }
 
     pub(crate) fn begin_attribution_request(&self) {

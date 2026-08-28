@@ -79,9 +79,10 @@ use crate::traits::{
     EvaluationContext, ReferenceGeneration, ReferenceInfo, ReferenceObservation, ReferenceShape,
     Resolver,
 };
+#[cfg(any(test, feature = "test-support"))]
+use formualizer_common::CoordHashMap;
 use formualizer_common::{
-    CoordBuildHasher, CoordHashMap, LiteralValue, PackedSheetCell, col_letters_from_1based,
-    parse_a1_1based,
+    CoordBuildHasher, LiteralValue, PackedSheetCell, col_letters_from_1based, parse_a1_1based,
 };
 use formualizer_parse::parser::ReferenceType;
 use formualizer_parse::{ASTNode, ASTNodeType, ExcelError, ExcelErrorKind};
@@ -963,7 +964,7 @@ pub struct Engine<R> {
     pub recalc_epoch: u64,
     v2_enabled: bool,
     v2_read_recorder: Arc<crate::engine::v2::V2ReadRecorder>,
-    v2_formula_owner_index: Mutex<Option<CoordHashMap<PackedSheetCell, VertexId>>>,
+    v2_formula_owner_index: Mutex<Option<BTreeMap<u16, Vec<(PackedSheetCell, VertexId)>>>>,
     v2_state: crate::engine::v2::V2State,
     v2_function_snapshot: Option<crate::function_registry::RegistryPlanningSnapshot>,
     v2_contract_cache: Option<V2ContractCache>,
@@ -1886,6 +1887,63 @@ pub struct EngineV2FormulaEdgeExtractionAttribution {
 #[cfg(any(test, feature = "test-support"))]
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 #[doc(hidden)]
+pub struct EngineV2OwnerSheetAttribution {
+    pub probes: usize,
+    pub unique_coordinates: usize,
+    pub repeated_coordinates: usize,
+    pub repeated_positive_probes: usize,
+    pub repeated_negative_probes: usize,
+    pub hits: usize,
+    pub misses: usize,
+    pub formula_owners: usize,
+}
+
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[doc(hidden)]
+pub struct EngineV2OwnerReadSetAttribution {
+    pub category: &'static str,
+    pub vertex: u64,
+    pub size: usize,
+    pub hits: usize,
+    pub misses: usize,
+}
+
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[doc(hidden)]
+pub struct EngineV2OwnerReuseAttribution {
+    pub probes: usize,
+    pub unique_coordinates: usize,
+    pub repeated_coordinates: usize,
+    pub repeated_positive_probes: usize,
+    pub repeated_negative_probes: usize,
+    pub unique_positive_coordinates: usize,
+    pub unique_negative_coordinates: usize,
+    pub per_sheet: BTreeMap<u16, EngineV2OwnerSheetAttribution>,
+    pub read_sets: Vec<EngineV2OwnerReadSetAttribution>,
+}
+
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[doc(hidden)]
+pub struct EngineV2OwnerResolverBenchmark {
+    pub read_sets: usize,
+    pub probes: usize,
+    pub formula_owners: usize,
+    pub unique_read_sets: usize,
+    pub direct_hash_ns: u128,
+    pub coordinate_memo_ns: u128,
+    pub sorted_merge_ns: u128,
+    pub read_set_memo_ns: u128,
+    pub adaptive_ns: Vec<(usize, u128)>,
+    pub hits: usize,
+    pub checksum: u64,
+}
+
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[doc(hidden)]
 pub struct EngineV2ReadFinalizationAttribution {
     pub recorder_extraction_ns: u128,
     pub cloning_copying_ns: u128,
@@ -1966,6 +2024,7 @@ pub struct EngineV2ExclusiveAttribution {
     pub retained_dirty_upstream: EngineV2FormulaAttribution,
     pub exact_scc: EngineV2FormulaAttribution,
     pub downstream: EngineV2FormulaAttribution,
+    pub owner_reuse: EngineV2OwnerReuseAttribution,
     pub retained_state_scan_ns: u128,
     pub demand_scheduling_ns: u128,
     pub retained_plan_validation_ns: u128,
@@ -1979,7 +2038,7 @@ pub struct EngineV2ExclusiveAttribution {
 
 #[cfg(any(test, feature = "test-support"))]
 impl EngineV2FormulaEdgeExtractionAttribution {
-    fn from_internal(attribution: crate::engine::v2::V2FormulaEdgeExtractionAttribution) -> Self {
+    fn from_internal(attribution: &crate::engine::v2::V2FormulaEdgeExtractionAttribution) -> Self {
         Self {
             scalar_events: attribution.scalar_events,
             scalar_event_coordinates_inspected: attribution.scalar_event_coordinates_inspected,
@@ -2148,7 +2207,7 @@ impl EngineV2FormulaAttribution {
                 range_canonicalization_ns: attribution.finalization.range_canonicalization_ns,
                 formula_edge_extraction_ns: attribution.finalization.formula_edge_extraction_ns,
                 formula_edge: EngineV2FormulaEdgeExtractionAttribution::from_internal(
-                    attribution.finalization.formula_edge,
+                    &attribution.finalization.formula_edge,
                 ),
                 reference_generation_canonicalization_ns: attribution
                     .finalization
@@ -2170,6 +2229,60 @@ impl EngineV2FormulaAttribution {
 }
 
 #[cfg(any(test, feature = "test-support"))]
+impl EngineV2OwnerReuseAttribution {
+    fn from_internal(attribution: &crate::engine::v2::V2OwnerReuseAttribution) -> Self {
+        let per_sheet = attribution
+            .per_sheet
+            .iter()
+            .map(|(&sheet, stats)| {
+                (
+                    sheet,
+                    EngineV2OwnerSheetAttribution {
+                        probes: stats.probes,
+                        unique_coordinates: stats.unique_coordinates,
+                        repeated_coordinates: stats.repeated_coordinates,
+                        repeated_positive_probes: stats.repeated_positive_probes,
+                        repeated_negative_probes: stats.repeated_negative_probes,
+                        hits: stats.hits,
+                        misses: stats.misses,
+                        formula_owners: stats.formula_owners,
+                    },
+                )
+            })
+            .collect();
+        let read_sets = attribution
+            .read_sets
+            .iter()
+            .map(|stats| EngineV2OwnerReadSetAttribution {
+                category: match stats.category {
+                    crate::engine::v2::V2FormulaAttributionCategory::OutsideWorkspace => "outside",
+                    crate::engine::v2::V2FormulaAttributionCategory::RetainedDirtyUpstream => {
+                        "dirty_upstream"
+                    }
+                    crate::engine::v2::V2FormulaAttributionCategory::ExactScc => "exact_scc",
+                    crate::engine::v2::V2FormulaAttributionCategory::Downstream => "downstream",
+                },
+                vertex: stats.vertex.0 as u64,
+                size: stats.size,
+                hits: stats.hits,
+                misses: stats.misses,
+            })
+            .collect();
+        Self {
+            probes: attribution.probes,
+            unique_coordinates: attribution.unique_coordinates,
+            repeated_coordinates: attribution.repeated_coordinates,
+            repeated_positive_probes: attribution.repeated_positive_probes,
+            repeated_negative_probes: attribution.repeated_negative_probes,
+            unique_positive_coordinates: attribution.unique_positive_coordinates,
+            unique_negative_coordinates: attribution.unique_negative_coordinates,
+            per_sheet,
+            read_sets,
+        }
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
 impl EngineV2ExclusiveAttribution {
     fn from_internal(
         attribution: &crate::engine::v2::V2ExclusiveAttribution,
@@ -2184,6 +2297,7 @@ impl EngineV2ExclusiveAttribution {
             ),
             exact_scc: EngineV2FormulaAttribution::from_internal(&attribution.exact_scc),
             downstream: EngineV2FormulaAttribution::from_internal(&attribution.downstream),
+            owner_reuse: EngineV2OwnerReuseAttribution::from_internal(&attribution.owner_reuse),
             retained_state_scan_ns: attribution.retained_state_scan_ns,
             demand_scheduling_ns: attribution.demand_scheduling_ns,
             retained_plan_validation_ns: attribution.retained_plan_validation_ns,
@@ -28225,6 +28339,205 @@ where
 
     #[cfg(any(test, feature = "test-support"))]
     #[doc(hidden)]
+    pub fn v2_owner_resolver_benchmark_for_test(&self) -> EngineV2OwnerResolverBenchmark {
+        fn merge_resolve(
+            cells: &[PackedSheetCell],
+            owners: &BTreeMap<u16, Vec<(PackedSheetCell, VertexId)>>,
+        ) -> (usize, u64) {
+            let mut hits = 0usize;
+            let mut checksum = 0u64;
+            let mut start = 0usize;
+            while start < cells.len() {
+                let sheet = cells[start].sheet_id();
+                let mut end = start + 1;
+                while end < cells.len() && cells[end].sheet_id() == sheet {
+                    end += 1;
+                }
+                if let Some(sheet_owners) = owners.get(&sheet) {
+                    let mut cell_index = start;
+                    let mut owner_index =
+                        sheet_owners.partition_point(|(coordinate, _)| *coordinate < cells[start]);
+                    while cell_index < end && owner_index < sheet_owners.len() {
+                        match cells[cell_index].cmp(&sheet_owners[owner_index].0) {
+                            std::cmp::Ordering::Less => cell_index += 1,
+                            std::cmp::Ordering::Greater => owner_index += 1,
+                            std::cmp::Ordering::Equal => {
+                                hits = hits.saturating_add(1);
+                                checksum =
+                                    checksum.wrapping_add(sheet_owners[owner_index].1.0 as u64);
+                                cell_index += 1;
+                                owner_index += 1;
+                            }
+                        }
+                    }
+                }
+                start = end;
+            }
+            (hits, checksum)
+        }
+
+        fn measure(mut run: impl FnMut() -> (usize, u64)) -> (u128, usize, u64) {
+            let mut best = u128::MAX;
+            let mut result = (0usize, 0u64);
+            for _ in 0..3 {
+                let started = Instant::now();
+                let current = std::hint::black_box(run());
+                let elapsed = started.elapsed().as_nanos();
+                if elapsed < best {
+                    best = elapsed;
+                    result = current;
+                }
+            }
+            (best, result.0, result.1)
+        }
+
+        let read_sets = &self
+            .v2_state
+            .metrics
+            .exclusive_attribution
+            .owner_reuse
+            .read_set_cells;
+        let mut owner_hash = CoordHashMap::default();
+        let mut owner_vectors = BTreeMap::<u16, Vec<(PackedSheetCell, VertexId)>>::new();
+        for vertex in self.graph.vertices_with_formulas() {
+            let Some(cell) = self.graph.get_cell_ref(vertex) else {
+                continue;
+            };
+            let Some(coordinate) =
+                PackedSheetCell::try_new(cell.sheet_id, cell.coord.row(), cell.coord.col())
+            else {
+                continue;
+            };
+            owner_hash.insert(coordinate, vertex);
+            owner_vectors
+                .entry(coordinate.sheet_id())
+                .or_default()
+                .push((coordinate, vertex));
+        }
+        for owners in owner_vectors.values_mut() {
+            owners.sort_unstable_by_key(|(coordinate, _)| *coordinate);
+        }
+        let probes = read_sets.iter().map(Vec::len).sum();
+        let unique_read_sets = read_sets
+            .iter()
+            .cloned()
+            .collect::<FxHashSet<Vec<PackedSheetCell>>>()
+            .len();
+
+        let (direct_hash_ns, hits, checksum) = measure(|| {
+            let mut hits = 0usize;
+            let mut checksum = 0u64;
+            for cells in read_sets {
+                for cell in cells {
+                    if let Some(vertex) = owner_hash.get(cell) {
+                        hits = hits.saturating_add(1);
+                        checksum = checksum.wrapping_add(vertex.0 as u64);
+                    }
+                }
+            }
+            (hits, checksum)
+        });
+        let (coordinate_memo_ns, memo_hits, memo_checksum) = measure(|| {
+            let mut memo = CoordHashMap::<PackedSheetCell, Option<VertexId>>::default();
+            let mut hits = 0usize;
+            let mut checksum = 0u64;
+            for cells in read_sets {
+                for &cell in cells {
+                    let vertex = *memo
+                        .entry(cell)
+                        .or_insert_with(|| owner_hash.get(&cell).copied());
+                    if let Some(vertex) = vertex {
+                        hits = hits.saturating_add(1);
+                        checksum = checksum.wrapping_add(vertex.0 as u64);
+                    }
+                }
+            }
+            (hits, checksum)
+        });
+        let (sorted_merge_ns, merge_hits, merge_checksum) = measure(|| {
+            read_sets.iter().fold((0usize, 0u64), |total, cells| {
+                let current = merge_resolve(cells, &owner_vectors);
+                (
+                    total.0.saturating_add(current.0),
+                    total.1.wrapping_add(current.1),
+                )
+            })
+        });
+        let (read_set_memo_ns, read_set_hits, read_set_checksum) = measure(|| {
+            let mut memo = FxHashMap::<Vec<PackedSheetCell>, Vec<VertexId>>::default();
+            let mut hits = 0usize;
+            let mut checksum = 0u64;
+            for cells in read_sets {
+                if let Some(vertices) = memo.get(cells.as_slice()) {
+                    hits = hits.saturating_add(vertices.len());
+                    checksum = vertices.iter().fold(checksum, |checksum, vertex| {
+                        checksum.wrapping_add(vertex.0 as u64)
+                    });
+                    continue;
+                }
+                let vertices = cells
+                    .iter()
+                    .filter_map(|cell| owner_hash.get(cell).copied())
+                    .collect::<Vec<_>>();
+                hits = hits.saturating_add(vertices.len());
+                checksum = vertices.iter().fold(checksum, |checksum, vertex| {
+                    checksum.wrapping_add(vertex.0 as u64)
+                });
+                memo.insert(cells.clone(), vertices);
+            }
+            (hits, checksum)
+        });
+        let adaptive_ns = [8usize, 16, 32, 64, 128, 256, 512, 1024, 2048]
+            .into_iter()
+            .map(|threshold| {
+                let (elapsed, adaptive_hits, adaptive_checksum) = measure(|| {
+                    let mut memo = CoordHashMap::<PackedSheetCell, Option<VertexId>>::default();
+                    let mut hits = 0usize;
+                    let mut checksum = 0u64;
+                    for cells in read_sets {
+                        if cells.len() >= threshold {
+                            let current = merge_resolve(cells, &owner_vectors);
+                            hits = hits.saturating_add(current.0);
+                            checksum = checksum.wrapping_add(current.1);
+                        } else {
+                            for &cell in cells {
+                                let vertex = *memo
+                                    .entry(cell)
+                                    .or_insert_with(|| owner_hash.get(&cell).copied());
+                                if let Some(vertex) = vertex {
+                                    hits = hits.saturating_add(1);
+                                    checksum = checksum.wrapping_add(vertex.0 as u64);
+                                }
+                            }
+                        }
+                    }
+                    (hits, checksum)
+                });
+                assert_eq!((adaptive_hits, adaptive_checksum), (hits, checksum));
+                (threshold, elapsed)
+            })
+            .collect();
+        assert_eq!((memo_hits, memo_checksum), (hits, checksum));
+        assert_eq!((merge_hits, merge_checksum), (hits, checksum));
+        assert_eq!((read_set_hits, read_set_checksum), (hits, checksum));
+
+        EngineV2OwnerResolverBenchmark {
+            read_sets: read_sets.len(),
+            probes,
+            formula_owners: owner_hash.len(),
+            unique_read_sets,
+            direct_hash_ns,
+            coordinate_memo_ns,
+            sorted_merge_ns,
+            read_set_memo_ns,
+            adaptive_ns,
+            hits,
+            checksum,
+        }
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
     pub fn v2_diagnostics_for_test(&self) -> EngineV2Diagnostics {
         let metrics = &self.v2_state.metrics;
         EngineV2Diagnostics {
@@ -28810,6 +29123,7 @@ where
         let sorting_ns = sorting_started.elapsed().as_nanos();
         let edge_started = Instant::now();
         let detailed_edge_attribution = self.v2_read_recorder.attribution_enabled();
+        let owner_reuse_attribution = self.v2_read_recorder.owner_reuse_enabled();
         let mut formula_edge = crate::engine::v2::V2FormulaEdgeExtractionAttribution::default();
         if detailed_edge_attribution {
             formula_edge.scalar_events = cell_events.len();
@@ -28821,7 +29135,7 @@ where
             .lock()
             .expect("V2 formula owner index poisoned");
         if formula_owner_index.is_none() {
-            let mut owners = CoordHashMap::default();
+            let mut owners = BTreeMap::<u16, Vec<(PackedSheetCell, VertexId)>>::new();
             for vertex in self.graph.vertices_with_formulas() {
                 let Some(cell) = self.graph.get_cell_ref(vertex) else {
                     continue;
@@ -28831,11 +29145,21 @@ where
                 else {
                     continue;
                 };
-                owners.insert(cell, vertex);
+                owners
+                    .entry(cell.sheet_id())
+                    .or_default()
+                    .push((cell, vertex));
+            }
+            for sheet_owners in owners.values_mut() {
+                sheet_owners.sort_unstable_by_key(|(cell, _)| *cell);
             }
             if detailed_edge_attribution {
                 formula_edge.formula_owner_index_builds = 1;
-                formula_edge.formula_owner_index_entries = owners.len();
+                formula_edge.formula_owner_index_entries = owners.values().map(Vec::len).sum();
+                formula_edge.formula_owner_entries_by_sheet = owners
+                    .iter()
+                    .map(|(&sheet, owners)| (sheet, owners.len()))
+                    .collect();
             }
             *formula_owner_index = Some(owners);
             if detailed_edge_attribution {
@@ -28848,6 +29172,9 @@ where
             .expect("V2 formula owner index initialized");
         let scalar_exact_started = detailed_edge_attribution.then(Instant::now);
         let mut event_index = 0usize;
+        let mut current_sheet = None;
+        let mut sheet_owners = &[][..];
+        let mut owner_index = 0usize;
         while event_index < cell_events.len() {
             let cell = cell_events[event_index];
             let mut run_end = event_index.saturating_add(1);
@@ -28856,6 +29183,23 @@ where
             }
             let count = run_end.saturating_sub(event_index);
             event_index = run_end;
+            if current_sheet != Some(cell.sheet_id()) {
+                current_sheet = Some(cell.sheet_id());
+                sheet_owners = formula_owners
+                    .get(&cell.sheet_id())
+                    .map(Vec::as_slice)
+                    .unwrap_or_default();
+                owner_index = sheet_owners.partition_point(|(owner, _)| *owner < cell);
+            } else {
+                while owner_index < sheet_owners.len() && sheet_owners[owner_index].0 < cell {
+                    owner_index += 1;
+                }
+            }
+            let target = sheet_owners
+                .get(owner_index)
+                .filter(|(owner, _)| *owner == cell)
+                .map(|(_, vertex)| *vertex);
+            exact.cells.push(cell);
             if detailed_edge_attribution {
                 formula_edge.scalar_unique_coordinates_inspected = formula_edge
                     .scalar_unique_coordinates_inspected
@@ -28866,8 +29210,12 @@ where
                     .dependency_owner_lookups_attempted
                     .saturating_add(1);
             }
-            exact.cells.push(cell);
-            if let Some(target) = formula_owners.get(&cell).copied() {
+            if owner_reuse_attribution {
+                formula_edge
+                    .owner_probe_results
+                    .push((cell, target.is_some()));
+            }
+            if let Some(target) = target {
                 exact.formula_edge_events = exact.formula_edge_events.saturating_add(count);
                 exact.formula_edges.push(target);
                 if detailed_edge_attribution {

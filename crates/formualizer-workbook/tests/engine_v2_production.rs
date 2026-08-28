@@ -525,6 +525,14 @@ fn run_v2_profile_request(
     print_v2_profile_diagnostics(label, &diagnostics);
     print_v2_exclusive_attribution(label, &diagnostics.exclusive_attribution);
     print_v2_workspace_profiles(label, engine, &diagnostics);
+    if std::env::var_os("FZ_BENCH_V2_OWNER_RESOLVERS").is_some()
+        && matches!(label, "light_f6_500_v2" | "heavy_f7_500_v2")
+    {
+        println!(
+            "{label}_owner_resolver_benchmark={:?}",
+            engine.v2_owner_resolver_benchmark_for_test()
+        );
+    }
     if label == "light_f6_500_v2" && std::env::var_os("FZ_PROFILE_WORKSPACE_STRUCTURE").is_some() {
         print_v2_workspace_structure(engine);
     }
@@ -1372,6 +1380,44 @@ fn print_v2_exclusive_attribution(
             formula.finalization_top_read_sets
         );
     }
+    let owner = &attribution.owner_reuse;
+    let mut sizes = owner
+        .read_sets
+        .iter()
+        .map(|read_set| read_set.size)
+        .collect::<Vec<_>>();
+    sizes.sort_unstable();
+    let percentile = |percent: usize| {
+        sizes
+            .get(sizes.len().saturating_sub(1).saturating_mul(percent) / 100)
+            .copied()
+            .unwrap_or_default()
+    };
+    let mut top_read_sets = owner.read_sets.clone();
+    top_read_sets.sort_unstable_by(|left, right| {
+        right
+            .size
+            .cmp(&left.size)
+            .then(right.misses.cmp(&left.misses))
+            .then(left.vertex.cmp(&right.vertex))
+    });
+    top_read_sets.truncate(20);
+    println!(
+        "{label}_owner_global=probes:{} unique_coordinates:{} repeated_coordinates:{} repeated_positive_probes:{} repeated_negative_probes:{} unique_positive_coordinates:{} unique_negative_coordinates:{} read_sets:{} size_p50:{} size_p95:{} size_max:{}",
+        owner.probes,
+        owner.unique_coordinates,
+        owner.repeated_coordinates,
+        owner.repeated_positive_probes,
+        owner.repeated_negative_probes,
+        owner.unique_positive_coordinates,
+        owner.unique_negative_coordinates,
+        owner.read_sets.len(),
+        percentile(50),
+        percentile(95),
+        sizes.last().copied().unwrap_or_default()
+    );
+    println!("{label}_owner_per_sheet={:?}", owner.per_sheet);
+    println!("{label}_owner_top_read_sets={top_read_sets:?}");
     println!(
         "{label}_attribution_phases_ns=retained_state_scan:{} demand_scheduling:{} retained_plan_validation:{} contract_validation:{} adjacency_replacement:{} cleanup:{} exclusive_children:{} explicit_residual:{} kernel_elapsed:{}",
         attribution.retained_state_scan_ns,

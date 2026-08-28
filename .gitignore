@@ -10,6 +10,7 @@ repomix-output.xml
 opencode.json
 
 *coverage*
+!docs/engine-v2-stage3h-coverage.md
 !tests/formula_tests/extended_coverage.json
 # FormulaPlane span-coverage measurement sources (not coverage artifacts)
 !**/fp_coverage.rs

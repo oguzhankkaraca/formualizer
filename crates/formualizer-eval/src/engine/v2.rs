@@ -1724,6 +1724,7 @@ pub(crate) struct V2RunResult {
 
 pub(crate) trait V2Host {
     fn v2_begin_request(&mut self);
+    fn v2_detailed_attribution_enabled(&self) -> bool;
     fn v2_set_formula_attribution_category(&mut self, category: V2FormulaAttributionCategory);
     fn v2_take_formula_attribution(&mut self) -> V2ExclusiveAttribution;
     fn v2_finish_request(&mut self, kind: V2RequestKind);
@@ -1923,104 +1924,127 @@ fn classify_workspace_plan<H: V2Host>(
     state: &V2State,
     members: &[VertexId],
     prior_profiles: &[V2WorkspaceDiagnostic],
+    contract_validity: &mut Vec<u8>,
 ) -> V2WorkspaceClassification {
     let prior = prior_profiles
         .iter()
         .find(|profile| profile.members.as_slice() == members);
     let stable_id = prior.map_or(0, |profile| profile.stable_id);
+    let retained_topology = prior
+        .and_then(|profile| profile.classification.as_ref())
+        .filter(|classification| {
+            classification.retained_plan_valid
+                && classification.exact_scc_components
+                    == prior
+                        .map(|profile| profile.actual_cyclic_components.clone())
+                        .unwrap_or_default()
+        });
     let local_members = members.iter().copied().collect::<BTreeSet<_>>();
-    let exact_scc = prior
-        .map(|profile| {
-            profile
-                .actual_cyclic_components
-                .iter()
-                .flatten()
-                .copied()
-                .collect::<BTreeSet<_>>()
-        })
-        .unwrap_or_default();
-    let mut upstream = BTreeSet::new();
-    let mut upstream_queue = exact_scc.iter().copied().collect::<VecDeque<_>>();
-    while let Some(reader) = upstream_queue.pop_front() {
-        let Some(reads) = state.current_reads.get(&reader) else {
-            continue;
-        };
-        for dependency in &reads.formula_edges {
-            if local_members.contains(dependency)
-                && !exact_scc.contains(dependency)
-                && upstream.insert(*dependency)
-            {
-                upstream_queue.push_back(*dependency);
-            }
-        }
-    }
-    let mut reverse = BTreeMap::<VertexId, Vec<VertexId>>::new();
-    for reader in members {
-        if let Some(reads) = state.current_reads.get(reader) {
-            for dependency in &reads.formula_edges {
-                if local_members.contains(dependency) {
-                    reverse.entry(*dependency).or_default().push(*reader);
-                }
-            }
-        }
-    }
-    let mut downstream = BTreeSet::new();
-    let mut downstream_queue = exact_scc.iter().copied().collect::<VecDeque<_>>();
-    while let Some(dependency) = downstream_queue.pop_front() {
-        for reader in reverse.get(&dependency).into_iter().flatten() {
-            if !exact_scc.contains(reader) && downstream.insert(*reader) {
-                downstream_queue.push_back(*reader);
-            }
-        }
-    }
-    let topological_order = |members_to_order: &BTreeSet<VertexId>| {
-        let mut indegree = BTreeMap::<VertexId, usize>::new();
-        let mut readers = BTreeMap::<VertexId, Vec<VertexId>>::new();
-        for member in members_to_order {
-            indegree.insert(*member, 0);
-        }
-        for member in members_to_order {
-            if let Some(reads) = state.current_reads.get(member) {
-                for dependency in &reads.formula_edges {
-                    if members_to_order.contains(dependency) {
-                        *indegree.entry(*member).or_default() += 1;
-                        readers.entry(*dependency).or_default().push(*member);
-                    }
-                }
-            }
-        }
-        let mut ready = indegree
-            .iter()
-            .filter_map(|(member, degree)| (*degree == 0).then_some(*member))
-            .collect::<BTreeSet<_>>();
-        let mut ordered = Vec::with_capacity(members_to_order.len());
-        while let Some(member) = ready.pop_first() {
-            ordered.push(member);
-            for reader in readers.get(&member).into_iter().flatten() {
-                if let Some(degree) = indegree.get_mut(reader) {
-                    *degree = degree.saturating_sub(1);
-                    if *degree == 0 {
-                        ready.insert(*reader);
-                    }
-                }
-            }
-        }
-        for member in members_to_order {
-            if !ordered.contains(member) {
-                ordered.push(*member);
-            }
-        }
-        ordered
-    };
-    let upstream_order = topological_order(&upstream);
-    let downstream_order = topological_order(&downstream);
     let exact_scc_components = prior
         .map(|profile| profile.actual_cyclic_components.clone())
         .unwrap_or_default();
-    let unrelated = local_members
-        .difference(&exact_scc)
-        .filter(|member| !upstream.contains(member) && !downstream.contains(member))
-        .count();
+    let exact_scc = exact_scc_components
+        .iter()
+        .flatten()
+        .copied()
+        .collect::<BTreeSet<_>>();
+    let (upstream, downstream, upstream_order, downstream_order, unrelated) =
+        if let Some(classification) = retained_topology {
+            (
+                classification.upstream_order.iter().copied().collect(),
+                classification.downstream_order.iter().copied().collect(),
+                classification.upstream_order.clone(),
+                classification.downstream_order.clone(),
+                classification.unrelated_conservative_members,
+            )
+        } else {
+            let mut upstream = BTreeSet::new();
+            let mut upstream_queue = exact_scc.iter().copied().collect::<VecDeque<_>>();
+            while let Some(reader) = upstream_queue.pop_front() {
+                let Some(reads) = state.current_reads.get(&reader) else {
+                    continue;
+                };
+                for dependency in &reads.formula_edges {
+                    if local_members.contains(dependency)
+                        && !exact_scc.contains(dependency)
+                        && upstream.insert(*dependency)
+                    {
+                        upstream_queue.push_back(*dependency);
+                    }
+                }
+            }
+            let mut reverse = BTreeMap::<VertexId, Vec<VertexId>>::new();
+            for reader in members {
+                if let Some(reads) = state.current_reads.get(reader) {
+                    for dependency in &reads.formula_edges {
+                        if local_members.contains(dependency) {
+                            reverse.entry(*dependency).or_default().push(*reader);
+                        }
+                    }
+                }
+            }
+            let mut downstream = BTreeSet::new();
+            let mut downstream_queue = exact_scc.iter().copied().collect::<VecDeque<_>>();
+            while let Some(dependency) = downstream_queue.pop_front() {
+                for reader in reverse.get(&dependency).into_iter().flatten() {
+                    if !exact_scc.contains(reader) && downstream.insert(*reader) {
+                        downstream_queue.push_back(*reader);
+                    }
+                }
+            }
+            let topological_order = |members_to_order: &BTreeSet<VertexId>| {
+                let mut indegree = BTreeMap::<VertexId, usize>::new();
+                let mut readers = BTreeMap::<VertexId, Vec<VertexId>>::new();
+                for member in members_to_order {
+                    indegree.insert(*member, 0);
+                }
+                for member in members_to_order {
+                    if let Some(reads) = state.current_reads.get(member) {
+                        for dependency in &reads.formula_edges {
+                            if members_to_order.contains(dependency) {
+                                *indegree.entry(*member).or_default() += 1;
+                                readers.entry(*dependency).or_default().push(*member);
+                            }
+                        }
+                    }
+                }
+                let mut ready = indegree
+                    .iter()
+                    .filter_map(|(member, degree)| (*degree == 0).then_some(*member))
+                    .collect::<BTreeSet<_>>();
+                let mut ordered = Vec::with_capacity(members_to_order.len());
+                while let Some(member) = ready.pop_first() {
+                    ordered.push(member);
+                    for reader in readers.get(&member).into_iter().flatten() {
+                        if let Some(degree) = indegree.get_mut(reader) {
+                            *degree = degree.saturating_sub(1);
+                            if *degree == 0 {
+                                ready.insert(*reader);
+                            }
+                        }
+                    }
+                }
+                for member in members_to_order {
+                    if !ordered.contains(member) {
+                        ordered.push(*member);
+                    }
+                }
+                ordered
+            };
+            let upstream_order = topological_order(&upstream);
+            let downstream_order = topological_order(&downstream);
+            let unrelated = local_members
+                .difference(&exact_scc)
+                .filter(|member| !upstream.contains(member) && !downstream.contains(member))
+                .count();
+            (
+                upstream,
+                downstream,
+                upstream_order,
+                downstream_order,
+                unrelated,
+            )
+        };
     let mut stage1_effective_dirty_members = 0usize;
     let mut stage1_clean_members = 0usize;
     let mut dirty_upstream_members = 0usize;
@@ -2049,10 +2073,21 @@ fn classify_workspace_plan<H: V2Host>(
             exact_read_state_missing = exact_read_state_missing.saturating_add(1);
             continue;
         };
-        let contract_valid = reads
-            .formula_edges
-            .iter()
-            .all(|dependency| host.v2_runtime_contract_certificate_valid(*dependency));
+        let contract_valid = reads.formula_edges.iter().all(|dependency| {
+            let index = dependency.0 as usize;
+            if contract_validity.len() <= index {
+                contract_validity.resize(index.saturating_add(1), 0);
+            }
+            match contract_validity[index] {
+                1 => true,
+                2 => false,
+                _ => {
+                    let valid = host.v2_runtime_contract_certificate_valid(*dependency);
+                    contract_validity[index] = if valid { 1 } else { 2 };
+                    valid
+                }
+            }
+        });
         if contract_valid {
             contract_certificate_valid = contract_certificate_valid.saturating_add(1);
         } else {
@@ -2481,11 +2516,17 @@ pub(crate) fn run<H: V2Host>(
         .sum();
     let mut workspace_plan_classifications = BTreeMap::new();
     let retained_plan_validation_started = Instant::now();
+    let mut retained_contract_validity = Vec::new();
     if roots.is_some() {
         for unit in &schedule_units {
             if let V2ScheduleUnit::Workspace(members) = unit {
-                let classification =
-                    classify_workspace_plan(host, state, members, &prior_workspace_profiles);
+                let classification = classify_workspace_plan(
+                    host,
+                    state,
+                    members,
+                    &prior_workspace_profiles,
+                    &mut retained_contract_validity,
+                );
                 record_workspace_classification(&mut state.metrics, &classification);
                 workspace_plan_classifications.insert(members.clone(), classification);
             }
@@ -2501,6 +2542,7 @@ pub(crate) fn run<H: V2Host>(
 
     host.v2_begin_request();
     host.v2_begin_runtime_contract_validation();
+    let detailed_read_set_metrics = host.v2_detailed_attribution_enabled();
     let result = (|| {
         for unit in schedule_units {
             match unit {
@@ -2659,10 +2701,12 @@ pub(crate) fn run<H: V2Host>(
                             .metrics
                             .diagnostic_records_retained
                             .saturating_add(reads.diagnostic_records_retained);
-                        let read_set_changed = state
-                            .current_reads
-                            .get(&vertex)
-                            .is_none_or(|previous| previous != &reads);
+                        let read_set_changed = detailed_read_set_metrics.then(|| {
+                            state
+                                .current_reads
+                                .get(&vertex)
+                                .is_none_or(|previous| previous != &reads)
+                        });
                         let edge_stats = state.replace_read_set_with_stats(vertex, reads);
                         state.metrics.exclusive_attribution.adjacency_replacement_ns = state
                             .metrics
@@ -2677,12 +2721,14 @@ pub(crate) fn run<H: V2Host>(
                             );
                         state.metrics.exact_read_sets_finalized =
                             state.metrics.exact_read_sets_finalized.saturating_add(1);
-                        if read_set_changed {
-                            state.metrics.exact_read_sets_changed =
-                                state.metrics.exact_read_sets_changed.saturating_add(1);
-                        } else {
-                            state.metrics.exact_read_sets_unchanged =
-                                state.metrics.exact_read_sets_unchanged.saturating_add(1);
+                        if let Some(read_set_changed) = read_set_changed {
+                            if read_set_changed {
+                                state.metrics.exact_read_sets_changed =
+                                    state.metrics.exact_read_sets_changed.saturating_add(1);
+                            } else {
+                                state.metrics.exact_read_sets_unchanged =
+                                    state.metrics.exact_read_sets_unchanged.saturating_add(1);
+                            }
                         }
                         state.metrics.exact_edges_examined = state
                             .metrics
@@ -2812,7 +2858,13 @@ pub(crate) fn run<H: V2Host>(
                             actual_cyclic_components: workspace.actual_cyclic_components.clone(),
                             pass_formula_evaluations: workspace.pass_formula_evaluations.clone(),
                             elapsed_ns: workspace.elapsed_ns,
-                            classification: workspace_plan_classifications.get(&members).cloned(),
+                            classification: if workspace.retained_plan_runtime_invalidations == 0
+                                && workspace.workspace_reopen_count == 0
+                            {
+                                workspace_plan_classifications.get(&members).cloned()
+                            } else {
+                                None
+                            },
                         });
                     state.metrics.conservative_workspace_member_count = state
                         .metrics
@@ -3068,10 +3120,12 @@ pub(crate) fn run<H: V2Host>(
                             .metrics
                             .diagnostic_records_retained
                             .saturating_add(reads.diagnostic_records_retained);
-                        let read_set_changed = state
-                            .current_reads
-                            .get(&member)
-                            .is_none_or(|previous| previous != &reads);
+                        let read_set_changed = detailed_read_set_metrics.then(|| {
+                            state
+                                .current_reads
+                                .get(&member)
+                                .is_none_or(|previous| previous != &reads)
+                        });
                         let edge_stats = state.replace_read_set_with_stats(member, reads);
                         state.metrics.exclusive_attribution.adjacency_replacement_ns = state
                             .metrics
@@ -3086,12 +3140,14 @@ pub(crate) fn run<H: V2Host>(
                             );
                         state.metrics.exact_read_sets_finalized =
                             state.metrics.exact_read_sets_finalized.saturating_add(1);
-                        if read_set_changed {
-                            state.metrics.exact_read_sets_changed =
-                                state.metrics.exact_read_sets_changed.saturating_add(1);
-                        } else {
-                            state.metrics.exact_read_sets_unchanged =
-                                state.metrics.exact_read_sets_unchanged.saturating_add(1);
+                        if let Some(read_set_changed) = read_set_changed {
+                            if read_set_changed {
+                                state.metrics.exact_read_sets_changed =
+                                    state.metrics.exact_read_sets_changed.saturating_add(1);
+                            } else {
+                                state.metrics.exact_read_sets_unchanged =
+                                    state.metrics.exact_read_sets_unchanged.saturating_add(1);
+                            }
                         }
                         state.metrics.exact_edges_examined = state
                             .metrics
@@ -3221,8 +3277,53 @@ pub(crate) fn run<H: V2Host>(
         let evaluated_vertices: Vec<VertexId> = evaluated.into_iter().collect();
         host.v2_clear_dirty(&evaluated_vertices);
         state.needs_full_rebuild = false;
+        let retained_refresh_started = Instant::now();
+        if roots.is_some() {
+            let profiles_to_refresh = state
+                .metrics
+                .workspace_profiles
+                .iter()
+                .enumerate()
+                .filter(|(_, profile)| {
+                    profile
+                        .classification
+                        .as_ref()
+                        .is_none_or(|classification| {
+                            !classification.retained_plan_valid
+                                || classification.exact_scc_components
+                                    != profile.actual_cyclic_components
+                        })
+                })
+                .map(|(index, profile)| (index, profile.clone()))
+                .collect::<Vec<_>>();
+            let mut contract_validity = Vec::new();
+            for (index, profile) in profiles_to_refresh {
+                let classification = classify_workspace_plan(
+                    host,
+                    state,
+                    &profile.members,
+                    std::slice::from_ref(&profile),
+                    &mut contract_validity,
+                );
+                if classification.retained_plan_valid {
+                    state.metrics.workspace_profiles[index].classification = Some(classification);
+                }
+            }
+        }
+        let retained_refresh_ns = retained_refresh_started.elapsed().as_nanos();
+        state
+            .metrics
+            .exclusive_attribution
+            .retained_plan_validation_ns = state
+            .metrics
+            .exclusive_attribution
+            .retained_plan_validation_ns
+            .saturating_add(retained_refresh_ns);
         host.v2_finish_request(request_kind);
-        state.metrics.cleanup_ns = cleanup_started.elapsed().as_nanos();
+        state.metrics.cleanup_ns = cleanup_started
+            .elapsed()
+            .as_nanos()
+            .saturating_sub(retained_refresh_ns);
         state.metrics.exclusive_attribution.cleanup_ns = state.metrics.cleanup_ns;
         state.metrics.unique_current_runtime_formula_edges = state.current_edges.len();
         state.metrics.runtime_formula_edges_retained = state.current_edges.len();

@@ -382,3 +382,59 @@ Heavy unchanged                  1.762 s        1.616 s          526.3 MB
 ```
 
 The complete 64-test V2 production suite passed after the change. Exact Light/Heavy outputs and runtime dependency behavior remain unchanged. Stage 3H remains open; the next re-profile decides between retained-plan validation, residual, and remaining finalization.
+
+## Stage 3H retained-plan validation campaign
+
+### Root causes
+
+Retained classification repeated two kinds of proven work:
+
+1. Every exact runtime edge recomputed the same revision-heavy contract-certificate key and probed the persistent certificate map. Light examined 274,574 edges and Heavy 312,564, while dependencies repeat heavily.
+2. Every request rebuilt workspace-local membership, reverse adjacency, exact-SCC upstream/downstream closures, and two topological orders even when the prior execution had already proved exact SCC membership and read topology unchanged.
+
+V0.8.0's coarse retained plans avoid per-edge proof by binding the complete plan to engine/topology/symbol/semantic generations. V2 cannot use that coarse proof alone because selected references, dynamic targets, and exact runtime topology can reopen. The retained design therefore combines generation-scoped reuse with V2's post-execution exact verification.
+
+### Retained design
+
+- A request-scoped direct `VertexId` validity vector memoizes persistent contract-certificate checks during classification and post-evaluation contract validation. Revision checks bound the memo lifetime. Candidate/hit/skip counters remain unchanged.
+- A structural classification is retained only after a successful final revision validation and authoritative final exact reads/SCCs are available.
+- Reuse requires a prior valid classification whose exact components match the prior actual components.
+- Any runtime invalidation or workspace reopen drops the pre-execution classification. The authoritative fallback result may establish a new certificate only after successful final validation.
+- Dirty members, generation/reference validity, mutation intersection, and contract validity are rechecked every request; only immutable local topology/ordering is reused.
+
+Measured attribution:
+
+```text
+phase                              Light before/after     Heavy before/after
+retained-plan validation             188 -> ~90 ms          343 -> ~89 ms
+post-evaluation contract validation  121 -> ~38 ms          145 -> ~50 ms
+Heavy unchanged retained plan             n/a               262 -> ~94 ms
+```
+
+Cold now materializes the first structural certificate and attributes that work to retained validation; warm requests avoid it.
+
+Three fresh uninstrumented processes:
+
+```text
+request                       wall median    kernel median    working set median
+Light initial                    7.399 s        6.678 s          359.2 MB
+Light warm 300->500              2.203 s        2.050 s          380.4 MB
+Light unchanged                  0.123 s        0.121 s          380.5 MB
+Heavy initial                    9.033 s        8.110 s          497.4 MB
+Heavy warm 300->500              2.977 s        2.771 s          526.2 MB
+Heavy unchanged                  1.344 s        1.207 s          527.2 MB
+```
+
+The Heavy warm objective is crossed. Light remains above 2.0 s, and obvious generic finalization/residual costs remain, so Stage 3H stays open and Stage 4 remains deferred.
+
+### Retained validation follow-ons
+
+Normal post-change attribution reduced retained-plan validation to approximately 48 ms Light and 89-94 ms Heavy, and contract validation to approximately 38 ms Light and 40-55 ms Heavy.
+
+The sorted owner index is now retained as an immutable topology-generation-bound structure rather than rebuilt each request. Its key is the same composite topology revision used by V2 (`graph topology revision` plus `topology_epoch`). Any mismatch rebuilds the complete per-sheet vectors before use. Warm attribution reports zero owner-index builds, removing approximately 47 ms Light / 71 ms Heavy of direct build work without permitting stale `VertexId` reuse.
+
+Full `ExactReadSet` equality before authoritative edge replacement existed only to publish changed/unchanged diagnostic counters. It is now gated by detailed attribution. Required exact formula-edge comparison/replacement remains unconditional.
+
+A proposed sortedness check before formula-edge sorting was measured and rejected. The vectors are not reliably monotonic, so the check added a scan and still took the sort path; Heavy deduplication rose from approximately 70 to 75 ms. The experiment was removed. Moving already-owned non-cell evidence from `RawReadSet` into `ExactReadSet` was retained, eliminating redundant clones.
+
+Fresh wall samples during these small follow-ons were dominated by host drift: cold and unchanged requests moved by 15-25% even where owner resolution/equality work was absent. The direct phase removals, generation tests, exact outputs, and 64-test suite are authoritative for retention; no end-to-end improvement is claimed for this noisy batch. Stage 3H continues into observation/finalization and residual attribution.

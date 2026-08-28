@@ -964,7 +964,7 @@ pub struct Engine<R> {
     pub recalc_epoch: u64,
     v2_enabled: bool,
     v2_read_recorder: Arc<crate::engine::v2::V2ReadRecorder>,
-    v2_formula_owner_index: Mutex<Option<BTreeMap<u16, Vec<(PackedSheetCell, VertexId)>>>>,
+    v2_formula_owner_index: Mutex<Option<(u64, BTreeMap<u16, Vec<(PackedSheetCell, VertexId)>>)>>,
     v2_state: crate::engine::v2::V2State,
     v2_function_snapshot: Option<crate::function_registry::RegistryPlanningSnapshot>,
     v2_contract_cache: Option<V2ContractCache>,
@@ -990,6 +990,7 @@ pub struct Engine<R> {
     v2_pending_demand_closure: Option<crate::engine::v2::V2DemandClosure>,
     v2_demand_closure_stats: crate::engine::v2::V2DemandClosureStats,
     v2_runtime_contract_certificates: FxHashMap<VertexId, V2RuntimeContractCertificateKey>,
+    v2_runtime_contract_request_validity: Vec<u8>,
     v2_runtime_contract_validation_active: bool,
     v2_runtime_contract_stats: crate::engine::v2::V2RuntimeContractStats,
     snapshot_id: std::sync::atomic::AtomicU64,
@@ -4446,6 +4447,7 @@ where
             v2_pending_demand_closure: None,
             v2_demand_closure_stats: crate::engine::v2::V2DemandClosureStats::default(),
             v2_runtime_contract_certificates: FxHashMap::default(),
+            v2_runtime_contract_request_validity: Vec::new(),
             v2_runtime_contract_validation_active: false,
             v2_runtime_contract_stats: crate::engine::v2::V2RuntimeContractStats::default(),
             snapshot_id: std::sync::atomic::AtomicU64::new(1),
@@ -4668,6 +4670,7 @@ where
             v2_pending_demand_closure: None,
             v2_demand_closure_stats: crate::engine::v2::V2DemandClosureStats::default(),
             v2_runtime_contract_certificates: FxHashMap::default(),
+            v2_runtime_contract_request_validity: Vec::new(),
             v2_runtime_contract_validation_active: false,
             v2_runtime_contract_stats: crate::engine::v2::V2RuntimeContractStats::default(),
             snapshot_id: std::sync::atomic::AtomicU64::new(1),
@@ -29095,28 +29098,21 @@ where
             .saturating_add(raw.external.len())
             .saturating_add(raw.effects.len())
             .saturating_add(raw.reference_observations.len());
-        let elements_copied = raw
-            .ranges
-            .len()
-            .saturating_add(raw.names.len())
-            .saturating_add(raw.tables.len())
-            .saturating_add(raw.external.len())
-            .saturating_add(raw.effects.len())
-            .saturating_add(raw.reference_observations.len());
+        let elements_copied = 0;
 
         let range_started = Instant::now();
-        let ranges = raw.ranges.clone();
+        let ranges = raw.ranges;
         let range_canonicalization_ns = range_started.elapsed().as_nanos();
         let cloning_started = Instant::now();
-        let names = raw.names.clone();
-        let tables = raw.tables.clone();
-        let external = raw.external.clone();
+        let names = raw.names;
+        let tables = raw.tables;
+        let external = raw.external;
         let cloning_copying_ns = cloning_started.elapsed().as_nanos();
         let reference_started = Instant::now();
-        let reference_observations = raw.reference_observations.clone();
+        let reference_observations = raw.reference_observations;
         let reference_generation_canonicalization_ns = reference_started.elapsed().as_nanos();
         let semantic_started = Instant::now();
-        let effects = raw.effects.clone();
+        let effects = raw.effects;
         let semantic_effect_metadata_ns = semantic_started.elapsed().as_nanos();
         let summary_started = Instant::now();
         let mut exact = crate::engine::v2::ExactReadSet {
@@ -29146,11 +29142,19 @@ where
             formula_edge.scalar_event_coordinates_inspected = cell_events.len();
         }
         let owner_index_started = Instant::now();
+        let owner_index_generation = self
+            .graph
+            .topology_revision()
+            .wrapping_mul(0x9e37_79b9)
+            .wrapping_add(self.topology_epoch);
         let mut formula_owner_index = self
             .v2_formula_owner_index
             .lock()
             .expect("V2 formula owner index poisoned");
-        if formula_owner_index.is_none() {
+        if formula_owner_index
+            .as_ref()
+            .is_none_or(|(generation, _)| *generation != owner_index_generation)
+        {
             let mut owners = BTreeMap::<u16, Vec<(PackedSheetCell, VertexId)>>::new();
             for vertex in self.graph.vertices_with_formulas() {
                 let Some(cell) = self.graph.get_cell_ref(vertex) else {
@@ -29171,21 +29175,24 @@ where
             }
             if detailed_edge_attribution {
                 formula_edge.formula_owner_index_builds = 1;
-                formula_edge.formula_owner_index_entries = owners.values().map(Vec::len).sum();
-                formula_edge.formula_owner_entries_by_sheet = owners
-                    .iter()
-                    .map(|(&sheet, owners)| (sheet, owners.len()))
-                    .collect();
             }
-            *formula_owner_index = Some(owners);
+            *formula_owner_index = Some((owner_index_generation, owners));
             if detailed_edge_attribution {
                 formula_edge.formula_owner_index_build_ns =
                     owner_index_started.elapsed().as_nanos();
             }
         }
-        let formula_owners = formula_owner_index
+        let formula_owners = &formula_owner_index
             .as_ref()
-            .expect("V2 formula owner index initialized");
+            .expect("V2 formula owner index initialized")
+            .1;
+        if detailed_edge_attribution {
+            formula_edge.formula_owner_index_entries = formula_owners.values().map(Vec::len).sum();
+            formula_edge.formula_owner_entries_by_sheet = formula_owners
+                .iter()
+                .map(|(&sheet, owners)| (sheet, owners.len()))
+                .collect();
+        }
         let scalar_exact_started = detailed_edge_attribution.then(Instant::now);
         let mut event_index = 0usize;
         let mut current_sheet = None;
@@ -29257,7 +29264,7 @@ where
         drop(formula_owner_index);
         let current_sheet = self.graph.get_vertex_sheet_id(vertex);
         let name_started = detailed_edge_attribution.then(Instant::now);
-        for name in &raw.names {
+        for name in &exact.names {
             if detailed_edge_attribution {
                 formula_edge.name_resolution_attempts =
                     formula_edge.name_resolution_attempts.saturating_add(1);
@@ -29276,7 +29283,7 @@ where
             formula_edge.name_resolution_ns = started.elapsed().as_nanos();
         }
         let table_started = detailed_edge_attribution.then(Instant::now);
-        for table in &raw.tables {
+        for table in &exact.tables {
             if detailed_edge_attribution {
                 formula_edge.table_resolution_attempts =
                     formula_edge.table_resolution_attempts.saturating_add(1);
@@ -29326,12 +29333,12 @@ where
         let selected_reference_handling_ns = selected_started.elapsed().as_nanos();
 
         let metadata_started = Instant::now();
-        if !raw.external.is_empty() {
+        if !exact.external.is_empty() {
             exact
                 .effects
                 .insert(crate::engine::v2::EffectKind::ExternalProvider);
         }
-        if !raw.tables.is_empty() {
+        if !exact.tables.is_empty() {
             exact
                 .effects
                 .insert(crate::engine::v2::EffectKind::TableShape);
@@ -31480,13 +31487,13 @@ where
         self.v2_workspace_formula_evaluation_ns = 0;
         self.v2_workspace_formula_evaluation_count = 0;
         self.v2_workspace_formula_evaluation_ns_by_vertex.clear();
-        *self
-            .v2_formula_owner_index
-            .lock()
-            .expect("V2 formula owner index poisoned") = None;
         self.v2_read_recorder.begin_attribution_request();
         self.v2_attribution_category = crate::engine::v2::V2FormulaAttributionCategory::default();
         self.v2_attribution = crate::engine::v2::V2ExclusiveAttribution::default();
+    }
+
+    fn v2_detailed_attribution_enabled(&self) -> bool {
+        self.v2_read_recorder.attribution_enabled()
     }
 
     fn v2_set_formula_attribution_category(
@@ -31602,6 +31609,7 @@ where
 
     fn v2_begin_runtime_contract_validation(&mut self) {
         self.v2_runtime_contract_stats = crate::engine::v2::V2RuntimeContractStats::default();
+        self.v2_runtime_contract_request_validity.clear();
         self.v2_runtime_contract_validation_active = true;
     }
 
@@ -31763,7 +31771,7 @@ where
                 .candidates
                 .saturating_add(reads.formula_edges.len());
         }
-        reads.formula_edges.iter().copied().all(|vertex| {
+        for &vertex in &reads.formula_edges {
             if !self.v2_is_formula_vertex(vertex) {
                 if self.v2_runtime_contract_validation_active {
                     self.v2_runtime_contract_stats.edges_skipped = self
@@ -31771,11 +31779,35 @@ where
                         .edges_skipped
                         .saturating_add(1);
                 }
-                true
-            } else {
-                self.v2_runtime_formula_contract_safe(vertex)
+                continue;
             }
-        })
+            let index = vertex.0 as usize;
+            if self.v2_runtime_contract_request_validity.len() <= index {
+                self.v2_runtime_contract_request_validity
+                    .resize(index.saturating_add(1), 0);
+            }
+            match self.v2_runtime_contract_request_validity[index] {
+                1 => {
+                    if self.v2_runtime_contract_validation_active {
+                        self.v2_runtime_contract_stats.cache_hits =
+                            self.v2_runtime_contract_stats.cache_hits.saturating_add(1);
+                        self.v2_runtime_contract_stats.edges_skipped = self
+                            .v2_runtime_contract_stats
+                            .edges_skipped
+                            .saturating_add(1);
+                    }
+                }
+                2 => return false,
+                _ => {
+                    let valid = self.v2_runtime_formula_contract_safe(vertex);
+                    self.v2_runtime_contract_request_validity[index] = if valid { 1 } else { 2 };
+                    if !valid {
+                        return false;
+                    }
+                }
+            }
+        }
+        true
     }
 
     fn v2_reference_observations_valid(&self, reads: &crate::engine::v2::ExactReadSet) -> bool {

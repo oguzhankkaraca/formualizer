@@ -674,3 +674,88 @@ Heavy's remaining cleanup is volatile/iterative work and state maintenance, not 
 | Heavy unchanged | 1.712, 1.762, 1.800 s | 1.762 s | 1.572, 1.616, 1.655 s | 1.616 s | 526,307,328 B |
 
 Compared with the post-owner medians, Light warm improves 2.613 to 2.359 s and unchanged improves 0.288 to 0.120 s. Heavy warm improves 3.736 to 3.499 s and unchanged improves 1.948 to 1.762 s. The full 64-test V2 production suite passed. Stage 3H remains open pending the new post-cleanup ranking.
+
+## Retained-plan validation campaign
+
+### Repeated certificate validation
+
+Before the change, classification and post-evaluation validation called the authoritative persistent certificate lookup for every formula edge. Certificate keys include topology, symbols, registry epoch, provider revision, date system, FormulaPlane span count, and spill presence. V2 admission excludes active spans, spills, and formula arrays for this path, so valid exact edges repeatedly resolve the same generation-bound proof.
+
+A request-scoped `Vec<u8>` indexed by `VertexId` now records unknown/valid/invalid for the duration of each already revision-guarded phase. The first dependency performs the authoritative lookup; repeats reuse the result. Post-evaluation metrics still report identical candidates, cache hits, skipped edges, and examined edges.
+
+Measured:
+
+```text
+Light retained classification       ~188 ms -> ~117 ms after first memo
+Heavy retained classification       ~343 ms -> ~253 ms after first memo
+Light contract validation            ~121 ms ->  ~38 ms
+Heavy contract validation            ~145 ms ->  ~46-55 ms
+```
+
+### Structural certificate reuse
+
+`V2WorkspaceClassification` already owns exact SCC components, upstream/downstream orders, and member counts, but the old classifier rebuilt these from every retained `ExactReadSet` each request. Reuse now requires:
+
+```text
+prior classification valid
+AND prior classification exact components == prior actual components
+AND no prior runtime invalidation/reopen
+AND current topology/symbol/semantic revisions retained
+```
+
+The next request still validates every member's exact-read presence, dirty state, persistent contract certificate, generation/reference state, and mutation intersection. Only local membership/reverse traversal/topological ordering is reused.
+
+Cold workspaces initially have no prior exact plan. After all outputs/read sets are committed and final revisions validate, a structural classification is materialized from authoritative final state and attributed to cold retained validation. Runtime-reopened workspaces do not retain their pre-execution classification; a new certificate can be produced only from the final validated state.
+
+Post-change attribution:
+
+```text
+Light warm retained validation       ~90-132 ms
+Heavy warm retained validation       ~89 ms
+Heavy unchanged retained validation  ~94 ms
+retained plans                        19/19/0
+runtime invalidations/reopens          0/0
+```
+
+### Fresh uninstrumented acceptance
+
+| Request | Wall samples | Wall median | Kernel samples | Kernel median | Working-set median |
+|---|---|---:|---|---:|---:|
+| Light 300 initial | 7.399, 7.274, 7.459 s | 7.399 s | 6.678, 6.513, 6.717 s | 6.678 s | 359,211,008 B |
+| Light 300→500 | 2.095, 2.203, 2.439 s | 2.203 s | 1.942, 2.050, 2.280 s | 2.050 s | 380,399,616 B |
+| Light unchanged | 0.117, 0.123, 0.127 s | 0.123 s | 0.113, 0.121, 0.124 s | 0.121 s | 380,489,728 B |
+| Heavy 300 initial | 9.728, 8.660, 9.033 s | 9.033 s | 8.898, 7.858, 8.110 s | 8.110 s | 497,356,800 B |
+| Heavy 300→500 | 3.015, 2.977, 2.952 s | 2.977 s | 2.805, 2.771, 2.760 s | 2.771 s | 526,245,888 B |
+| Heavy unchanged | 1.344, 1.310, 1.362 s | 1.344 s | 1.207, 1.179, 1.222 s | 1.207 s | 527,163,392 B |
+
+All exact outputs match. The complete 64-test suite, including runtime edge-change fail-closed reopen and generation invalidation, passes. Heavy warm crosses 3.0 s, but Light remains above 2.0 s and Stage 3H remains open.
+
+### Validation/finalization follow-ons
+
+After structural-certificate reuse:
+
+```text
+Light retained validation        ~48 ms
+Heavy retained validation        ~89-94 ms
+Light contract validation        ~38 ms
+Heavy contract validation        ~40-55 ms
+retained plans                    19/19/0
+runtime invalidations/reopens      0/0
+```
+
+The per-sheet owner vectors are now cached with the composite V2 topology generation. Warm Light/Heavy attribution reports `owner_index_build: 0`; the previous warm build cost was approximately 47/71 ms. Full rebuild occurs on any generation mismatch and all generation/revision regressions pass.
+
+The untimed full `ExactReadSet` equality used only by `exact_read_sets_changed/unchanged` diagnostics is gated by `FZ_TRACE_V2_ATTRIBUTION`. Authoritative formula-edge comparison, reverse-map mutation, retained reads, and runtime SCC truth are unchanged.
+
+Zero-copy transfer replaced clones for `ranges`, `names`, `tables`, `external`, `effects`, and `reference_observations`, all already owned by the consumed `RawReadSet`.
+
+Rejected experiment:
+
+```text
+formula-edge is_sorted() check before sort
+result: Heavy deduplication ~70 ms -> ~75 ms
+reason: vectors are not reliably monotonic, so most paths paid check + sort
+final decision: removed
+```
+
+The subsequent fresh batches had system-wide drift: cold and unchanged paths moved by the same 15-25% as warm, so they cannot isolate the approximately 47-71 ms owner build removal or diagnostic equality gate. Direct attribution, output parity, topology invalidation, and the 64-test suite support retention; no noisy wall improvement is claimed. Stage 3H remains open.

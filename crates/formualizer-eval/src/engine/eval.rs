@@ -2516,6 +2516,7 @@ pub struct EngineV2Diagnostics {
     pub exact_read_sets_finalized: usize,
     pub exact_read_sets_changed: usize,
     pub exact_read_sets_unchanged: usize,
+    pub diagnostic_read_set_compare_ns: u128,
     pub exact_edges_examined: usize,
     pub exact_edges_removed: usize,
     pub exact_edges_inserted: usize,
@@ -28706,6 +28707,7 @@ where
             exact_read_sets_finalized: metrics.exact_read_sets_finalized,
             exact_read_sets_changed: metrics.exact_read_sets_changed,
             exact_read_sets_unchanged: metrics.exact_read_sets_unchanged,
+            diagnostic_read_set_compare_ns: metrics.diagnostic_read_set_compare_ns,
             exact_edges_examined: metrics.exact_edges_examined,
             exact_edges_removed: metrics.exact_edges_removed,
             exact_edges_inserted: metrics.exact_edges_inserted,
@@ -29131,7 +29133,9 @@ where
 
         let mut cell_events = raw.cell_events;
         let sorting_started = Instant::now();
-        cell_events.sort();
+        if !raw.cell_events_sorted {
+            cell_events.sort();
+        }
         let sorting_ns = sorting_started.elapsed().as_nanos();
         let edge_started = Instant::now();
         let detailed_edge_attribution = self.v2_read_recorder.attribution_enabled();
@@ -29416,11 +29420,13 @@ where
     }
 
     fn v2_record_formula_invocation(&mut self, vertex: VertexId, formula_execution_ns: u128) {
-        self.v2_attribution.record_invocation(
-            self.v2_attribution_category,
-            formula_execution_ns,
-            self.v2_read_recorder.attribution_stats(vertex),
-        );
+        if self.v2_read_recorder.attribution_enabled() {
+            self.v2_attribution.record_invocation(
+                self.v2_attribution_category,
+                formula_execution_ns,
+                self.v2_read_recorder.attribution_stats(vertex),
+            );
+        }
     }
 
     fn v2_record_exact_read(
@@ -29429,12 +29435,14 @@ where
         reads: &crate::engine::v2::ExactReadSet,
         finalization: crate::engine::v2::V2ReadFinalizationAttribution,
     ) {
-        self.v2_attribution.record_exact_read(
-            self.v2_attribution_category,
-            vertex,
-            reads,
-            finalization,
-        );
+        if self.v2_read_recorder.attribution_enabled() {
+            self.v2_attribution.record_exact_read(
+                self.v2_attribution_category,
+                vertex,
+                reads,
+                finalization,
+            );
+        }
     }
 
     fn v2_record_semantic_effects_for_vertex(&self, vertex: VertexId) {

@@ -281,14 +281,48 @@ impl<'a> RangeView<'a> {
     }
 
     fn observe_cell_span(&self, row_start: usize, row_len: usize) {
-        if self.read_observer.is_none() {
+        let (Some(observer), Some(sheet_id)) = (&self.read_observer, self.read_observer_sheet_id)
+        else {
             return;
-        }
+        };
+        let sheet = self.sheet();
         let row_end = row_start.saturating_add(row_len).min(self.rows);
-        for row in row_start.min(self.rows)..row_end {
-            for col in 0..self.cols {
-                self.observe_cell_read(row, col);
+        let mut abs_row = self.sr.saturating_add(row_start.min(self.rows));
+        let abs_row_end = self.sr.saturating_add(row_end).min(sheet.nrows as usize);
+        let col_end = self.sc.saturating_add(self.cols).min(sheet.columns.len());
+        while abs_row < abs_row_end {
+            let ch_idx = match sheet.chunk_starts.binary_search(&abs_row) {
+                Ok(index) => index,
+                Err(0) => 0,
+                Err(index) => index - 1,
+            };
+            let segment_end = sheet
+                .chunk_starts
+                .get(ch_idx + 1)
+                .copied()
+                .map(|row| row as usize)
+                .unwrap_or(sheet.nrows as usize)
+                .max(abs_row + 1)
+                .min(abs_row_end);
+            let mut column_runs = Vec::new();
+            let mut run_start = None;
+            for abs_col in self.sc..col_end {
+                if sheet.columns[abs_col].chunk(ch_idx).is_some() {
+                    run_start.get_or_insert(abs_col);
+                } else if let Some(start) = run_start.take() {
+                    column_runs.push((start as u32, (abs_col - 1) as u32));
+                }
             }
+            if let Some(start) = run_start {
+                column_runs.push((start as u32, (col_end - 1) as u32));
+            }
+            observer.cell_rows_read(
+                sheet_id,
+                abs_row as u32,
+                (segment_end - 1) as u32,
+                &column_runs,
+            );
+            abs_row = segment_end;
         }
     }
 

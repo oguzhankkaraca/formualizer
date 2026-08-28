@@ -842,6 +842,10 @@ fn print_v2_profile_diagnostics(
         diagnostics.exact_read_sets_unchanged
     );
     println!(
+        "{label}_diagnostic_read_set_compare_ns={}",
+        diagnostics.diagnostic_read_set_compare_ns
+    );
+    println!(
         "{label}_exact_edges_examined_removed_inserted_unchanged={}/{}/{}/{}",
         diagnostics.exact_edges_examined,
         diagnostics.exact_edges_removed,
@@ -1096,6 +1100,10 @@ fn print_v2_profile_diagnostics(
         diagnostics.exact_read_sets_finalized,
         diagnostics.exact_read_sets_changed,
         diagnostics.exact_read_sets_unchanged
+    );
+    println!(
+        "{label}_diagnostic_read_set_compare_ns={}",
+        diagnostics.diagnostic_read_set_compare_ns
     );
     println!(
         "{label}_exact_edges_examined_removed_inserted_unchanged={}/{}/{}/{}",

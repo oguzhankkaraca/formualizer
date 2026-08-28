@@ -4,7 +4,7 @@
 
 The virtual-demand root cause was measured, one generic optimization was retained, and the rejected rectangular-query experiment was removed.
 
-Stage 3H remains open; Stage 4 has not started.
+Stage 3H is closed after the final Light/Heavy re-profile; Stage 4 has not started.
 
 ## Correctness oracle
 
@@ -758,4 +758,86 @@ reason: vectors are not reliably monotonic, so most paths paid check + sort
 final decision: removed
 ```
 
-The subsequent fresh batches had system-wide drift: cold and unchanged paths moved by the same 15-25% as warm, so they cannot isolate the approximately 47-71 ms owner build removal or diagnostic equality gate. Direct attribution, output parity, topology invalidation, and the 64-test suite support retention; no noisy wall improvement is claimed. Stage 3H remains open.
+The subsequent fresh batches had system-wide drift: cold and unchanged paths moved by the same 15-25% as warm, so they cannot isolate the approximately 47-71 ms owner build removal or diagnostic equality gate. Direct attribution, output parity, topology invalidation, and the 64-test suite support retention; no noisy wall improvement is claimed.
+
+## Observation/finalization closure campaign
+
+### Contiguous-run and chunk-block observation
+
+Original bulk `RangeView` observation performed per physical cell:
+
+```text
+row-to-chunk binary search
+column chunk-presence lookup
+PackedSheetCell construction
+active/source checks
+recorder mutex acquisition
+append and counters
+```
+
+The first candidate batched contiguous columns per row. Alternating same-binary control measurements:
+
+```text
+                         per-cell control mean    row-run mean
+Light warm                       2.472 s             2.347 s
+Heavy warm                       3.384 s             2.999 s
+```
+
+The retained architecture batches an entire Arrow chunk row segment plus its contiguous present-column runs. `RangeView` computes chunk identity and column runs once. `V2ReadRecorder` reserves and appends row-major packed cells under one lock. The trait's default implementation remains cell-granular for other observers. Early-stop lookup/error scans continue to call `observe_cell_read` one inspected cell at a time.
+
+Counter parity after chunk batching:
+
+```text
+                                  Light       Heavy
+formulas evaluated                 4,850       6,881
+physical cells                 1,620,416   3,702,377
+retained exact formula edges     525,671     433,899
+retained plans                    19/19/0     19/19/0
+runtime invalidations/reopens        0/0         0/0
+```
+
+Measured observation after chunk batching was approximately 84 ms Light and 220 ms Heavy. The remaining Heavy work appends required packed evidence for 3.70 million physical reads; it no longer performs per-cell chunk discovery or locking.
+
+### Monotonic finalization
+
+`RawReadSet` now tracks whether scalar events remain globally monotonic as individual cells or sorted blocks are appended. Canonical streams skip sorting without a scan. Any non-monotonic append takes the previous stable sort path. Finalization moves owned non-cell evidence rather than cloning it.
+
+Latest finalization decomposition:
+
+```text
+Light exact finalization             ~236 ms
+Heavy exact finalization             ~470 ms
+Heavy scalar sorting                 ~126 ms
+Heavy formula-edge sort/dedup         ~65 ms
+Heavy exact-cell/owner merge         ~257 ms
+```
+
+These components are now proportional to required exact evidence and individually below the continuation threshold except the merge, which combines exact-cell retention with authoritative formula-owner intersection over 2.79 million coordinates.
+
+### Residual closure
+
+The separately timed diagnostic deep `ExactReadSet` comparison costs 10.5 ms Light / 23.6 ms Heavy and is disabled outside detailed attribution. Detailed per-formula exclusive-attribution publication/sample accumulation is likewise gated. Remaining attributed residual is distributed across formula wrappers, request/schedule bookkeeping, metrics publication, workspace profiles, evaluated-set maintenance, temporary destruction, and attribution mechanics; no dominant generic copy/scan remains.
+
+### Final fresh uninstrumented acceptance
+
+| Request | Wall samples | Wall median | Kernel samples | Kernel median | Working-set median |
+|---|---|---:|---|---:|---:|
+| Light 300 initial | 6.787, 7.730, 6.729 s | 6.787 s | 6.058, 6.911, 6.006 s | 6.058 s | 356,032,512 B |
+| Light 300→500 | 1.863, 2.202, 1.844 s | 1.863 s | 1.723, 2.036, 1.709 s | 1.723 s | 379,559,936 B |
+| Light unchanged | 0.116, 0.128, 0.118 s | 0.118 s | 0.113, 0.126, 0.116 s | 0.116 s | 379,686,912 B |
+| Heavy 300 initial | 7.780, 7.735, 8.017 s | 7.780 s | 7.016, 6.969, 7.236 s | 7.016 s | 491,769,856 B |
+| Heavy 300→500 | 2.692, 2.672, 2.747 s | 2.692 s | 2.504, 2.479, 2.553 s | 2.504 s | 523,096,064 B |
+| Heavy unchanged | 1.198, 1.169, 1.192 s | 1.192 s | 1.067, 1.033, 1.063 s | 1.063 s | 524,091,392 B |
+
+Exact outputs:
+
+```text
+Light 300  2816.3175654307174
+Light 500  3952.2073713873697
+Heavy 300  4212.843018909032
+Heavy 500  5766.920229312803713
+```
+
+### Stage 3H closure
+
+Stage 3H closes. Both near-term wall objectives are met. No bad Heavy asymptotic remains, no major v0.8.0 performance property remains unexplored, Heavy unchanged has no eager Stage 3H bookkeeping pathology, and remaining work is distributed, interpreter-bound, or required for exact dependency truth. Stage 4 has not started.

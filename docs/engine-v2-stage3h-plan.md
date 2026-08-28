@@ -2,7 +2,7 @@
 
 ## Status
 
-Stage 3H remains open. Stage 3H-V virtual-demand investigation has reached its decision gate and retains one generic optimization.
+Stage 3H is closed after the final Light/Heavy observation, finalization, residual, and unchanged-request re-profile. Stage 4 has not started.
 
 The Light warm changed-input path remains the acceptance workload:
 
@@ -437,4 +437,70 @@ Full `ExactReadSet` equality before authoritative edge replacement existed only 
 
 A proposed sortedness check before formula-edge sorting was measured and rejected. The vectors are not reliably monotonic, so the check added a scan and still took the sort path; Heavy deduplication rose from approximately 70 to 75 ms. The experiment was removed. Moving already-owned non-cell evidence from `RawReadSet` into `ExactReadSet` was retained, eliminating redundant clones.
 
-Fresh wall samples during these small follow-ons were dominated by host drift: cold and unchanged requests moved by 15-25% even where owner resolution/equality work was absent. The direct phase removals, generation tests, exact outputs, and 64-test suite are authoritative for retention; no end-to-end improvement is claimed for this noisy batch. Stage 3H continues into observation/finalization and residual attribution.
+Fresh wall samples during these small follow-ons were dominated by host drift: cold and unchanged requests moved by 15-25% even where owner resolution/equality work was absent. The direct phase removals, generation tests, exact outputs, and 64-test suite are authoritative for retention; no end-to-end improvement is claimed for this noisy batch.
+
+## Stage 3H observation/finalization closure campaign
+
+### Bulk exact-read observation
+
+The old bulk range path called `observe_cell_read` for every physical cell. Each call repeated row-to-chunk binary search, column chunk-presence lookup, packed-coordinate construction, active/source checks, and a global recorder mutex acquisition.
+
+`RangeReadObserver` now accepts row blocks plus contiguous present-column runs. `RangeView` resolves each Arrow chunk segment once, computes present-column runs once, and sends the row-major block to the recorder. The recorder appends the exact same packed cell evidence under one lock per chunk segment. Cell-granular early-stop lookup/error paths remain unchanged, so consumed-prefix and selected-target truth is preserved.
+
+A temporary same-binary control switch measured the original per-cell path against bulk observation under alternating fresh processes:
+
+```text
+                         control mean     bulk mean       change
+Light warm                 2.472 s         2.347 s       -126 ms / -5.1%
+Heavy warm                 3.384 s         2.999 s       -384 ms / -11.4%
+```
+
+The control switch was removed. Formula, physical-cell, exact-edge, SCC, retained-plan, and output counters remained identical.
+
+### Finalization and residual closure
+
+The recorder tracks whether appended scalar evidence remains globally monotonic. A canonical stream skips sorting; any out-of-order scalar or later range run takes the existing stable sort. Non-cell sets are moved from consumed `RawReadSet` ownership rather than cloned.
+
+Full `ExactReadSet` comparison used only by detailed changed/unchanged counters is attribution-gated and measured at 10.5 ms Light / 23.6 ms Heavy. Detailed per-formula exclusive attribution publication and sample-vector accumulation are also gated. Core phase/formula/read metrics remain unconditional.
+
+Latest normal attribution leaves:
+
+```text
+Light exact finalization       ~236 ms
+Heavy exact finalization       ~470 ms
+Heavy scalar sorting           ~126 ms
+Heavy formula-edge sort/dedup   ~65 ms
+Heavy exact-cell/owner merge   ~257 ms
+Light explicit residual        ~164-188 ms
+Heavy explicit residual        ~257-281 ms
+```
+
+No single remaining generic removable structure meets the continuation threshold. Finalization is proportional to required exact evidence: 0.82M Light and 2.79M Heavy canonical owner resolutions plus required sorted exact-edge publication. Residual is distributed across formula wrappers, metrics, schedule/workspace orchestration, small profile clones, evaluated-set maintenance, temporary destruction, and attribution-only work; the measured deep comparison is not dominant.
+
+### Final fresh-process acceptance
+
+```text
+request                       wall median    kernel median    working set median
+Light initial                    6.787 s        6.058 s          356.0 MB
+Light warm 300->500              1.863 s        1.723 s          379.6 MB
+Light unchanged                  0.118 s        0.116 s          379.7 MB
+Heavy initial                    7.780 s        7.016 s          491.8 MB
+Heavy warm 300->500              2.692 s        2.504 s          523.1 MB
+Heavy unchanged                  1.192 s        1.063 s          524.1 MB
+```
+
+Both near-term objectives are crossed. Heavy unchanged remains formula/iterative-work bearing but no longer contains large eager Stage 3H diagnostics, owner rebuilding, or retained-topology reconstruction.
+
+## Stage 3H closure decision
+
+Stage 3H closes because:
+
+1. no remaining generic structure plausibly removes 100-150 ms Light or 150-200 ms Heavy without weakening required evidence;
+2. Heavy's mostly-negative owner asymptotic is replaced by bounded per-sheet merge;
+3. v0.8.0's static ownership, SCC-local observation, dirty handling, and coarse generation certificates were compared and their safe properties incorporated where useful;
+4. major bookkeeping now scales with exact cells, formula edges, formulas, retained dynamic frontiers, or explicitly enabled diagnostics;
+5. Heavy unchanged is 1.192 s median and its remaining cost is volatile/iterative formula work plus required state maintenance;
+6. exact finalization, owner resolution, validation, cleanup, observation, demand, SCC, retained state, adjacency, and residual are measured and understood;
+7. remaining cost is distributed, interpreter-bound, or correctness-required.
+
+Stage 4 has not started.

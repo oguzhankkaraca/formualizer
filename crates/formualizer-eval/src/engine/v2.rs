@@ -93,6 +93,7 @@ pub(crate) struct RawReadSet {
     pub external: BTreeSet<String>,
     pub effects: BTreeSet<EffectKind>,
     pub cell_events: Vec<PackedSheetCell>,
+    pub cell_events_sorted: bool,
     pub reference_observations: BTreeSet<ReferenceObservationRecord>,
     pub cell_read_events: usize,
     pub range_read_events: usize,
@@ -108,6 +109,23 @@ pub(crate) struct RawReadSet {
 
 pub(crate) trait RangeReadObserver: Send + Sync {
     fn cell_read(&self, cell: PackedSheetCell);
+    fn cell_rows_read(
+        &self,
+        sheet_id: SheetId,
+        start_row: u32,
+        end_row: u32,
+        column_runs: &[(u32, u32)],
+    ) {
+        for row in start_row..=end_row {
+            for &(start_col, end_col) in column_runs {
+                for col in start_col..=end_col {
+                    if let Some(cell) = PackedSheetCell::try_new(sheet_id, row, col) {
+                        self.cell_read(cell);
+                    }
+                }
+            }
+        }
+    }
     fn range_consumed(
         &self,
         sheet: &str,
@@ -880,10 +898,73 @@ impl V2ReadRecorder {
 
     pub(crate) fn record_cell(&self, cell: PackedSheetCell) {
         self.with_current(V2RecorderOperation::ScalarCellRead, |reads| {
+            reads.cell_events_sorted = reads.cell_events.is_empty()
+                || (reads.cell_events_sorted
+                    && reads
+                        .cell_events
+                        .last()
+                        .is_none_or(|previous| *previous <= cell));
             reads.cell_events.push(cell);
             reads.cell_read_events = reads.cell_read_events.saturating_add(1);
             reads.physical_cells_fetched = reads.physical_cells_fetched.saturating_add(1);
         });
+    }
+
+    fn record_cell_rows(
+        &self,
+        sheet_id: SheetId,
+        start_row: u32,
+        end_row: u32,
+        column_runs: &[(u32, u32)],
+    ) {
+        if start_row > end_row || column_runs.is_empty() || !self.is_active() {
+            return;
+        }
+        let started = self.attribution_enabled.then(Instant::now);
+        let mut state = self.state.lock().expect("V2 read recorder poisoned");
+        if state.source.is_none() {
+            return;
+        }
+        let reads = &mut state.current;
+        let before = reads.cell_events.len();
+        if let Some(first) = PackedSheetCell::try_new(sheet_id, start_row, column_runs[0].0) {
+            reads.cell_events_sorted = reads.cell_events.is_empty()
+                || (reads.cell_events_sorted
+                    && reads
+                        .cell_events
+                        .last()
+                        .is_none_or(|previous| *previous <= first));
+        }
+        let rows = (end_row - start_row + 1) as usize;
+        let columns = column_runs.iter().fold(0usize, |total, (start, end)| {
+            total.saturating_add(end.saturating_sub(*start).saturating_add(1) as usize)
+        });
+        reads.cell_events.reserve(rows.saturating_mul(columns));
+        for row in start_row..=end_row {
+            for &(start_col, end_col) in column_runs {
+                for col in start_col..=end_col {
+                    if let Some(cell) = PackedSheetCell::try_new(sheet_id, row, col) {
+                        reads.cell_events.push(cell);
+                    }
+                }
+            }
+        }
+        let added = reads.cell_events.len().saturating_sub(before);
+        reads.cell_read_events = reads.cell_read_events.saturating_add(added);
+        reads.physical_cells_fetched = reads.physical_cells_fetched.saturating_add(added);
+        if self.attribution_enabled {
+            let operation_index = V2RecorderOperation::ScalarCellRead.index();
+            reads.recorder_raw_events[operation_index] =
+                reads.recorder_raw_events[operation_index].saturating_add(added);
+            self.recorder_sample_counters[operation_index].fetch_add(added, Ordering::Relaxed);
+            if let Some(started) = started {
+                let elapsed = started.elapsed().as_nanos();
+                reads.recorder_sampled_elapsed_ns[operation_index] =
+                    reads.recorder_sampled_elapsed_ns[operation_index].saturating_add(elapsed);
+                reads.observation_recording_ns =
+                    reads.observation_recording_ns.saturating_add(elapsed);
+            }
+        }
     }
 
     pub(crate) fn record_name(&self, name: impl Into<String>) {
@@ -960,6 +1041,16 @@ impl V2ReadRecorder {
 impl RangeReadObserver for V2ReadRecorder {
     fn cell_read(&self, cell: PackedSheetCell) {
         self.record_cell(cell);
+    }
+
+    fn cell_rows_read(
+        &self,
+        sheet_id: SheetId,
+        start_row: u32,
+        end_row: u32,
+        column_runs: &[(u32, u32)],
+    ) {
+        self.record_cell_rows(sheet_id, start_row, end_row, column_runs);
     }
 
     fn range_consumed(
@@ -1154,6 +1245,7 @@ pub(crate) struct V2Metrics {
     pub exact_read_sets_finalized: usize,
     pub exact_read_sets_changed: usize,
     pub exact_read_sets_unchanged: usize,
+    pub diagnostic_read_set_compare_ns: u128,
     pub exact_edges_examined: usize,
     pub exact_edges_removed: usize,
     pub exact_edges_inserted: usize,
@@ -2701,12 +2793,19 @@ pub(crate) fn run<H: V2Host>(
                             .metrics
                             .diagnostic_records_retained
                             .saturating_add(reads.diagnostic_records_retained);
+                        let read_set_compare_started = detailed_read_set_metrics.then(Instant::now);
                         let read_set_changed = detailed_read_set_metrics.then(|| {
                             state
                                 .current_reads
                                 .get(&vertex)
                                 .is_none_or(|previous| previous != &reads)
                         });
+                        if let Some(started) = read_set_compare_started {
+                            state.metrics.diagnostic_read_set_compare_ns = state
+                                .metrics
+                                .diagnostic_read_set_compare_ns
+                                .saturating_add(started.elapsed().as_nanos());
+                        }
                         let edge_stats = state.replace_read_set_with_stats(vertex, reads);
                         state.metrics.exclusive_attribution.adjacency_replacement_ns = state
                             .metrics
@@ -3120,12 +3219,19 @@ pub(crate) fn run<H: V2Host>(
                             .metrics
                             .diagnostic_records_retained
                             .saturating_add(reads.diagnostic_records_retained);
+                        let read_set_compare_started = detailed_read_set_metrics.then(Instant::now);
                         let read_set_changed = detailed_read_set_metrics.then(|| {
                             state
                                 .current_reads
                                 .get(&member)
                                 .is_none_or(|previous| previous != &reads)
                         });
+                        if let Some(started) = read_set_compare_started {
+                            state.metrics.diagnostic_read_set_compare_ns = state
+                                .metrics
+                                .diagnostic_read_set_compare_ns
+                                .saturating_add(started.elapsed().as_nanos());
+                        }
                         let edge_stats = state.replace_read_set_with_stats(member, reads);
                         state.metrics.exclusive_attribution.adjacency_replacement_ns = state
                             .metrics
